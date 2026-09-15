@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import { indexPath, openDb, getOverview, scanRepo, type ScanPhase } from "@repolens/core";
+import {
+  indexPath,
+  openDb,
+  getOverview,
+  rememberRepo,
+  scanRepo,
+  type ScanPhase,
+} from "@repolens/core";
 import { DEFAULT_PORT, startServer } from "@repolens/server";
 import { Command } from "commander";
 import { existsSync } from "node:fs";
@@ -33,6 +40,7 @@ program
 
     if (!opts.quiet) process.stderr.write("\n");
     process.stdout.write(formatScanReport(root, stats));
+    remember(root);
   });
 
 program
@@ -44,6 +52,7 @@ program
   .option("--open", "启动后打开浏览器", false)
   .action(async (path: string, opts: { port: string; host: string; open: boolean }) => {
     const root = resolve(path);
+    remember(root);
     const webRoot = locateWebDist();
     if (webRoot === null) process.stderr.write(`${webAssetsHint()}\n`);
 
@@ -79,6 +88,7 @@ program
       process.stderr.write("\n");
       process.stdout.write(formatScanReport(root, stats));
     }
+    remember(root);
 
     const webRoot = locateWebDist();
     if (webRoot === null) process.stderr.write(`${webAssetsHint()}\n`);
@@ -135,6 +145,20 @@ function reportProgress(phase: ScanPhase, done: number, total: number): void {
   }
   const label = PHASE_LABELS[phase].padEnd(8, " ");
   process.stderr.write(`\r${label} ${progressBar(done, total)} ${done}/${total}   `);
+}
+
+/**
+ * 记进「扫过的仓库」清单，界面的仓库选择器就是读它。
+ *
+ * 失败不该影响主流程：清单只是个便利缓存，home 目录不可写（容器、受限
+ * 环境）时扫描和浏览本身完全不受影响，没理由为它中断。
+ */
+function remember(root: string): void {
+  try {
+    rememberRepo(root);
+  } catch (err) {
+    process.stderr.write(`（仓库清单未能更新：${(err as Error).message}）\n`);
+  }
 }
 
 function assertDirectory(root: string): void {

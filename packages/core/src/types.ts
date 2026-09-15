@@ -448,6 +448,35 @@ export interface OverviewDto {
   layers?: Array<{ name: string; description: string; nodeIds: string[] }> | null;
 }
 
+// ---------------------------------------------------------------------------
+// 仓库清单
+// ---------------------------------------------------------------------------
+
+/**
+ * `ok` 之外的两档都是「清单里有、但现在用不了」：索引被删了，或者仓库
+ * 整个被移走了。界面要能把它们灰掉并说明原因，而不是让人点进去撞个报错。
+ */
+export type RepoStatus = "ok" | "index-missing" | "root-missing";
+
+export interface RegisteredRepo {
+  /** 绝对路径的短哈希，URL 安全且定长 */
+  id: string;
+  root: string;
+  name: string;
+  /** ISO 时间戳，用于排序与淘汰 */
+  lastOpenedAt: string;
+}
+
+export interface RepoEntry extends RegisteredRepo {
+  status: RepoStatus;
+}
+
+export interface ReposDto {
+  /** 启动时指定的那个仓库，缺省请求都落到它 */
+  current: string;
+  repos: RepoEntry[];
+}
+
 export interface TreeNodeDto {
   id: string;
   name: string;

@@ -32,6 +32,20 @@ export {
   type GraphOptions,
 } from "./db/queries.js";
 
+// RegisteredRepo / RepoEntry / RepoStatus 这几个类型由 types.js 的 `export *`
+// 带出，这里不重复导出，否则同一个名字有两条来路。
+export {
+  HOME_DIR,
+  REGISTRY_FILE,
+  forgetRepo,
+  listRepos,
+  probe,
+  readRegistry,
+  registryPath,
+  rememberRepo,
+  repoId,
+} from "./registry.js";
+
 export { scanRepo, type ScanOptions, type ScanPhase } from "./pipeline/scan.js";
 export { countLoc } from "./pipeline/metrics.js";
 

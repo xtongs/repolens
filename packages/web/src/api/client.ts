@@ -4,6 +4,7 @@ import type {
   FindingSummaryDto,
   GraphDto,
   OverviewDto,
+  ReposDto,
   SearchHitDto,
   SourceSliceDto,
   SymbolDetailDto,
@@ -11,6 +12,22 @@ import type {
 } from "@repolens/core/types";
 
 const BASE = "/api";
+
+/**
+ * 当前浏览的仓库。
+ *
+ * 放在模块作用域而不是穿过每个调用点，理由和 BASE 一样：它是「往哪儿发请求」
+ * 的一部分，不是某次查询的参数。二十多处调用点全都加一个 repoId 形参，
+ * 只会让每一层都得记着往下传，漏一处就静默地查到了另一个仓库。
+ *
+ * 留 undefined 时服务端落到启动时那个仓库，所以首屏不必先取一次清单
+ * 才敢发第一个请求。
+ */
+let activeRepo: string | undefined;
+
+export function setActiveRepo(id: string | undefined): void {
+  activeRepo = id;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -27,20 +44,23 @@ async function get<T>(path: string, params: Record<string, string | number | boo
     if (value === undefined) continue;
     search.set(key, String(value));
   }
+  if (activeRepo !== undefined) search.set("repo", activeRepo);
   const query = search.toString();
   const response = await fetch(`${BASE}${path}${query.length > 0 ? `?${query}` : ""}`);
 
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = (await response.json()) as { error?: string };
-      if (body.error) detail = body.error;
-    } catch {
-      // 响应体不是 JSON 就用状态文本
-    }
-    throw new ApiError(detail, response.status);
-  }
+  if (!response.ok) throw await toError(response);
   return (await response.json()) as T;
+}
+
+async function toError(response: Response): Promise<ApiError> {
+  let detail = response.statusText;
+  try {
+    const body = (await response.json()) as { error?: string };
+    if (body.error) detail = body.error;
+  } catch {
+    // 响应体不是 JSON 就用状态文本
+  }
+  return new ApiError(detail, response.status);
 }
 
 export interface GraphParams {
@@ -66,6 +86,13 @@ export interface FindingsResponse {
 }
 
 export const api = {
+  repos: () => get<ReposDto>("/repos"),
+
+  forgetRepo: async (id: string): Promise<void> => {
+    const response = await fetch(`${BASE}/repos/${id}`, { method: "DELETE" });
+    if (!response.ok) throw await toError(response);
+  },
+
   findings: (kind?: "duplicate" | "cycle", scope?: string) =>
     get<FindingsResponse>("/findings", { kind, scope }),
 

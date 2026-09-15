@@ -4,11 +4,12 @@ import type {
   GraphDto,
   GraphNodeDto,
   OverviewDto,
+  RepoEntry,
 } from "@repolens/core/types";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { GraphSlice } from "../graph/model";
-import { api } from "../api/client";
+import { api, setActiveRepo } from "../api/client";
 
 export type MetricKey = "loc" | "complexity" | "symbols";
 
@@ -47,6 +48,13 @@ export interface AppState {
   overview: OverviewDto | null;
   bootError: string | null;
 
+  /** 扫过的仓库清单，供顶栏切换 */
+  repos: RepoEntry[];
+  /** 当前浏览的仓库 id；null 表示还没取到清单 */
+  repoId: string | null;
+  switchRepo: (id: string) => Promise<void>;
+  forgetRepo: (id: string) => Promise<void>;
+
   rootScope: string;
   /** 每个已加载作用域的一层子图 */
   subgraphs: Record<string, GraphDto>;
@@ -68,6 +76,7 @@ export interface AppState {
   filterOpen: boolean;
   paletteOpen: boolean;
   helpOpen: boolean;
+  repoPickerOpen: boolean;
 
   showNoise: boolean;
   showExternal: boolean;
@@ -106,6 +115,7 @@ export interface AppState {
   setFilterOpen: (open: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
   setHelpOpen: (open: boolean) => void;
+  setRepoPickerOpen: (open: boolean) => void;
 
   setShowNoise: (value: boolean) => void;
   setShowExternal: (value: boolean) => void;
@@ -121,6 +131,9 @@ export interface AppState {
 export const useAppStore = create<AppState>((set, get) => ({
   overview: null,
   bootError: null,
+
+  repos: [],
+  repoId: null,
 
   rootScope: "dir:.",
   subgraphs: {},
@@ -142,6 +155,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   filterOpen: false,
   paletteOpen: false,
   helpOpen: false,
+  repoPickerOpen: false,
 
   showNoise: false,
   showExternal: false,
@@ -160,6 +174,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       set({ bootError: (err as Error).message });
     }
+
+    // 清单单独取、且失败不上报：它只决定「能不能换仓库」，拿不到的话
+    // 当前仓库照样看得好好的，没道理为此在首屏弹个错。
+    try {
+      const { current, repos } = await api.repos();
+      set({ repos, repoId: get().repoId ?? current });
+    } catch {
+      // 没有清单就没有切换入口，顶栏退化成纯文字仓库名
+    }
+  },
+
+  async switchRepo(id) {
+    if (id === get().repoId) return;
+    setActiveRepo(id);
+    // 视图状态全部丢掉：展开的层级、选中项、隐藏项都是上一个仓库的节点 id，
+    // 留着会让新仓库的图上凭空多出几层展不开的空壳。
+    // 但偏好（噪音、外部依赖、指标、置信度、面板开合）是跟着人的，不重置。
+    set({
+      repoId: id,
+      overview: null,
+      bootError: null,
+      subgraphs: {},
+      loadingScopes: [],
+      scopeLimits: {},
+      expanded: [],
+      focus: null,
+      selected: null,
+      hovered: null,
+      hoverAnchor: null,
+      drawerOpen: false,
+      callGraph: null,
+      hiddenNodes: [],
+      revealed: null,
+    });
+    await get().boot();
+  },
+
+  async forgetRepo(id) {
+    await api.forgetRepo(id);
+    set((state) => ({ repos: state.repos.filter((r) => r.id !== id) }));
   },
 
   async loadScope(scopeId, limitOverride, keep) {
@@ -347,6 +401,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setHelpOpen(open) {
     set({ helpOpen: open });
   },
+  setRepoPickerOpen(open) {
+    set({ repoPickerOpen: open });
+  },
 
   setShowNoise(value) {
     set({ showNoise: value, subgraphs: {}, scopeLimits: {} });
@@ -368,6 +425,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (state.paletteOpen) return set({ paletteOpen: false });
     if (state.helpOpen) return set({ helpOpen: false });
+    if (state.repoPickerOpen) return set({ repoPickerOpen: false });
     if (state.filterOpen) return set({ filterOpen: false });
     if (state.drawerOpen) return set({ drawerOpen: false });
     if (state.selected !== null) return set({ selected: null });

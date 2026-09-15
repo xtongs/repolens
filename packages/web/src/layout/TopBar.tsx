@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { METRIC_LABELS } from "../lib/visual";
 import { useAppStore, type MetricKey } from "../store/useAppStore";
+import { RepoPicker } from "./RepoPicker";
 
 const METRICS: MetricKey[] = ["loc", "complexity", "symbols"];
 
@@ -35,7 +36,7 @@ export function TopBar() {
       <FindingsPill />
 
       <div className="flex min-w-0 items-baseline gap-2">
-        <span className="truncate text-[13px] font-semibold">{overview?.repoName ?? "RepoLens"}</span>
+        <RepoPicker />
         {overview && (
           <span className="hidden shrink-0 text-[11px] text-[var(--color-ink-faint)] sm:inline">
             {overview.totals.loc.toLocaleString("en-US")} 行 ·{" "}
@@ -286,13 +287,25 @@ function Toggle({
 function FindingsPill() {
   const [summary, setSummary] = useState<FindingSummaryDto | null>(null);
   const store = useAppStore();
+  const repoId = store.repoId;
 
+  // 跟着仓库重取。否则换完仓库这里还挂着上一个仓库的问题数，
+  // 而角标是会被当成事实去点的。
   useEffect(() => {
+    let stale = false;
+    setSummary(null);
     void api
       .findings()
-      .then((res) => setSummary(res.summary))
-      .catch(() => setSummary(null));
-  }, []);
+      .then((res) => {
+        if (!stale) setSummary(res.summary);
+      })
+      .catch(() => {
+        if (!stale) setSummary(null);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [repoId]);
 
   if (!summary || summary.total === 0) return null;
 
