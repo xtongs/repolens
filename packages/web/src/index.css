@@ -1,0 +1,180 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+/*
+ * 设计令牌。
+ *
+ * 颜色只编码一个维度（语言或架构层），见 docs/INTERACTION.md「按仓库自己的语言分组」。
+ * 中性色刻意压得很平，让为数不多的强调色能真正跳出来。
+ */
+@theme {
+  --color-canvas: #0b0d10;
+  --color-surface: #14171c;
+  --color-surface-2: #1b1f26;
+  --color-surface-3: #232831;
+  --color-line: #2b313b;
+  --color-line-strong: #3a4250;
+  --color-ink: #e6e9ef;
+  --color-ink-muted: #9aa4b4;
+  --color-ink-faint: #6b7583;
+  --color-accent: #5eb0ff;
+  --color-accent-dim: #1b3a5c;
+  --color-warn: #e0a458;
+
+  --lang-typescript: #4a9eff;
+  --lang-tsx: #4a9eff;
+  --lang-javascript: #e5c06b;
+  --lang-jsx: #e5c06b;
+  --lang-python: #5ecb9e;
+  --lang-go: #56c7d6;
+  --lang-rust: #e08758;
+  --lang-other: #8b95a5;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family:
+    ui-sans-serif, -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+code,
+pre,
+.mono {
+  font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+/*
+ * 把省略号放到开头，保留字符串末尾。用于文件路径：一屏结果里前缀大多重复，
+ * 尾段才是区分点。direction: rtl 只改变溢出裁剪的方向，路径本身全是 LTR
+ * 字符，所以显示顺序不受影响——但字符串首尾不能是标点，否则会被 bidi
+ * 挪到另一端，调用方要把 `·` 这类分隔符拆出去单独渲染。
+ */
+.truncate-start {
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* React Flow 自带的背景和边框都要盖掉，否则和暗色主题打架 */
+.react-flow {
+  --xy-background-color: var(--color-canvas);
+  --xy-edge-stroke-default: var(--color-line-strong);
+  --xy-node-border-radius: 10px;
+}
+
+.react-flow__node {
+  cursor: pointer;
+  /* 节点自己控制过渡，React Flow 的默认 transform 过渡会和布局动画冲突 */
+  transition:
+    opacity 140ms ease,
+    filter 140ms ease;
+}
+
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+/* Controls 默认是浅色主题，整块会在暗色画布上炸出一个白方块 */
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-line);
+  fill: var(--color-ink-muted);
+  width: 26px;
+  height: 26px;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--color-surface-3);
+  fill: var(--color-ink);
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+/* 滚动条在覆盖层里要尽量不可见，否则抽屉边缘会出现一条亮线 */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+.thin-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 4px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes rl-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rl-slide-right {
+  from {
+    transform: translateX(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes rl-slide-left {
+  from {
+    transform: translateX(-12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.anim-fade {
+  animation: rl-fade-in 120ms ease-out;
+}
+.anim-slide-right {
+  animation: rl-slide-right 160ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.anim-slide-left {
+  animation: rl-slide-left 160ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
