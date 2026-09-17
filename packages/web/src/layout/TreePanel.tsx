@@ -1,4 +1,4 @@
-import type { FindingDto, TreeNodeDto } from "@repolens/core/types";
+import type { EntryPointDto, FindingDto, TraceSummaryDto, TreeNodeDto } from "@repolens/core/types";
 import { useCallback, useEffect, useState } from "react";
 import { type FindingsResponse, api } from "../api/client";
 import { formatCount, languageColor } from "../lib/visual";
@@ -23,6 +23,7 @@ export function TreePanel() {
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--color-line)] px-3">
         <PanelTab active={tab === "tree"} onClick={() => setTab("tree")} label="结构" />
         <PanelTab active={tab === "findings"} onClick={() => setTab("findings")} label="体检" />
+        <PanelTab active={tab === "traces"} onClick={() => setTab("traces")} label="链路" />
         <button
           type="button"
           onClick={() => setTreeOpen(false)}
@@ -32,9 +33,121 @@ export function TreePanel() {
         </button>
       </div>
 
-      {tab === "tree" ? <TreeBody /> : <FindingsBody />}
+      {tab === "tree" ? <TreeBody /> : tab === "findings" ? <FindingsBody /> : <TracesBody />}
     </aside>
   );
+}
+
+function TracesBody() {
+  const repoId = useAppStore((s) => s.repoId);
+  const openTrace = useAppStore((s) => s.openTrace);
+  const activeTrace = useAppStore((s) => s.traceId);
+  const [entries, setEntries] = useState<EntryPointDto[] | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [traces, setTraces] = useState<Record<string, TraceSummaryDto[]>>({});
+
+  useEffect(() => {
+    let stale = false;
+    setEntries(null);
+    setExpanded(null);
+    setTraces({});
+    void api.entries().then((value) => { if (!stale) setEntries(value); }).catch(() => { if (!stale) setEntries([]); });
+    return () => { stale = true; };
+  }, [repoId]);
+
+  const toggle = async (entry: EntryPointDto) => {
+    if (expanded === entry.id) { setExpanded(null); return; }
+    setExpanded(entry.id);
+    if (traces[entry.id]) return;
+    try {
+      const value = await api.traces(entry.id);
+      setTraces((current) => ({ ...current, [entry.id]: value }));
+    } catch {
+      setTraces((current) => ({ ...current, [entry.id]: [] }));
+    }
+  };
+
+  if (entries === null) return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">加载中…</div>;
+  if (entries.length === 0) return (
+    <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
+      没有识别到入口。重新扫描后可识别 main、HTTP 路由、CLI、公共 API 与测试入口。
+    </div>
+  );
+
+  return (
+    <>
+      <div className="shrink-0 px-3 pt-2 text-[10.5px] text-[var(--color-ink-faint)]">
+        确定性入口 · 追踪至 I/O 边界
+      </div>
+      <div className="thin-scroll flex-1 overflow-y-auto py-1">
+        {entries.map((entry) => (
+          <TraceEntryRow
+            key={entry.id}
+            entry={entry}
+            expanded={expanded === entry.id}
+            activeTrace={activeTrace}
+            traces={traces[entry.id]}
+            onToggle={() => void toggle(entry)}
+            onOpen={openTrace}
+          />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function TraceEntryRow({
+  entry,
+  expanded,
+  activeTrace,
+  traces,
+  onToggle,
+  onOpen,
+}: {
+  entry: EntryPointDto;
+  expanded: boolean;
+  activeTrace: string | null;
+  traces: TraceSummaryDto[] | undefined;
+  onToggle: () => void;
+  onOpen: (id: string, label: string) => void;
+}) {
+  return (
+    <div>
+      <button type="button" onClick={onToggle}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--color-surface-raised)]">
+              <span className="w-3 text-[9px] text-[var(--color-ink-faint)]">{expanded ? "▾" : "▸"}</span>
+              <span className="rounded border border-[var(--color-line)] px-1 text-[9px] uppercase text-[var(--color-accent)]">
+                {entryKindLabel(entry.kind)}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[11.5px]">{entry.label}</span>
+              <span className="text-[10px] tabular-nums text-[var(--color-ink-faint)]">{entry.traceCount}</span>
+      </button>
+      {expanded && (
+              <div className="border-y border-[var(--color-line)]/60 bg-[var(--color-canvas)]/30 py-1">
+                {!traces ? (
+                  <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">加载链路…</div>
+                ) : traces.length === 0 ? (
+                  <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">未沿确定调用边到达 I/O 边界</div>
+                ) : traces.map((trace) => (
+                  <button key={trace.id} type="button" onClick={() => onOpen(trace.id, trace.label)}
+                    className={`block w-full px-7 py-1.5 text-left hover:bg-[var(--color-surface-3)] ${activeTrace === trace.id ? "bg-[var(--color-surface-3)]" : ""}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`h-1.5 w-1.5 rounded-full ${trace.confidence === "exact" ? "bg-emerald-400" : "bg-[var(--color-warn)]"}`} />
+                      <span className="truncate text-[11px]">{trace.label}</span>
+                    </div>
+                    <div className="ml-3 mt-0.5 text-[9.5px] text-[var(--color-ink-faint)]">
+                      {trace.steps} 步 · {trace.confidence === "exact" ? "确定" : "含推断"}{trace.hasNarrative ? " · AI 已解释" : ""}
+                    </div>
+                  </button>
+                ))}
+              </div>
+      )}
+    </div>
+  );
+}
+
+function entryKindLabel(kind: EntryPointDto["kind"]): string {
+  return ({ main: "main", cli: "cli", http: "http", "public-api": "api", test: "test" })[kind];
 }
 
 function PanelTab({

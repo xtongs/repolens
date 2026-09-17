@@ -96,6 +96,23 @@ def make_crew(name: str) -> Crew:
 `;
 
 describe("pythonExtractor", () => {
+  it("识别 FastAPI 装饰器路由且不把装饰器当调用边", async () => {
+    const parsed = await run(pythonExtractor, "python", "app/api.py", `
+from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/users/{user_id}")
+async def get_user(user_id: str) -> User:
+    return load_user(user_id)
+`);
+    expect(parsed.entryHints).toEqual([{
+      kind: "http", framework: "FastAPI", handlerName: "get_user", line: 5,
+      label: "GET /users/{user_id}", method: "GET", route: "/users/{user_id}",
+      confidence: "exact", evidence: "app.get decorator",
+    }]);
+    expect(parsed.calls.some((call) => call.callee === "get")).toBe(false);
+  });
+
   it("抽取符号、可见性、参数与调用归属", async () => {
     const parsed = await run(pythonExtractor, "python", "src/app/services/user.py", PYTHON_SOURCE);
 

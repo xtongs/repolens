@@ -9,6 +9,7 @@ import type {
 } from "../../types.js";
 import {
   ancestorOfType,
+  argumentTexts,
   attributeCalls,
   complexityOf,
   dottedPath,
@@ -50,6 +51,7 @@ export const pythonExtractor: LanguageExtractor = {
     const imports: ParsedImport[] = [];
     const typeRelations: ParsedTypeRelation[] = [];
     const callSites: RawCallSite[] = [];
+    const entryHints: NonNullable<ParsedFile["entryHints"]> = [];
 
     const record = (symbol: ParsedSymbol, isModuleLevel: boolean): void => {
       symbols.push(symbol);
@@ -73,6 +75,7 @@ export const pythonExtractor: LanguageExtractor = {
         case "function_definition": {
           const owner = ancestorOfType(node, OWNER_TYPES);
           record(functionSymbol(node, owner, dunderAll), owner === null);
+          collectRouteHints(node, entryHints);
           return true;
         }
 
@@ -103,6 +106,7 @@ export const pythonExtractor: LanguageExtractor = {
       imports,
       exports: buildExports(moduleLevel, dunderAll, root),
       calls: attributeCalls(symbols, callSites),
+      entryHints,
       typeRelations,
       hasError: root.hasError,
     };
@@ -401,11 +405,12 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
   if (!fn) return;
 
   const argCount = countArgs(fieldNode(node, "arguments"));
+  const args = argumentTexts(fieldNode(node, "arguments"));
   const line = lineOf(node);
   const byte = node.startIndex;
 
   if (fn.type === "identifier") {
-    out.push({ callee: fn.text, line, argCount, kind: "call", byte });
+    out.push({ callee: fn.text, line, argCount, argumentTexts: args, kind: "call", byte });
     return;
   }
 
@@ -420,11 +425,45 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
       calleePath: path.length > 1 ? path : undefined,
       line,
       argCount,
+      argumentTexts: args,
       kind: "method",
       byte,
     });
   }
   // `handlers[k]()` / `f()()` 的被调方无法静态命名，不记录
+}
+
+/** FastAPI / Flask 风格的装饰器路由。装饰器本身不作为运行时调用边。 */
+function collectRouteHints(
+  node: TsNode,
+  out: NonNullable<ParsedFile["entryHints"]>,
+): void {
+  const parent = node.parent;
+  if (parent?.type !== "decorated_definition") return;
+  const handlerName = fieldText(node, "name") ?? undefined;
+  for (const decorator of namedChildren(parent)) {
+    if (decorator.type !== "decorator") continue;
+    const compact = normalizeWhitespace(decorator.text);
+    const match = compact.match(/^@([A-Za-z_$][\w$]*)\.(get|post|put|patch|delete|options|head|route|websocket)\s*\((.*)\)$/s);
+    if (!match) continue;
+    const receiver = match[1] as string;
+    const verb = (match[2] as string).toLowerCase();
+    const rawArgs = match[3] as string;
+    const routeMatch = rawArgs.match(/^\s*(["'])(.*?)\1/);
+    const route = routeMatch?.[2];
+    if (!route) continue;
+    out.push({
+      kind: "http",
+      framework: verb === "route" ? "Flask" : "FastAPI",
+      handlerName,
+      line: lineOf(decorator),
+      label: `${verb === "route" ? "HTTP" : verb.toUpperCase()} ${route}`,
+      method: verb === "route" || verb === "websocket" ? undefined : verb.toUpperCase(),
+      route,
+      confidence: "exact",
+      evidence: `${receiver}.${verb} decorator`,
+    });
+  }
 }
 
 function countArgs(argsNode: TsNode | null): number {

@@ -166,12 +166,28 @@ CREATE TABLE IF NOT EXISTS call_sites (
   callee_path      TEXT,
   call_kind        TEXT NOT NULL,
   arg_count        INTEGER NOT NULL DEFAULT 0,
+  argument_texts   TEXT NOT NULL DEFAULT '[]',
   line             INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_callsite_file ON call_sites(file_id);
 CREATE INDEX IF NOT EXISTS idx_callsite_caller ON call_sites(caller_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_callsite_name ON call_sites(callee_name);
+
+CREATE TABLE IF NOT EXISTS entry_hints (
+  id           INTEGER PRIMARY KEY,
+  file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,
+  framework    TEXT NOT NULL,
+  handler_name TEXT,
+  line         INTEGER NOT NULL,
+  label        TEXT NOT NULL,
+  method       TEXT,
+  route        TEXT,
+  confidence   TEXT NOT NULL,
+  evidence     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entryhint_file ON entry_hints(file_id);
 
 -- ---------------------------------------------------------------------------
 -- 边
@@ -298,6 +314,71 @@ CREATE TABLE IF NOT EXISTS layers (
 );
 
 -- ---------------------------------------------------------------------------
+-- 关键链路（M4，全部可由解析事实重建）
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS entry_points (
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  framework   TEXT,
+  symbol_id   INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+  file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  line        INTEGER NOT NULL,
+  label       TEXT NOT NULL,
+  method      TEXT,
+  route       TEXT,
+  confidence  TEXT NOT NULL,
+  evidence    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entry_symbol ON entry_points(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_entry_kind ON entry_points(kind);
+
+CREATE TABLE IF NOT EXISTS boundaries (
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  symbol_id   INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+  file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  call_site_id INTEGER REFERENCES call_sites(id) ON DELETE CASCADE,
+  line        INTEGER NOT NULL,
+  callee      TEXT NOT NULL,
+  confidence  TEXT NOT NULL,
+  evidence    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_boundary_symbol ON boundaries(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_boundary_kind ON boundaries(kind);
+
+CREATE TABLE IF NOT EXISTS traces (
+  id           INTEGER PRIMARY KEY,
+  entry_id     INTEGER NOT NULL REFERENCES entry_points(id) ON DELETE CASCADE,
+  boundary_id  INTEGER NOT NULL REFERENCES boundaries(id) ON DELETE CASCADE,
+  label        TEXT NOT NULL,
+  confidence   TEXT NOT NULL,
+  fingerprint  TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_trace_entry ON traces(entry_id);
+
+CREATE TABLE IF NOT EXISTS trace_steps (
+  id           INTEGER PRIMARY KEY,
+  trace_id     INTEGER NOT NULL REFERENCES traces(id) ON DELETE CASCADE,
+  ordinal      INTEGER NOT NULL,
+  kind         TEXT NOT NULL,
+  source       TEXT NOT NULL,
+  confidence   TEXT NOT NULL,
+  label        TEXT NOT NULL,
+  symbol_id    INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+  file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  line         INTEGER NOT NULL,
+  call_file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
+  call_line    INTEGER,
+  callee       TEXT,
+  arg_count    INTEGER NOT NULL DEFAULT 0,
+  arguments    TEXT NOT NULL DEFAULT '[]',
+  params       TEXT NOT NULL DEFAULT '[]',
+  return_type  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trace_step_ordinal ON trace_steps(trace_id, ordinal);
+
+-- ---------------------------------------------------------------------------
 -- 全文搜索
 -- ---------------------------------------------------------------------------
 
@@ -315,4 +396,4 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 `;
 
 /** schema 版本，变更时 bump，旧库会被重建 */
-export const SCHEMA_VERSION = "4";
+export const SCHEMA_VERSION = "5";

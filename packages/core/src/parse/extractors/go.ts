@@ -8,6 +8,7 @@ import type {
   SymbolKind,
 } from "../../types.js";
 import {
+  argumentTexts,
   attributeCalls,
   childrenOfType,
   complexityOf,
@@ -350,11 +351,12 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
   if (!target) return;
 
   const argCount = countArgs(fieldNode(node, "arguments"));
+  const args = argumentTexts(fieldNode(node, "arguments"));
   const line = lineOf(node);
   const byte = node.startIndex;
 
   if (target.type === "identifier") {
-    out.push({ callee: target.text, line, argCount, kind: "call", byte });
+    out.push({ callee: target.text, line, argCount, argumentTexts: args, kind: "call", byte });
     return;
   }
 
@@ -371,6 +373,7 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
       calleePath: path.length > 1 ? path : undefined,
       line,
       argCount,
+      argumentTexts: args,
       kind: "method",
       byte,
     });

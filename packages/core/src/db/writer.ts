@@ -3,6 +3,7 @@ import type {
   DiscoveredPackage,
   EdgeType,
   ParsedExport,
+  ParsedEntryHint,
   ParsedSymbol,
   SymbolKind,
 } from "../types.js";
@@ -58,6 +59,7 @@ export interface CallSiteRow {
   calleePath: string | null;
   callKind: string;
   argCount: number;
+  argumentTexts: string[];
   line: number;
 }
 
@@ -148,6 +150,7 @@ export class IndexWriter {
       clearImports: db.prepare("DELETE FROM imports WHERE file_id = ?"),
       clearExports: db.prepare("DELETE FROM exports WHERE file_id = ?"),
       clearCallSites: db.prepare("DELETE FROM call_sites WHERE file_id = ?"),
+      clearEntryHints: db.prepare("DELETE FROM entry_hints WHERE file_id = ?"),
       clearTypeRelations: db.prepare("DELETE FROM type_relations WHERE file_id = ?"),
       insertSymbol: db.prepare(
         `INSERT INTO symbols
@@ -179,9 +182,15 @@ export class IndexWriter {
       ),
       insertCallSite: db.prepare(
         `INSERT INTO call_sites
-           (file_id, caller_symbol_id, callee_name, receiver, callee_path, call_kind, arg_count, line)
+           (file_id, caller_symbol_id, callee_name, receiver, callee_path, call_kind, arg_count, argument_texts, line)
          VALUES
-           (@fileId, @callerSymbolId, @calleeName, @receiver, @calleePath, @callKind, @argCount, @line)`,
+           (@fileId, @callerSymbolId, @calleeName, @receiver, @calleePath, @callKind, @argCount, @argumentTexts, @line)`,
+      ),
+      insertEntryHint: db.prepare(
+        `INSERT INTO entry_hints
+           (file_id, kind, framework, handler_name, line, label, method, route, confidence, evidence)
+         VALUES
+           (@fileId, @kind, @framework, @handlerName, @line, @label, @method, @route, @confidence, @evidence)`,
       ),
       insertTypeRelation: db.prepare(
         `INSERT INTO type_relations
@@ -327,6 +336,7 @@ export class IndexWriter {
 
   /** 清空某文件的全部解析产物，供重新解析前调用 */
   clearFileArtifacts(fileId: number): void {
+    this.stmts.clearEntryHints.run(fileId);
     this.stmts.clearCallSites.run(fileId);
     this.stmts.clearTypeRelations.run(fileId);
     this.stmts.clearExports.run(fileId);
@@ -426,7 +436,25 @@ export class IndexWriter {
         calleePath: site.calleePath,
         callKind: site.callKind,
         argCount: site.argCount,
+        argumentTexts: JSON.stringify(site.argumentTexts),
         line: site.line,
+      });
+    }
+  }
+
+  insertEntryHints(fileId: number, hints: readonly ParsedEntryHint[]): void {
+    for (const hint of hints) {
+      this.stmts.insertEntryHint.run({
+        fileId,
+        kind: hint.kind,
+        framework: hint.framework,
+        handlerName: hint.handlerName ?? null,
+        line: hint.line,
+        label: hint.label,
+        method: hint.method ?? null,
+        route: hint.route ?? null,
+        confidence: hint.confidence,
+        evidence: hint.evidence,
       });
     }
   }
@@ -453,7 +481,7 @@ export class IndexWriter {
   /** 边、聚合边和体检结论都是全局派生的，每次链接前整表清空重算 */
   clearDerived(): void {
     this.db.exec(
-      "DELETE FROM edges; DELETE FROM rollup_edges; DELETE FROM search_index; DELETE FROM findings",
+      "DELETE FROM trace_steps; DELETE FROM traces; DELETE FROM boundaries; DELETE FROM entry_points; DELETE FROM edges; DELETE FROM rollup_edges; DELETE FROM search_index; DELETE FROM findings",
     );
   }
 

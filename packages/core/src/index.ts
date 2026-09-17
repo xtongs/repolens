@@ -33,6 +33,8 @@ export {
   type GraphOptions,
 } from "./db/queries.js";
 
+export { getEntryPoints, getTrace, getTraceSummaries } from "./db/traces.js";
+
 // RegisteredRepo / RepoEntry / RepoStatus 这几个类型由 types.js 的 `export *`
 // 带出，这里不重复导出，否则同一个名字有两条来路。
 export {
@@ -52,6 +54,7 @@ export {
   enrichRepository,
   generateFileSummary,
   generateSymbolSemantics,
+  generateTraceNarrative,
 } from "./llm/enrich.js";
 export { LlmResponseError, LlmUnavailableError, OpenAiCompatibleClient } from "./llm/client.js";
 export { countLoc } from "./pipeline/metrics.js";

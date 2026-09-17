@@ -1,5 +1,6 @@
 import {
   getCallGraph,
+  getEntryPoints,
   getFileDetail,
   getFindingSummary,
   getRevealChain,
@@ -10,8 +11,11 @@ import {
   getSource,
   getSymbolDetail,
   getTree,
+  getTrace,
+  getTraceSummaries,
   generateFileSummary,
   generateSymbolSemantics,
+  generateTraceNarrative,
   indexPath,
   openDb,
   search,
@@ -27,7 +31,7 @@ export interface ApiDeps {
 }
 
 /**
- * HTTP API。除两个带本地意图标记的 semantic POST 外均为只读。
+ * HTTP API。除带本地意图标记的 semantic POST 外均为只读。
  *
  * 所有端点都是「按需拉一层」的形状，没有任何返回全图的端点——
  * 这是 docs/INTERACTION.md「转移」策略的硬约束：前端不持有全图。
@@ -91,6 +95,22 @@ export function createApi(deps: ApiDeps): Hono {
     );
   });
 
+  app.get("/entries", (c) => c.json(getEntryPoints(db)));
+
+  app.get("/traces", (c) => {
+    const raw = c.req.query("entry");
+    const entryId = raw === undefined ? undefined : numericId(raw);
+    if (raw !== undefined && entryId === null) return c.json({ error: "非法的入口 id" }, 400);
+    return c.json(getTraceSummaries(db, entryId ?? undefined));
+  });
+
+  app.get("/trace/:id", (c) => {
+    const id = numericId(c.req.param("id"));
+    if (id === null) return c.json({ error: "非法的链路 id" }, 400);
+    const trace = getTrace(db, id);
+    return trace ? c.json(trace) : c.json({ error: "链路不存在" }, 404);
+  });
+
   app.get("/file/:id", (c) => {
     const id = numericId(c.req.param("id"));
     if (id === null) return c.json({ error: "非法的文件 id" }, 400);
@@ -136,6 +156,23 @@ export function createApi(deps: ApiDeps): Hono {
       try {
         return c.json(await generateFileSummary(writeDb, repoRoot, id));
       } catch (err) {
+        const message = (err as Error).message;
+        const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
+        return c.json({ error: message }, status);
+      }
+    });
+  });
+
+  app.post("/semantic/trace/:id", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "generate-semantic") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    const id = numericId(c.req.param("id"));
+    if (id === null) return c.json({ error: "非法的链路 id" }, 400);
+    if (getTrace(db, id) === null) return c.json({ error: "链路不存在" }, 404);
+    return withWritableDb(repoRoot, async (writeDb) => {
+      try { return c.json(await generateTraceNarrative(writeDb, repoRoot, id)); }
+      catch (err) {
         const message = (err as Error).message;
         const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
         return c.json({ error: message }, status);

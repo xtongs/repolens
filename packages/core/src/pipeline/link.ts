@@ -4,11 +4,13 @@ import { dirOf } from "../resolve/path-utils.js";
 import type { Confidence } from "../types.js";
 import { type DiagnoseStats, diagnose } from "./diagnose.js";
 import { linkCallEdges } from "./link-calls.js";
+import { analyzeTraces, type TraceAnalysisStats } from "./trace.js";
 
 export interface LinkStats {
   calls: number;
   callsByConfidence: Record<Confidence, number>;
   findings: DiagnoseStats;
+  traces: TraceAnalysisStats;
 }
 
 /**
@@ -24,11 +26,12 @@ export function linkGraph(db: Db, writer: IndexWriter): LinkStats {
   linkImportEdges(db, writer);
   const calls = linkCallEdges(db, (edges) => writer.insertEdges(edges));
   linkTypeRelations(db);
+  const traces = analyzeTraces(db);
   buildSearchIndex(db, writer);
   // 体检要在 rollup 边建好之后跑，环检测读的就是那张表
   const findings = diagnose(db, writer);
 
-  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings };
+  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings, traces };
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import type {
 } from "../../types.js";
 import {
   ancestorOfType,
+  argumentTexts,
   attributeCalls,
   complexityOf,
   docCommentAbove,
@@ -116,6 +117,7 @@ export const typescriptExtractor: LanguageExtractor = {
                 calleePath: path.length > 1 ? path : undefined,
                 line: lineOf(node),
                 argCount: countArgs(fieldNode(node, "arguments")),
+                argumentTexts: argumentTexts(fieldNode(node, "arguments")),
                 kind: "new",
                 byte: node.startIndex,
               });
@@ -475,12 +477,14 @@ function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]):
   }
 
   const argCount = countArgs(fieldNode(node, "arguments"));
+  const args = argumentTexts(fieldNode(node, "arguments"));
 
   if (fn.type === "identifier") {
     out.push({
       callee: fn.text,
       line: lineOf(node),
       argCount,
+      argumentTexts: args,
       kind: "call",
       byte: node.startIndex,
     });
@@ -499,6 +503,7 @@ function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]):
       calleePath: path.length > 1 ? path : undefined,
       line: lineOf(node),
       argCount,
+      argumentTexts: args,
       kind: "method",
       byte: node.startIndex,
     });

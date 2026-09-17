@@ -378,9 +378,11 @@ function persistParsed(
     calleePath: call.calleePath ? call.calleePath.join(".") : null,
     callKind: call.kind,
     argCount: call.argCount,
+    argumentTexts: call.argumentTexts ?? [],
     line: call.line,
   }));
   writer.insertCallSites(fileId, callSites);
+  writer.insertEntryHints(fileId, parsed.entryHints ?? []);
 
   const typeRelations: TypeRelationRow[] = parsed.typeRelations.map((rel) => ({
     subjectId: topLevelIdByName.get(rel.subject) ?? null,

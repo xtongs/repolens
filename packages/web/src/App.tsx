@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { GraphCanvas } from "./graph/GraphCanvas";
+import { TraceView } from "./trace/TraceView";
 import { DetailDrawer } from "./layout/DetailDrawer";
 import { TopBar } from "./layout/TopBar";
 import { TreePanel } from "./layout/TreePanel";
@@ -13,6 +14,7 @@ export function App() {
   const overview = useAppStore((s) => s.overview);
   const escape = useAppStore((s) => s.escape);
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
+  const traceId = useAppStore((s) => s.traceId);
 
   useEffect(() => {
     void boot();
@@ -45,7 +47,7 @@ export function App() {
         ) : overview === null ? (
           <BootSkeleton />
         ) : (
-          <GraphCanvas />
+          traceId ? <TraceView traceId={traceId} /> : <GraphCanvas />
         )}
         <TreePanel />
         <DetailDrawer />

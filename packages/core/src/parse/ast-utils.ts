@@ -36,6 +36,21 @@ export function namedChildren(node: TsNode): TsNode[] {
   return out;
 }
 
+/**
+ * 调用参数的源码文本。只保留前 12 个、单项最多 240 字符：路由路径和处理器名
+ * 通常都在最前面，设上限可避免把大对象字面量复制进 SQLite。
+ */
+export function argumentTexts(
+  argsNode: TsNode | null,
+  commentTypes: ReadonlySet<string> = new Set(["comment", "line_comment", "block_comment"]),
+): string[] {
+  if (!argsNode) return [];
+  return namedChildren(argsNode)
+    .filter((child) => !commentTypes.has(child.type))
+    .slice(0, 12)
+    .map((child) => normalizeWhitespace(child.text).slice(0, 240));
+}
+
 export function childrenOfType(node: TsNode, type: string): TsNode[] {
   return namedChildren(node).filter((c) => c.type === type);
 }
@@ -314,6 +329,7 @@ export interface RawCallSite {
   calleePath?: string[] | undefined;
   line: number;
   argCount: number;
+  argumentTexts?: string[] | undefined;
   kind: CallKind;
   /** 调用点在文件中的字节偏移，用于定位所属符号 */
   byte: number;
@@ -342,6 +358,7 @@ export function attributeCalls(symbols: readonly ParsedSymbol[], sites: readonly
       calleePath: site.calleePath,
       line: site.line,
       argCount: site.argCount,
+      argumentTexts: site.argumentTexts,
       kind: site.kind,
     };
   });

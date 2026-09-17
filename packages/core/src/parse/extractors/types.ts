@@ -23,6 +23,7 @@ export function emptyParsedFile(hasError = false): ParsedFile {
     imports: [],
     exports: [],
     calls: [],
+    entryHints: [],
     typeRelations: [],
     hasError,
   };

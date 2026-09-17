@@ -2,8 +2,8 @@ import type { LlmUsage } from "../types.js";
 import { getMeta, getMetaJson, setMetaJson, type Db } from "../db/database.js";
 import { emptyUsage } from "./client.js";
 
-export type SemanticTargetKind = "repo" | "package" | "directory" | "file" | "symbol";
-export type SemanticFlavor = "summary" | "pseudocode";
+export type SemanticTargetKind = "repo" | "package" | "directory" | "file" | "symbol" | "trace";
+export type SemanticFlavor = "summary" | "pseudocode" | "narrative";
 
 export interface CachedSemantic {
   content: string;

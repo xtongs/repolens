@@ -156,7 +156,23 @@ export interface ParsedCall {
   calleePath?: string[] | undefined;
   line: number;
   argCount: number;
+  /** 前几个实参的源码文本；用于入口识别和链路参数流，不做求值。 */
+  argumentTexts?: string[] | undefined;
   kind: CallKind;
+}
+
+/** 框架注册语法中可由 AST 直接证明的入口提示。 */
+export interface ParsedEntryHint {
+  kind: "http" | "cli";
+  framework: string;
+  /** 注册的处理函数名；匿名闭包无法静态命名时为空。 */
+  handlerName?: string | undefined;
+  line: number;
+  label: string;
+  method?: string | undefined;
+  route?: string | undefined;
+  confidence: "exact" | "likely";
+  evidence: string;
 }
 
 export interface ParsedTypeRelation {
@@ -174,6 +190,7 @@ export interface ParsedFile {
   imports: ParsedImport[];
   exports: ParsedExport[];
   calls: ParsedCall[];
+  entryHints?: ParsedEntryHint[] | undefined;
   typeRelations: ParsedTypeRelation[];
   /** Rust `mod foo;` 声明，供模块树解析使用 */
   moduleDecls?: string[] | undefined;
@@ -651,6 +668,101 @@ export interface SourceSliceDto {
 export interface PathQueryResultDto {
   found: boolean;
   hops: Array<{ node: GraphNodeDto; edge?: GraphEdgeDto | null }>;
+}
+
+// ---------------------------------------------------------------------------
+// M4：关键链路与数据流
+// ---------------------------------------------------------------------------
+
+export type EntryPointKind = "main" | "cli" | "http" | "public-api" | "test";
+export type BoundaryKind = "database" | "network" | "filesystem" | "message-queue" | "process";
+export type TraceEvidenceSource = "deterministic" | "inferred" | "ai";
+
+export interface EntryPointDto {
+  id: string;
+  kind: EntryPointKind;
+  framework?: string | null;
+  symbolId?: string | null;
+  fileId: string;
+  filePath: string;
+  line: number;
+  label: string;
+  method?: string | null;
+  route?: string | null;
+  confidence: "exact" | "likely";
+  evidence: string;
+  traceCount: number;
+}
+
+export interface BoundaryDto {
+  id: string;
+  kind: BoundaryKind;
+  symbolId?: string | null;
+  fileId: string;
+  filePath: string;
+  line: number;
+  callee: string;
+  confidence: "exact" | "likely";
+  evidence: string;
+}
+
+export interface TraceStepDto {
+  ordinal: number;
+  kind: "entry" | "call" | "boundary";
+  source: TraceEvidenceSource;
+  confidence: "exact" | "likely";
+  label: string;
+  symbolId?: string | null;
+  fileId: string;
+  filePath: string;
+  line: number;
+  /** 调用发生在上一步的哪个位置；入口步骤为空。 */
+  callSite?: { fileId: string; filePath: string; line: number } | null;
+  callee?: string | null;
+  argCount: number;
+  arguments: string[];
+  params: ParamDto[];
+  returnType?: string | null;
+}
+
+/** 签名级类型流。它是静态近似，不冒充运行时污点分析。 */
+export interface TraceTypeFlowDto {
+  type: string;
+  source: "inferred";
+  through: Array<{ ordinal: number; symbolId?: string | null; label: string; role: "parameter" | "return" }>;
+}
+
+export interface TraceSummaryDto {
+  id: string;
+  entryId: string;
+  boundaryId: string;
+  label: string;
+  boundaryKind: BoundaryKind;
+  steps: number;
+  confidence: "exact" | "likely";
+  hasNarrative: boolean;
+}
+
+export interface TraceNarrativeDto {
+  summary: string;
+  steps: Array<{ ordinal: number; narrative: string; parameterFlow?: string | null }>;
+}
+
+export interface TraceDto extends TraceSummaryDto {
+  fingerprint: string;
+  entry: EntryPointDto;
+  boundary: BoundaryDto;
+  orderedSteps: TraceStepDto[];
+  typeFlows: TraceTypeFlowDto[];
+  narrative?: TraceNarrativeDto | null;
+}
+
+export interface TraceNarrativeResultDto {
+  narrative: TraceNarrativeDto;
+  generated: boolean;
+  cacheHit: boolean;
+  model: string;
+  usage: LlmUsage;
 }
 
 // ---------------------------------------------------------------------------

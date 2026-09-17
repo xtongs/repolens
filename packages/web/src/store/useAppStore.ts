@@ -91,6 +91,12 @@ export interface AppState {
   setCallDirection: (direction: CallGraphMode["direction"]) => Promise<void>;
   setConfidence: (confidence: Confidence[]) => Promise<void>;
 
+  /** 非 null 时主区域切换到独立的时序/泳道链路视图。 */
+  traceId: string | null;
+  traceLabel: string | null;
+  openTrace: (id: string, label: string) => void;
+  closeTrace: () => void;
+
   boot: () => Promise<void>;
   loadScope: (scopeId: string, limitOverride?: number, keep?: string) => Promise<void>;
   toggleExpand: (node: GraphNodeDto) => Promise<void>;
@@ -109,8 +115,8 @@ export interface AppState {
   loadCallGraph: (mode: CallGraphMode) => Promise<void>;
 
   setDrawerOpen: (open: boolean) => void;
-  panelTab: "tree" | "findings";
-  setPanelTab: (tab: "tree" | "findings") => void;
+  panelTab: "tree" | "findings" | "traces";
+  setPanelTab: (tab: "tree" | "findings" | "traces") => void;
   setTreeOpen: (open: boolean) => void;
   setFilterOpen: (open: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
@@ -163,6 +169,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   confidence: DEFAULT_CONFIDENCE,
 
   callGraph: null,
+  traceId: null,
+  traceLabel: null,
 
   hiddenNodes: [],
 
@@ -205,6 +213,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       hoverAnchor: null,
       drawerOpen: false,
       callGraph: null,
+      traceId: null,
+      traceLabel: null,
       hiddenNodes: [],
       revealed: null,
     });
@@ -256,12 +266,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       direction: get().callGraph?.direction ?? "both",
     };
     // 先切模式再取数：否则要等一个来回画布才有反应，看起来像点击丢了
-    set({ callGraph: mode, selected: `sym:${symbolId}`, drawerOpen: false });
+    set({ callGraph: mode, traceId: null, traceLabel: null, selected: `sym:${symbolId}`, drawerOpen: false });
     await get().loadCallGraph(mode);
   },
 
   closeCallGraph() {
     set({ callGraph: null });
+  },
+
+  openTrace(id, label) {
+    set({ traceId: id, traceLabel: label, callGraph: null, drawerOpen: false, selected: null });
+  },
+
+  closeTrace() {
+    set({ traceId: null, traceLabel: null });
   },
 
   async setCallDepth(depth) {
@@ -325,7 +343,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async reveal(nodeId) {
     // 调用图模式下坐标系完全不同，先退回结构视图再导航
-    if (get().callGraph !== null) set({ callGraph: null });
+    if (get().callGraph !== null || get().traceId !== null) {
+      set({ callGraph: null, traceId: null, traceLabel: null });
+    }
 
     try {
       const { chain } = await api.revealChain(nodeId);
@@ -428,6 +448,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (state.repoPickerOpen) return set({ repoPickerOpen: false });
     if (state.filterOpen) return set({ filterOpen: false });
     if (state.drawerOpen) return set({ drawerOpen: false });
+    if (state.traceId !== null) return set({ traceId: null, traceLabel: null });
     if (state.selected !== null) return set({ selected: null });
     if (state.focus !== null) return set({ focus: null });
     // 退出调用图排在展开状态之前：它是一次「换了张图」，比收起层级更外层

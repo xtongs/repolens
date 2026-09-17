@@ -10,6 +10,10 @@ import type {
   SourceSliceDto,
   SymbolDetailDto,
   TreeNodeDto,
+  EntryPointDto,
+  TraceDto,
+  TraceNarrativeResultDto,
+  TraceSummaryDto,
 } from "@repolens/core/types";
 
 const BASE = "/api";
@@ -133,6 +137,16 @@ export const api = {
       limit: params.limit,
       confidence: params.confidence,
     }),
+
+  entries: () => get<EntryPointDto[]>("/entries"),
+
+  traces: (entryId?: string) =>
+    get<TraceSummaryDto[]>("/traces", { entry: entryId }),
+
+  trace: (id: string) => get<TraceDto>(`/trace/${stripPrefix(id)}`),
+
+  generateTraceNarrative: (id: string) =>
+    post<TraceNarrativeResultDto>(`/semantic/trace/${stripPrefix(id)}`),
 
   file: (id: string) => get<FileDetailDto>(`/file/${stripPrefix(id)}`),
 

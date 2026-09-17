@@ -34,6 +34,7 @@ export function TopBar() {
       </button>
 
       <FindingsPill />
+      <TracePill />
       <LlmPill />
 
       <div className="flex min-w-0 items-baseline gap-2">
@@ -57,7 +58,7 @@ export function TopBar() {
         在一张函数调用图上都无从谈起，留着它们只是让人误以为能用。
       */}
       <div className="ml-auto flex items-center gap-1.5">
-        {store.callGraph ? <CallGraphControls /> : <StructureControls />}
+        {store.traceId ? <TraceControls /> : store.callGraph ? <CallGraphControls /> : <StructureControls />}
 
         <button
           type="button"
@@ -223,6 +224,16 @@ function CallGraphControls() {
   );
 }
 
+function TraceControls() {
+  const close = useAppStore((s) => s.closeTrace);
+  return (
+    <button type="button" onClick={close}
+      className="rounded-md border border-[var(--color-line)] px-2.5 py-1 text-[11px] text-[var(--color-ink-muted)] hover:border-[var(--color-line-strong)]">
+      返回结构图
+    </button>
+  );
+}
+
 /** 面包屑只在有聚焦或展开时出现，默认视图下它是纯噪音 */
 function Breadcrumb() {
   const store = useAppStore();
@@ -233,6 +244,9 @@ function Breadcrumb() {
       label: `调用图 ${store.callGraph.label}`,
       onClick: () => store.closeCallGraph(),
     });
+  }
+  if (store.traceId) {
+    parts.push({ label: `链路 ${store.traceLabel ?? store.traceId}`, onClick: () => store.closeTrace() });
   }
   if (store.focus !== null) {
     parts.push({ label: `聚焦 ${labelOf(store.focus)}`, onClick: () => store.setFocus(null) });
@@ -265,6 +279,19 @@ function Breadcrumb() {
         </button>
       ))}
     </div>
+  );
+}
+
+function TracePill() {
+  const store = useAppStore();
+  const open = store.treeOpen && store.panelTab === "traces";
+  return (
+    <button type="button" onClick={() => { store.setPanelTab("traces"); store.setTreeOpen(!open); }}
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors"
+      style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
+      title="入口到 I/O 边界的关键链路">
+      ⇢ 链路
+    </button>
   );
 }
 
