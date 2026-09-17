@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   indexPath,
+  isIndexCurrent,
   openDb,
   getOverview,
   rememberRepo,
@@ -82,7 +83,7 @@ program
     const root = resolve(path);
     assertDirectory(root);
 
-    const needsScan = opts.fresh || !existsSync(indexPath(root));
+    const needsScan = opts.fresh || !isIndexCurrent(indexPath(root));
     if (needsScan) {
       const stats = await scanRepo({ root, fresh: opts.fresh, onProgress: reportProgress });
       process.stderr.write("\n");
@@ -130,6 +131,7 @@ const PHASE_LABELS: Record<ScanPhase, string> = {
   resolve: "解析依赖",
   link: "链接图谱",
   rollup: "聚合指标",
+  enrich: "生成语义",
   index: "建立索引",
 };
 

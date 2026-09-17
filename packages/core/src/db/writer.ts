@@ -138,6 +138,9 @@ export class IndexWriter {
       ),
       fileId: db.prepare("SELECT id FROM files WHERE path = ?"),
       deleteFile: db.prepare("DELETE FROM files WHERE path = ?"),
+      deleteFileSummary: db.prepare(
+        "DELETE FROM summaries WHERE target_kind = 'file' AND target_key = ?",
+      ),
       markParsed: db.prepare(
         "UPDATE files SET parsed = 1, parse_error = @error, complexity = @complexity WHERE id = @id",
       ),
@@ -200,6 +203,13 @@ export class IndexWriter {
       ),
       insertSearch: db.prepare(
         "INSERT INTO search_index (label, detail, kind, ref, role) VALUES (@label, @detail, @kind, @ref, @role)",
+      ),
+      deleteStaleFileSummary: db.prepare(
+        "DELETE FROM summaries WHERE target_kind = 'file' AND target_key = @path AND source_hash != @hash",
+      ),
+      deleteSymbolSummariesForFile: db.prepare(
+        `DELETE FROM summaries WHERE target_kind = 'symbol'
+         AND substr(target_key, 1, length(@prefix)) = @prefix`,
       ),
     };
   }
@@ -300,12 +310,18 @@ export class IndexWriter {
       bytes: file.bytes,
       hash: file.hash,
     });
+    this.stmts.deleteStaleFileSummary.run({ path: file.path, hash: file.hash });
+    // upsertFile 只会处理新增或内容/分类发生变化的文件。符号 id、行号和
+    // 重载集合都可能改变，重解析前清掉该文件的符号语义比误配给同名函数安全。
+    this.stmts.deleteSymbolSummariesForFile.run({ prefix: `${file.path}#` });
     const row = this.stmts.fileId.get(file.path) as { id: number } | undefined;
     if (!row) throw new Error(`文件写入后未能读回 id：${file.path}`);
     return row.id;
   }
 
   deleteFile(path: string): void {
+    this.stmts.deleteFileSummary.run(path);
+    this.stmts.deleteSymbolSummariesForFile.run({ prefix: `${path}#` });
     this.stmts.deleteFile.run(path);
   }
 

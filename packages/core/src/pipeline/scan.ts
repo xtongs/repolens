@@ -11,6 +11,7 @@ import { extractorFor } from "../parse/extractors/registry.js";
 import { ParserPool } from "../parse/parser-pool.js";
 import { ancestorDirs, baseName, dirOf } from "../resolve/path-utils.js";
 import { createResolvers } from "../resolve/registry.js";
+import { enrichRepository } from "../llm/enrich.js";
 import type {
   Confidence,
   DiscoveredFile,
@@ -28,6 +29,7 @@ export type ScanPhase =
   | "resolve"
   | "link"
   | "rollup"
+  | "enrich"
   | "index";
 
 export interface ScanOptions {
@@ -177,6 +179,33 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
   transact(db, () => writer.rollupDirectoryMetrics());
   report("rollup", 1, 1);
 
+  // 先把结构元数据落稳，再尝试语义增强。模型故障只能影响 M3，绝不能让
+  // 已成功的结构扫描失败或丢失。
+  setMeta(db, "repo_root", root);
+  setMeta(db, "repo_name", baseName(root) === "." ? "repo" : baseName(root));
+  setMeta(db, "scanned_at", new Date().toISOString());
+
+  report("enrich", 0, 1);
+  try {
+    stats.llm = await enrichRepository(db, root, config.llm);
+  } catch (err) {
+    stats.llm = {
+      enabled: config.llm.enabled,
+      available: false,
+      model: config.llm.model,
+      generated: 0,
+      cacheHits: 0,
+      failures: 1,
+      durationMs: 0,
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      reason: (err as Error).message,
+    };
+  }
+  report("enrich", 1, 1);
+
   report("index", 0, 1);
   transact(db, () => {
     const totals = db
@@ -189,9 +218,6 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
     stats.byLanguage = languageBreakdown(db);
     stats.durationMs = Date.now() - started;
 
-    setMeta(db, "repo_root", root);
-    setMeta(db, "repo_name", baseName(root) === "." ? "repo" : baseName(root));
-    setMeta(db, "scanned_at", new Date().toISOString());
     setMetaJson(db, "stats", stats);
   });
   report("index", 1, 1);

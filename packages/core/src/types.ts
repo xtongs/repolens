@@ -247,10 +247,24 @@ export interface LlmConfig {
   /** OpenAI 兼容的 base URL，如 `https://api.openai.com/v1` */
   baseUrl: string;
   model: string;
+  /** 文件/函数按需生成可选用更快的模型；null 表示沿用 model */
+  interactiveModel: string | null;
   /** 环境变量名，不直接存 key */
   apiKeyEnv: string;
   maxConcurrency: number;
   temperature: number;
+  /** 支持该 OpenAI 扩展字段的模型可用；不支持时可设为 null */
+  reasoningEffort: "low" | "medium" | "high" | null;
+  /** 单次生成最多返回多少 token */
+  maxOutputTokens: number;
+  /** 单次 HTTP 请求超时；本地模型也不能无限挂住扫描 */
+  requestTimeoutMs: number;
+  /** 429 / 5xx / 网络错误的重试次数 */
+  maxRetries: number;
+  /** 扫描期一个请求批量生成多少个包/目录摘要 */
+  scanBatchSize: number;
+  /** 扫描期最多调用模型多少次，防止超大仓库意外烧穿预算 */
+  scanMaxCalls: number;
   /** 生成内容的语言 */
   outputLanguage: "zh" | "en";
   enabled: boolean;
@@ -291,6 +305,26 @@ export interface ScanStats {
   packages: number;
   loc: number;
   byLanguage: Record<string, { files: number; loc: number }>;
+  /** M3；LLM 不可用时仍返回状态，结构扫描绝不因此失败 */
+  llm?: LlmRunStats | undefined;
+}
+
+export interface LlmUsage {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface LlmRunStats extends LlmUsage {
+  enabled: boolean;
+  available: boolean;
+  model: string;
+  generated: number;
+  cacheHits: number;
+  failures: number;
+  durationMs: number;
+  reason?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +480,16 @@ export interface OverviewDto {
   /** M3 */
   summary?: string | null;
   layers?: Array<{ name: string; description: string; nodeIds: string[] }> | null;
+  llm?: LlmStatusDto | null;
+}
+
+export interface LlmStatusDto {
+  enabled: boolean;
+  available: boolean;
+  model: string;
+  interactiveModel?: string | null;
+  reason?: string | null;
+  usage: LlmUsage;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +620,16 @@ export interface SymbolDetailDto {
   /** M3，按需生成 */
   summary?: string | null;
   pseudocode?: string | null;
+}
+
+/** 文件/符号按需生成接口的统一返回形状。 */
+export interface SemanticResultDto {
+  summary: string | null;
+  pseudocode?: string | null;
+  generated: boolean;
+  cacheHit: boolean;
+  model: string;
+  usage: LlmUsage;
 }
 
 export interface SearchHitDto {

@@ -1,0 +1,574 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { LlmConfig, LlmRunStats, SemanticResultDto } from "../types.js";
+import { loadConfig } from "../config.js";
+import { getMeta, setMeta, type Db, transact } from "../db/database.js";
+import { symbolKey } from "../db/queries.js";
+import { addUsage, emptyUsage, LlmUnavailableError, OpenAiCompatibleClient } from "./client.js";
+import {
+  getCachedSemantic,
+  invalidateCachedSemantic,
+  mergeLlmStatusUsage,
+  putCachedSemantic,
+} from "./cache.js";
+
+interface SemanticTarget {
+  kind: "package" | "directory";
+  key: string;
+  nodeId: string;
+  hash: string;
+  context: Record<string, unknown>;
+}
+
+interface BatchResponse {
+  items?: Array<{ key?: unknown; summary?: unknown }>;
+}
+
+interface ArchitectureResponse {
+  summary?: unknown;
+  layers?: Array<{ name?: unknown; description?: unknown; nodeIds?: unknown }>;
+}
+
+interface SymbolSemanticResponse {
+  summary?: unknown;
+  pseudocode?: unknown;
+}
+
+const inflight = new Map<string, Promise<SemanticResultDto>>();
+
+/** 扫描期语义增强：只碰 repo / package / directory，不预生成文件和函数。 */
+export async function enrichRepository(db: Db, root: string, config: LlmConfig): Promise<LlmRunStats> {
+  const started = Date.now();
+  const stats: LlmRunStats = {
+    enabled: config.enabled,
+    available: false,
+    model: config.model,
+    generated: 0,
+    cacheHits: 0,
+    failures: 0,
+    durationMs: 0,
+    ...emptyUsage(),
+  };
+
+  setMeta(db, "llm_output_language", config.outputLanguage);
+
+  // 缓存有效性只由结构指纹决定，与本次有没有 key 无关。先清过期内容，
+  // 否则断网扫描后 UI 仍会展示已经与源码不一致的旧解释。
+  const repoHash = repositoryHash(db);
+  const architectureNodes = architectureCandidates(db);
+  const architectureHash = digest([repoHash, architectureNodes, config.outputLanguage, config.model]);
+  const cachedRepo = getCachedSemantic(
+    db, "repo", ".", "summary", config.outputLanguage, repoHash, config.model,
+  );
+  const cachedLayers = layersAreFresh(db, architectureHash);
+  const targets = semanticTargets(db);
+  const missing: SemanticTarget[] = [];
+  transact(db, () => {
+    invalidateCachedSemantic(db, "repo", ".", repoHash);
+    if (!cachedLayers) db.prepare("DELETE FROM layers").run();
+    for (const target of targets) {
+      const cached = getCachedSemantic(
+        db, target.kind, target.key, "summary", config.outputLanguage, target.hash, config.model,
+      );
+      if (cached) stats.cacheHits++;
+      else {
+        invalidateCachedSemantic(db, target.kind, target.key, target.hash);
+        missing.push(target);
+      }
+    }
+  });
+  if (cachedRepo) stats.cacheHits++;
+  if (cachedLayers) stats.cacheHits++;
+
+  if (!config.enabled) {
+    stats.reason = "LLM 已关闭，使用纯结构模式";
+    finishScanStatus(db, stats, started, config.interactiveModel);
+    return stats;
+  }
+
+  let client: OpenAiCompatibleClient;
+  try {
+    client = new OpenAiCompatibleClient(config);
+    stats.available = true;
+  } catch (err) {
+    stats.reason = safeMessage(err);
+    finishScanStatus(db, stats, started, config.interactiveModel);
+    return stats;
+  }
+
+  let remainingCalls = config.scanMaxCalls;
+  const jobs: Array<() => Promise<void>> = [];
+
+  if ((!cachedRepo || !cachedLayers) && remainingCalls > 0) {
+    remainingCalls--;
+    jobs.push(async () => {
+      try {
+        const result = await client.completeJson<ArchitectureResponse>(
+          architectureSystem(config.outputLanguage),
+          JSON.stringify({
+            repository: repositoryContext(db),
+            allowedNodes: architectureNodes,
+          }),
+        );
+        addUsage(stats, result.usage);
+        const summary = cleanText(result.data.summary, 2_000);
+        const layers = cleanLayers(result.data.layers, new Set(architectureNodes.map((n) => n.id)));
+        transact(db, () => {
+          if (summary !== null) {
+            putCachedSemantic(db, {
+              targetKind: "repo",
+              targetKey: ".",
+              flavor: "summary",
+              lang: config.outputLanguage,
+              content: summary,
+              sourceHash: repoHash,
+              model: config.model,
+            });
+            stats.generated++;
+          }
+          if (layers.length > 0) {
+            db.prepare("DELETE FROM layers").run();
+            const insert = db.prepare(
+              `INSERT INTO layers (name, description, ordinal, members, source_hash, model, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            );
+            for (const [ordinal, layer] of layers.entries()) {
+              insert.run(
+                layer.name,
+                layer.description,
+                ordinal,
+                JSON.stringify(layer.nodeIds),
+                architectureHash,
+                config.model,
+                new Date().toISOString(),
+              );
+            }
+            stats.generated += layers.length;
+          }
+        });
+      } catch (err) {
+        stats.failures++;
+        stats.reason ??= safeMessage(err);
+      }
+    });
+  }
+
+  // 尽量覆盖全部目标，同时坚守 scanMaxCalls；超大仓库会自动增大每批数量。
+  const batchSize = Math.min(
+    20,
+    Math.max(config.scanBatchSize, Math.ceil(missing.length / Math.max(1, remainingCalls))),
+  );
+  for (let start = 0; start < missing.length && remainingCalls > 0; start += batchSize) {
+    const batch = missing.slice(start, start + batchSize);
+    remainingCalls--;
+    jobs.push(async () => {
+      try {
+        const result = await client.completeJson<BatchResponse>(
+          summarySystem(config.outputLanguage),
+          JSON.stringify({ items: batch.map((item) => ({ key: item.key, ...item.context })) }),
+        );
+        addUsage(stats, result.usage);
+        const byKey = new Map(
+          (result.data.items ?? [])
+            .map((item) => [typeof item.key === "string" ? item.key : "", cleanText(item.summary, 600)] as const)
+            .filter((entry): entry is readonly [string, string] => entry[0] !== "" && entry[1] !== null),
+        );
+        transact(db, () => {
+          for (const target of batch) {
+            const summary = byKey.get(target.key);
+            if (!summary) continue;
+            putCachedSemantic(db, {
+              targetKind: target.kind,
+              targetKey: target.key,
+              flavor: "summary",
+              lang: config.outputLanguage,
+              content: summary,
+              sourceHash: target.hash,
+              model: config.model,
+            });
+            stats.generated++;
+          }
+        });
+      } catch (err) {
+        stats.failures++;
+        stats.reason ??= safeMessage(err);
+      }
+    });
+  }
+
+  await Promise.all(jobs.map((job) => job()));
+  if (jobs.length > 0 && stats.failures === jobs.length) {
+    stats.available = false;
+  }
+  finishScanStatus(db, stats, started, config.interactiveModel);
+  return stats;
+}
+
+/** 详情抽屉触发：同一次生成同时拿摘要和伪代码，并按符号源码 hash 缓存。 */
+export async function generateSymbolSemantics(
+  db: Db,
+  root: string,
+  symbolId: number,
+): Promise<SemanticResultDto> {
+  const key = `${root}:symbol:${symbolId}`;
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const task = generateSymbolSemanticsInner(db, root, symbolId).finally(() => inflight.delete(key));
+  inflight.set(key, task);
+  return task;
+}
+
+async function generateSymbolSemanticsInner(
+  db: Db,
+  root: string,
+  symbolId: number,
+): Promise<SemanticResultDto> {
+  const config = loadConfig(root).llm;
+  const row = db
+    .prepare(
+      `SELECT s.name, s.kind, s.container, s.signature, s.doc, s.hash, s.start_byte AS startByte,
+              s.end_byte AS endByte, s.start_line AS startLine, s.end_line AS endLine,
+              f.path AS filePath, f.language
+       FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`,
+    )
+    .get(symbolId) as
+    | {
+        name: string; kind: string; container: string | null; signature: string | null;
+        doc: string | null; hash: string; startByte: number; endByte: number;
+        startLine: number; endLine: number; filePath: string; language: string;
+      }
+    | undefined;
+  if (!row) throw new Error("符号不存在");
+
+  const targetKey = symbolKey(row.filePath, row.container, row.name, row.startLine);
+  const lang = config.outputLanguage;
+  const requestConfig = interactiveConfig(config);
+  const summary = getCachedSemantic(
+    db, "symbol", targetKey, "summary", lang, row.hash, requestConfig.model,
+  );
+  const pseudocode = getCachedSemantic(
+    db, "symbol", targetKey, "pseudocode", lang, row.hash, requestConfig.model,
+  );
+  if (summary && pseudocode) {
+    return {
+      summary: summary.content,
+      pseudocode: pseudocode.content,
+      generated: false,
+      cacheHit: true,
+      model: summary.model,
+      usage: emptyUsage(),
+    };
+  }
+
+  const client = new OpenAiCompatibleClient(requestConfig);
+  const source = readSymbolSource(root, row.filePath, row.startByte, row.endByte);
+  const relations = symbolRelations(db, symbolId);
+  const result = await client.completeJson<SymbolSemanticResponse>(
+    symbolSystem(config.outputLanguage),
+    JSON.stringify({
+      symbol: {
+        name: row.container ? `${row.container}.${row.name}` : row.name,
+        kind: row.kind,
+        language: row.language,
+        file: row.filePath,
+        lines: [row.startLine, row.endLine],
+        signature: row.signature,
+        documentation: row.doc,
+        callers: relations.callers,
+        callees: relations.callees,
+        source,
+      },
+    }),
+    { maxOutputTokens: 384 },
+  );
+  const generatedSummary = cleanText(result.data.summary, 1_000);
+  const generatedPseudocode = cleanText(result.data.pseudocode, 8_000);
+  if (generatedSummary === null || generatedPseudocode === null) {
+    throw new Error("LLM 返回缺少 summary 或 pseudocode");
+  }
+
+  transact(db, () => {
+    invalidateCachedSemantic(db, "symbol", targetKey, row.hash);
+    for (const [flavor, content] of [
+      ["summary", generatedSummary],
+      ["pseudocode", generatedPseudocode],
+    ] as const) {
+      putCachedSemantic(db, {
+        targetKind: "symbol",
+        targetKey,
+        flavor,
+        lang,
+        content,
+        sourceHash: row.hash,
+        model: requestConfig.model,
+      });
+    }
+    mergeLlmStatusUsage(db, {
+      enabled: true,
+      available: true,
+      model: config.model,
+      interactiveModel: config.interactiveModel,
+      reason: null,
+      usage: result.usage,
+    });
+  });
+
+  return {
+    summary: generatedSummary,
+    pseudocode: generatedPseudocode,
+    generated: true,
+    cacheHit: false,
+    model: requestConfig.model,
+    usage: result.usage,
+  };
+}
+
+/** 文件摘要同样按需，保证扫描期仍然只有包/目录级请求。 */
+export async function generateFileSummary(
+  db: Db,
+  root: string,
+  fileId: number,
+): Promise<SemanticResultDto> {
+  const key = `${root}:file:${fileId}`;
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const task = generateFileSummaryInner(db, root, fileId).finally(() => inflight.delete(key));
+  inflight.set(key, task);
+  return task;
+}
+
+async function generateFileSummaryInner(db: Db, root: string, fileId: number): Promise<SemanticResultDto> {
+  const config = loadConfig(root).llm;
+  const row = db.prepare("SELECT path, language, hash FROM files WHERE id = ?").get(fileId) as
+    | { path: string; language: string; hash: string }
+    | undefined;
+  if (!row) throw new Error("文件不存在");
+  const cached = getCachedSemantic(
+    db, "file", row.path, "summary", config.outputLanguage, row.hash,
+    interactiveConfig(config).model,
+  );
+  if (cached) {
+    return { summary: cached.content, generated: false, cacheHit: true, model: cached.model, usage: emptyUsage() };
+  }
+
+  const requestConfig = interactiveConfig(config);
+  const client = new OpenAiCompatibleClient(requestConfig);
+  const symbols = db.prepare(
+    "SELECT name, kind, signature, doc FROM symbols WHERE file_id = ? ORDER BY start_line LIMIT 80",
+  ).all(fileId);
+  const imports = db.prepare(
+    "SELECT raw_source AS source FROM imports WHERE file_id = ? ORDER BY line LIMIT 80",
+  ).all(fileId);
+  const source = readFileCapped(root, row.path, 24_000);
+  const result = await client.completeJson<{ summary?: unknown }>(
+    fileSystem(config.outputLanguage),
+    JSON.stringify({ file: { path: row.path, language: row.language, symbols, imports, source } }),
+  );
+  const generatedSummary = cleanText(result.data.summary, 1_000);
+  if (generatedSummary === null) throw new Error("LLM 返回缺少 summary");
+  transact(db, () => {
+    invalidateCachedSemantic(db, "file", row.path, row.hash);
+    putCachedSemantic(db, {
+      targetKind: "file", targetKey: row.path, flavor: "summary",
+      lang: config.outputLanguage, content: generatedSummary, sourceHash: row.hash, model: requestConfig.model,
+    });
+    mergeLlmStatusUsage(db, {
+      enabled: true, available: true, model: config.model,
+      interactiveModel: config.interactiveModel, reason: null, usage: result.usage,
+    });
+  });
+  return { summary: generatedSummary, generated: true, cacheHit: false, model: requestConfig.model, usage: result.usage };
+}
+
+function semanticTargets(db: Db): SemanticTarget[] {
+  const packages = db.prepare(
+    `SELECT p.name, p.dir, p.manager, COUNT(f.id) AS files, COALESCE(SUM(f.loc), 0) AS loc
+     FROM packages p LEFT JOIN files f ON f.package_id = p.id AND f.role = 'source'
+     GROUP BY p.id HAVING files > 0 ORDER BY loc DESC`,
+  ).all() as Array<{ name: string; dir: string; manager: string; files: number; loc: number }>;
+  const packageTargets = packages.map((row): SemanticTarget => {
+    const fileRows = filesUnder(db, row.dir, 30);
+    return {
+      kind: "package", key: row.name, nodeId: `pkg:${row.name}`,
+      hash: targetHash(db, row.dir),
+      context: { kind: "package", path: row.dir, manager: row.manager, files: row.files, loc: row.loc, examples: fileRows },
+    };
+  });
+
+  const directories = db.prepare(
+    `SELECT d.path, d.loc, d.file_count AS files, d.symbol_count AS symbols
+     FROM directories d
+     WHERE EXISTS (SELECT 1 FROM files f WHERE f.role = 'source' AND (f.dir_path = d.path OR f.path LIKE d.path || '/%'))
+     ORDER BY d.loc DESC`,
+  ).all() as Array<{ path: string; loc: number; files: number; symbols: number }>;
+  const directoryTargets = directories.map((row): SemanticTarget => ({
+    kind: "directory", key: row.path, nodeId: `dir:${row.path}`,
+    hash: targetHash(db, row.path),
+    context: { kind: "directory", path: row.path, files: row.files, loc: row.loc, symbols: row.symbols, examples: filesUnder(db, row.path, 20) },
+  }));
+  return [...packageTargets, ...directoryTargets];
+}
+
+function filesUnder(db: Db, dir: string, limit: number): unknown[] {
+  const root = dir === ".";
+  return db.prepare(
+    `SELECT f.path, f.language, f.loc,
+            (SELECT GROUP_CONCAT(name, ', ') FROM (SELECT s.name FROM symbols s WHERE s.file_id = f.id ORDER BY s.exported DESC, s.start_line LIMIT 8)) AS symbols
+     FROM files f WHERE f.role = 'source' AND ${root ? "1 = 1" : "(f.dir_path = ? OR f.path LIKE ? || '/%')"}
+     ORDER BY f.loc DESC LIMIT ?`,
+  ).all(...(root ? [limit] : [dir, dir, limit]));
+}
+
+function targetHash(db: Db, dir: string): string {
+  const root = dir === ".";
+  const rows = db.prepare(
+    `SELECT path, hash FROM files WHERE role = 'source' AND ${root ? "1 = 1" : "(dir_path = ? OR path LIKE ? || '/%')"} ORDER BY path`,
+  ).all(...(root ? [] : [dir, dir])) as Array<{ path: string; hash: string }>;
+  return digest(rows);
+}
+
+function repositoryHash(db: Db): string {
+  return targetHash(db, ".");
+}
+
+function repositoryContext(db: Db): Record<string, unknown> {
+  const totals = db.prepare(
+    "SELECT COUNT(*) AS files, COALESCE(SUM(loc), 0) AS loc FROM files WHERE role = 'source'",
+  ).get();
+  const languages = db.prepare(
+    "SELECT language, COUNT(*) AS files, SUM(loc) AS loc FROM files WHERE role = 'source' GROUP BY language ORDER BY loc DESC",
+  ).all();
+  const packages = db.prepare(
+    `SELECT p.name, p.dir, COUNT(f.id) AS files, COALESCE(SUM(f.loc), 0) AS loc
+     FROM packages p LEFT JOIN files f ON f.package_id = p.id AND f.role = 'source' GROUP BY p.id ORDER BY loc DESC`,
+  ).all();
+  return { name: getMeta(db, "repo_name"), totals, languages, packages };
+}
+
+function architectureCandidates(db: Db): Array<{ id: string; label: string; path: string }> {
+  const packages = db.prepare(
+    `SELECT p.name, p.dir, COUNT(f.id) AS files FROM packages p
+     LEFT JOIN files f ON f.package_id = p.id AND f.role = 'source'
+     GROUP BY p.id HAVING files > 0 ORDER BY files DESC`,
+  ).all() as Array<{ name: string; dir: string; files: number }>;
+  if (packages.length >= 2) return packages.map((p) => ({ id: `pkg:${p.name}`, label: p.name, path: p.dir }));
+  return (db.prepare(
+    "SELECT path, name AS label FROM directories WHERE depth = 1 AND file_count > 0 ORDER BY loc DESC LIMIT 100",
+  ).all() as Array<{ path: string; label: string }>).map((d) => ({ id: `dir:${d.path}`, label: d.label, path: d.path }));
+}
+
+function layersAreFresh(db: Db, hash: string): boolean {
+  const row = db.prepare("SELECT COUNT(*) AS n, MIN(source_hash = ?) AS fresh FROM layers").get(hash) as { n: number; fresh: number | null };
+  return row.n > 0 && row.fresh === 1;
+}
+
+function symbolRelations(db: Db, symbolId: number): { callers: string[]; callees: string[] } {
+  const query = (direction: "callers" | "callees") =>
+    (db.prepare(direction === "callers"
+      ? `SELECT s.name, f.path FROM edges e JOIN symbols s ON s.id = e.src_id JOIN files f ON f.id = s.file_id
+         WHERE e.type = 'calls' AND e.src_kind = 'symbol' AND e.dst_kind = 'symbol' AND e.dst_id = ? LIMIT 30`
+      : `SELECT s.name, f.path FROM edges e JOIN symbols s ON s.id = e.dst_id JOIN files f ON f.id = s.file_id
+         WHERE e.type = 'calls' AND e.src_kind = 'symbol' AND e.dst_kind = 'symbol' AND e.src_id = ? LIMIT 30`)
+      .all(symbolId) as Array<{ name: string; path: string }>).map((row) => `${row.name} (${row.path})`);
+  return { callers: query("callers"), callees: query("callees") };
+}
+
+function readSymbolSource(root: string, path: string, startByte: number, endByte: number): string {
+  try {
+    const bytes = readFileSync(join(root, path));
+    return bytes.subarray(startByte, Math.min(endByte, startByte + 40_000)).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function readFileCapped(root: string, path: string, maxChars: number): string {
+  try {
+    return readFileSync(join(root, path), "utf8").slice(0, maxChars);
+  } catch {
+    return "";
+  }
+}
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function cleanText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text === "" ? null : text.slice(0, maxLength);
+}
+
+function cleanLayers(
+  input: ArchitectureResponse["layers"],
+  allowed: ReadonlySet<string>,
+): Array<{ name: string; description: string; nodeIds: string[] }> {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: Array<{ name: string; description: string; nodeIds: string[] }> = [];
+  for (const raw of input.slice(0, 12)) {
+    const name = cleanText(raw.name, 80);
+    if (!name || seen.has(name)) continue;
+    const nodeIds = Array.isArray(raw.nodeIds)
+      ? [...new Set(raw.nodeIds.filter((id): id is string => typeof id === "string" && allowed.has(id)))]
+      : [];
+    if (nodeIds.length === 0) continue;
+    seen.add(name);
+    out.push({ name, description: cleanText(raw.description, 400) ?? "", nodeIds });
+  }
+  return out;
+}
+
+function finishScanStatus(
+  db: Db,
+  stats: LlmRunStats,
+  started: number,
+  interactiveModel: string | null,
+): void {
+  stats.durationMs = Date.now() - started;
+  mergeLlmStatusUsage(db, {
+    enabled: stats.enabled, available: stats.available, model: stats.model,
+    interactiveModel,
+    reason: stats.reason ?? null,
+    usage: { requests: stats.requests, inputTokens: stats.inputTokens, outputTokens: stats.outputTokens, totalTokens: stats.totalTokens },
+  });
+}
+
+function safeMessage(error: unknown): string {
+  if (error instanceof LlmUnavailableError || error instanceof Error) return error.message.slice(0, 500);
+  return String(error).slice(0, 500);
+}
+
+function interactiveConfig(config: LlmConfig): LlmConfig {
+  return config.interactiveModel === null
+    ? config
+    : { ...config, model: config.interactiveModel };
+}
+
+function languageName(lang: "zh" | "en"): string {
+  return lang === "zh" ? "简体中文" : "English";
+}
+
+function architectureSystem(lang: "zh" | "en"): string {
+  return `你是代码架构分析器。只依据输入的确定性结构数据归纳语义，不得编造调用关系。用${languageName(lang)}输出。` +
+    `只返回 JSON：{"summary":"仓库概览（2-4句）","layers":[{"name":"层名","description":"一句说明","nodeIds":["只能来自 allowedNodes.id"]}]}。` +
+    `每个节点最多属于一个主层；无法判断的节点可不分层。`;
+}
+
+function summarySystem(lang: "zh" | "en"): string {
+  return `你是代码仓库摘要器。根据路径、语言、指标和代表性符号，为每个包或目录写一句准确说明。用${languageName(lang)}输出。` +
+    `不得推断输入中没有的业务事实。只返回 JSON：{"items":[{"key":"原样复制输入 key","summary":"一句话"}]}。`;
+}
+
+function symbolSystem(lang: "zh" | "en"): string {
+  return `你是代码解释器。只根据给定源码、签名和确定性调用关系解释符号。用${languageName(lang)}输出。` +
+    `只返回 JSON：{"summary":"一句话说明用途和关键行为","pseudocode":"逻辑伪代码"}。` +
+    `伪代码最多 12 行，不要复述语法，要呈现分支、循环、错误处理、输入输出；不得声称源码被截断。`;
+}
+
+function fileSystem(lang: "zh" | "en"): string {
+  return `你是代码文件摘要器。根据源码、导入和符号列表，用${languageName(lang)}写一句准确摘要。` +
+    `不得编造。只返回 JSON：{"summary":"一句话"}。`;
+}

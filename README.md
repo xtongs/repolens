@@ -91,6 +91,40 @@ pnpm lens scan ~/Workspace/pi
 pnpm lens serve ~/Workspace/pi -p 7174
 ```
 
+## LLM 语义层
+
+RepoLens 的结构图和调用关系始终由解析器生成；LLM 只补充明确标为 **AI 生成** 的
+仓库/包/目录摘要、架构分层、文件摘要和函数伪代码。模型不可用时会自动退化为纯结构模式。
+
+在目标仓库根目录创建 `.repolens.json`（建议加入该仓库的 `.gitignore`）：
+
+```json
+{
+  "llm": {
+    "baseUrl": "http://127.0.0.1:8317/v1",
+    "model": "GPT-5.4",
+    "interactiveModel": "GPT-5.2",
+    "apiKeyEnv": "TRAEX_BRIDGE_API_KEY",
+    "outputLanguage": "zh",
+    "enabled": true
+  }
+}
+```
+
+Key 只通过环境变量读取，不要写进 JSON：
+
+```bash
+export TRAEX_BRIDGE_API_KEY="$(cat ~/.traex-bridge/api-key)"
+pnpm lens scan /path/to/some-repo
+```
+
+扫描期只生成仓库、包和目录级语义；文件摘要和函数伪代码在详情抽屉中点击时生成，
+并按源码内容指纹缓存在 `.repolens/index.db`。代码未变时不会重复请求模型。兼容 Ollama
+等无需鉴权的本地接口时，把 `apiKeyEnv` 配成空字符串即可。完整可选项还包括
+`interactiveModel` 可给详情抽屉选一个低延迟模型（不填就沿用 `model`）。其他可选项包括
+`maxConcurrency`、`reasoningEffort`、`maxOutputTokens`、`requestTimeoutMs`、`maxRetries`、`scanBatchSize` 和
+`scanMaxCalls`（扫描期硬上限为 99 次）。
+
 ## 界面能看到什么
 
 - **架构图**：包 → 目录 → 文件 → 函数逐层展开，双击展开/收起，Alt+双击聚焦

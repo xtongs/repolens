@@ -28,6 +28,17 @@ export function formatScanReport(root: string, stats: ScanStats): string {
   if (stats.parseErrors > 0) {
     lines.push(row("语法警告", `${stats.parseErrors} 个文件含无法解析的节点`));
   }
+  if (stats.llm) {
+    const llm = stats.llm;
+    lines.push(
+      row(
+        "LLM",
+        llm.available
+          ? `${llm.model} · ${llm.generated} 条生成 · ${llm.cacheHits} 条缓存 · ${formatNumber(llm.totalTokens)} tokens${llm.failures > 0 ? ` · ${llm.failures} 次失败` : ""}`
+          : `纯结构模式（${llm.reason ?? "不可用"}）`,
+      ),
+    );
+  }
 
   const langs = Object.entries(stats.byLanguage)
     .filter(([, v]) => v.loc > 0)

@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { forgetRepo, indexPath } from "@repolens/core";
+import { forgetRepo, indexPath, isIndexCurrent } from "@repolens/core";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
@@ -37,6 +37,9 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
 
   if (!existsSync(dbPath)) {
     throw new Error(`索引不存在：${dbPath}\n先运行 \`repolens scan ${options.repoRoot}\``);
+  }
+  if (!isIndexCurrent(dbPath)) {
+    throw new Error(`索引版本过期：${dbPath}\n运行 \`repolens scan ${options.repoRoot} --fresh\` 重建索引`);
   }
 
   const pool = new RepoPool(repoRoot);

@@ -60,6 +60,7 @@ function CanvasInner() {
   const hovered = useAppStore((s) => s.hovered);
   const selected = useAppStore((s) => s.selected);
   const loading = useAppStore((s) => s.loadingScopes.length > 0);
+  const overview = useAppStore((s) => s.overview);
   // zustand 里的动作定义一次就不再变，单独取出来可以让下面的
   // useCallback 真正稳定下来
   const hover = useAppStore((s) => s.hover);
@@ -278,6 +279,15 @@ function CanvasInner() {
       {layout.pending && (
         <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-1 text-[11px] text-[var(--color-ink-muted)]">
           正在布局…
+        </div>
+      )}
+
+      {overview?.summary && !callGraph && (
+        <div className="pointer-events-none absolute left-12 top-4 max-w-[420px] rounded-lg border border-[var(--color-accent)]/20 bg-[var(--color-surface)]/90 px-3 py-2 shadow-lg backdrop-blur">
+          <div className="text-[9px] uppercase tracking-wider text-[var(--color-accent)]">AI 仓库概览</div>
+          <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+            {overview.summary}
+          </p>
         </div>
       )}
 

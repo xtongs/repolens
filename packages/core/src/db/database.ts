@@ -25,6 +25,14 @@ export function openDb(dbPath: string, opts: OpenOptions = {}): Db {
       throw new Error(`索引不存在：${dbPath}\n先运行 \`repolens scan\``);
     }
     const db = new Database(dbPath, { readonly: true });
+    const version = readSchemaVersion(db);
+    if (version !== SCHEMA_VERSION) {
+      db.close();
+      throw new Error(
+        `索引版本过期（当前 ${version ?? "未知"}，需要 ${SCHEMA_VERSION}）：${dbPath}\n` +
+          "运行 `repolens scan --fresh` 重建索引",
+      );
+    }
     db.pragma("journal_mode = WAL");
     return db;
   }
@@ -53,6 +61,20 @@ export function openDb(dbPath: string, opts: OpenOptions = {}): Db {
   db.exec(SCHEMA_SQL);
   setMeta(db, "schema_version", SCHEMA_VERSION);
   return db;
+}
+
+/** `open` 用它判断已有索引能否直接服务；只读探测，不触发迁移或重建。 */
+export function isIndexCurrent(dbPath: string): boolean {
+  if (!existsSync(dbPath)) return false;
+  let db: Database.Database | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    return readSchemaVersion(db) === SCHEMA_VERSION;
+  } catch {
+    return false;
+  } finally {
+    db?.close();
+  }
 }
 
 function readSchemaVersion(db: Db): string | null {

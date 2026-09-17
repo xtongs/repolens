@@ -184,6 +184,7 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
             </div>
             <div className="flex items-center gap-2 text-[10.5px] text-[var(--color-ink-faint)]">
               <span>{formatCount(value)}</span>
+              {dto.layer && <span className="max-w-20 truncate text-[var(--color-accent)]">· {dto.layer}</span>}
               {dto.childCount > 0 && dto.kind !== "symbol" && (
                 <span className="text-[var(--color-ink-faint)]">· {dto.childCount} 项</span>
               )}

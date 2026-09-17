@@ -58,10 +58,17 @@ export function HoverCard() {
         </div>
       )}
 
+      {node.layer && (
+        <div className="mt-1.5 text-[10px] text-[var(--color-accent)]">AI 架构层 · {node.layer}</div>
+      )}
+
       {node.summary && (
-        <p className="mt-2 line-clamp-3 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
-          {node.summary}
-        </p>
+        <div className="mt-2">
+          <div className="text-[9px] uppercase tracking-wider text-[var(--color-accent)]">AI 生成</div>
+          <p className="mt-0.5 line-clamp-3 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
+            {node.summary}
+          </p>
+        </div>
       )}
 
       <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">

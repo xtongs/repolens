@@ -10,6 +10,10 @@ import {
   getSource,
   getSymbolDetail,
   getTree,
+  generateFileSummary,
+  generateSymbolSemantics,
+  indexPath,
+  openDb,
   search,
   type Confidence,
   type Db,
@@ -23,7 +27,7 @@ export interface ApiDeps {
 }
 
 /**
- * 只读 HTTP API。
+ * HTTP API。除两个带本地意图标记的 semantic POST 外均为只读。
  *
  * 所有端点都是「按需拉一层」的形状，没有任何返回全图的端点——
  * 这是 docs/INTERACTION.md「转移」策略的硬约束：前端不持有全图。
@@ -101,6 +105,44 @@ export function createApi(deps: ApiDeps): Hono {
     return detail ? c.json(detail) : c.json({ error: "符号不存在" }, 404);
   });
 
+  // 语义生成是唯一写接口，但目标只能是当前索引里已有的数值 id，不能传路径。
+  // 写连接按请求短暂打开，读连接仍保持 readonly，安全边界不被扩大。
+  app.post("/semantic/symbol/:id", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "generate-semantic") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    const id = numericId(c.req.param("id"));
+    if (id === null) return c.json({ error: "非法的符号 id" }, 400);
+    if (getSymbolDetail(db, id) === null) return c.json({ error: "符号不存在" }, 404);
+    return withWritableDb(repoRoot, async (writeDb) => {
+      try {
+        return c.json(await generateSymbolSemantics(writeDb, repoRoot, id));
+      } catch (err) {
+        const message = (err as Error).message;
+        const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
+        return c.json({ error: message }, status);
+      }
+    });
+  });
+
+  app.post("/semantic/file/:id", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "generate-semantic") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    const id = numericId(c.req.param("id"));
+    if (id === null) return c.json({ error: "非法的文件 id" }, 400);
+    if (getFileDetail(db, id) === null) return c.json({ error: "文件不存在" }, 404);
+    return withWritableDb(repoRoot, async (writeDb) => {
+      try {
+        return c.json(await generateFileSummary(writeDb, repoRoot, id));
+      } catch (err) {
+        const message = (err as Error).message;
+        const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
+        return c.json({ error: message }, status);
+      }
+    });
+  });
+
   app.get("/source/:id", (c) => {
     const id = numericId(c.req.param("id"));
     if (id === null) return c.json({ error: "非法的文件 id" }, 400);
@@ -118,6 +160,15 @@ export function createApi(deps: ApiDeps): Hono {
   });
 
   return app;
+}
+
+async function withWritableDb<T>(repoRoot: string, run: (db: Db) => Promise<T>): Promise<T> {
+  const writeDb = openDb(indexPath(repoRoot));
+  try {
+    return await run(writeDb);
+  } finally {
+    writeDb.close();
+  }
 }
 
 // ---------------------------------------------------------------------------

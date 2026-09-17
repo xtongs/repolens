@@ -71,8 +71,8 @@ export function DetailDrawer() {
       </div>
 
       <div className="thin-scroll flex-1 overflow-y-auto">
-        {isSymbol && <SymbolBody id={selected} tab={tab} />}
-        {isFile && <FileBody id={selected} tab={tab} />}
+        {isSymbol && <SymbolBody key={selected} id={selected} tab={tab} />}
+        {isFile && <FileBody key={selected} id={selected} tab={tab} />}
         {!isSymbol && !isFile && <ScopeBody id={selected} />}
       </div>
     </aside>
@@ -86,11 +86,15 @@ export function DetailDrawer() {
 function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
   const [detail, setDetail] = useState<SymbolDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [semanticLoading, setSemanticLoading] = useState(false);
+  const [semanticError, setSemanticError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setDetail(null);
     setError(null);
+    setSemanticLoading(false);
+    setSemanticError(null);
     void api
       .symbol(id)
       .then((d) => !cancelled && setDetail(d))
@@ -99,6 +103,29 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
       cancelled = true;
     };
   }, [id]);
+
+  const generateSemantics = () => {
+    if (semanticLoading) return;
+    setSemanticLoading(true);
+    setSemanticError(null);
+    void api
+      .generateSymbolSemantics(id)
+      .then((result) => {
+        setDetail((current) =>
+          current?.id === id
+            ? { ...current, summary: result.summary, pseudocode: result.pseudocode ?? null }
+            : current,
+        );
+      })
+      .catch((e: Error) => setSemanticError(e.message))
+      .finally(() => setSemanticLoading(false));
+  };
+
+  // 严格按需：只有用户真的切到伪代码标签才发模型请求。
+  useEffect(() => {
+    if (tab !== "pseudocode" || detail === null || detail.pseudocode || semanticLoading || semanticError) return;
+    generateSemantics();
+  }, [tab, detail, semanticLoading, semanticError]);
 
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
@@ -152,13 +179,23 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
   if (tab === "pseudocode") {
     return (
       <div className="p-3">
+        <div className="mb-2 text-[9.5px] uppercase tracking-wider text-[var(--color-accent)]">
+          AI 生成 · 可能不准确
+        </div>
         {detail.pseudocode ? (
           <pre className="mono whitespace-pre-wrap rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.pseudocode}
           </pre>
+        ) : semanticLoading ? (
+          <SemanticLoading label="正在理解这个符号并生成伪代码…" />
+        ) : semanticError ? (
+          <div>
+            <Empty>{semanticError}</Empty>
+            <RetryButton onClick={generateSemantics}>重新生成</RetryButton>
+          </div>
         ) : (
           <Empty>
-            伪代码由 LLM 按需生成，属于 M3 里程碑的能力。当前索引里还没有这个符号的伪代码。
+            当前索引里还没有这个符号的伪代码。
           </Empty>
         )}
       </div>
@@ -238,13 +275,22 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
         </div>
       )}
 
-      {detail.summary && (
+      {detail.summary ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
           <Label ai>AI 摘要</Label>
           <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
         </div>
+      ) : semanticLoading ? (
+        <SemanticLoading label="正在生成函数摘要与伪代码…" />
+      ) : semanticError ? (
+        <div className="mt-2">
+          <div className="text-[11px] text-[var(--color-warn)]">{semanticError}</div>
+          <RetryButton onClick={generateSemantics}>重试</RetryButton>
+        </div>
+      ) : (
+        <RetryButton onClick={generateSemantics}>生成 AI 摘要与伪代码</RetryButton>
       )}
 
       <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--color-line)] pt-2.5">
@@ -377,11 +423,15 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
   const select = useAppStore((s) => s.select);
   const [detail, setDetail] = useState<FileDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [semanticLoading, setSemanticLoading] = useState(false);
+  const [semanticError, setSemanticError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setDetail(null);
     setError(null);
+    setSemanticLoading(false);
+    setSemanticError(null);
     void api
       .file(id)
       .then((d) => !cancelled && setDetail(d))
@@ -390,6 +440,19 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
       cancelled = true;
     };
   }, [id]);
+
+  const generateSummary = () => {
+    if (semanticLoading) return;
+    setSemanticLoading(true);
+    setSemanticError(null);
+    void api
+      .generateFileSummary(id)
+      .then((result) =>
+        setDetail((current) => (current?.id === id ? { ...current, summary: result.summary } : current)),
+      )
+      .catch((e: Error) => setSemanticError(e.message))
+      .finally(() => setSemanticLoading(false));
+  };
 
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
@@ -458,6 +521,24 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
         </div>
       )}
 
+      {detail.summary ? (
+        <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
+          <Label ai>AI 摘要</Label>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
+            {detail.summary}
+          </p>
+        </div>
+      ) : semanticLoading ? (
+        <SemanticLoading label="正在生成文件摘要…" />
+      ) : semanticError ? (
+        <div className="mt-2">
+          <div className="text-[11px] text-[var(--color-warn)]">{semanticError}</div>
+          <RetryButton onClick={generateSummary}>重试</RetryButton>
+        </div>
+      ) : (
+        <RetryButton onClick={generateSummary}>生成 AI 文件摘要</RetryButton>
+      )}
+
       <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--color-line)] pt-2.5">
         <Metric label="代码行" value={formatCount(detail.loc)} />
         <Metric label="符号" value={String(detail.symbols.length)} />
@@ -517,6 +598,16 @@ function ScopeBody({ id }: { id: string }) {
       {node.path && (
         <div className="mono mt-1 break-all text-[10.5px] text-[var(--color-ink-faint)]">
           {node.path}
+        </div>
+      )}
+
+      {node.layer && (
+        <div className="mt-2 text-[10px] text-[var(--color-accent)]">AI 架构层 · {node.layer}</div>
+      )}
+      {node.summary && (
+        <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
+          <Label ai>AI 摘要</Label>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">{node.summary}</p>
         </div>
       )}
 
@@ -626,5 +717,26 @@ function Skeleton() {
         />
       ))}
     </div>
+  );
+}
+
+function SemanticLoading({ label }: { label: string }) {
+  return (
+    <div className="mt-2 flex items-center gap-2 rounded border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/5 px-2.5 py-2 text-[11px] text-[var(--color-ink-muted)]">
+      <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]" />
+      {label}
+    </div>
+  );
+}
+
+function RetryButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-2 rounded border border-[var(--color-accent)]/40 px-2 py-1 text-[10.5px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent)]/10"
+    >
+      {children}
+    </button>
   );
 }

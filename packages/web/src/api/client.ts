@@ -6,6 +6,7 @@ import type {
   OverviewDto,
   ReposDto,
   SearchHitDto,
+  SemanticResultDto,
   SourceSliceDto,
   SymbolDetailDto,
   TreeNodeDto,
@@ -48,6 +49,18 @@ async function get<T>(path: string, params: Record<string, string | number | boo
   const query = search.toString();
   const response = await fetch(`${BASE}${path}${query.length > 0 ? `?${query}` : ""}`);
 
+  if (!response.ok) throw await toError(response);
+  return (await response.json()) as T;
+}
+
+async function post<T>(path: string): Promise<T> {
+  const search = new URLSearchParams();
+  if (activeRepo !== undefined) search.set("repo", activeRepo);
+  const query = search.toString();
+  const response = await fetch(`${BASE}${path}${query.length > 0 ? `?${query}` : ""}`, {
+    method: "POST",
+    headers: { "x-repolens-intent": "generate-semantic" },
+  });
   if (!response.ok) throw await toError(response);
   return (await response.json()) as T;
 }
@@ -124,6 +137,12 @@ export const api = {
   file: (id: string) => get<FileDetailDto>(`/file/${stripPrefix(id)}`),
 
   symbol: (id: string) => get<SymbolDetailDto>(`/symbol/${stripPrefix(id)}`),
+
+  generateSymbolSemantics: (id: string) =>
+    post<SemanticResultDto>(`/semantic/symbol/${stripPrefix(id)}`),
+
+  generateFileSummary: (id: string) =>
+    post<SemanticResultDto>(`/semantic/file/${stripPrefix(id)}`),
 
   source: (fileId: string, from?: number, to?: number) =>
     get<SourceSliceDto>(`/source/${stripPrefix(fileId)}`, { from, to }),

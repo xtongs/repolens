@@ -34,6 +34,7 @@ export function TopBar() {
       </button>
 
       <FindingsPill />
+      <LlmPill />
 
       <div className="flex min-w-0 items-baseline gap-2">
         <RepoPicker />
@@ -77,6 +78,29 @@ export function TopBar() {
         </button>
       </div>
     </header>
+  );
+}
+
+function LlmPill() {
+  const overview = useAppStore((s) => s.overview);
+  const llm = overview?.llm;
+  if (!llm) return null;
+  const ready = llm.enabled && llm.available;
+  return (
+    <span
+      className={`rounded-full border px-1.5 py-0.5 text-[9.5px] ${
+        ready
+          ? "border-[var(--color-accent)]/40 text-[var(--color-accent)]"
+          : "border-[var(--color-line)] text-[var(--color-ink-faint)]"
+      }`}
+      title={
+        ready
+          ? `${llm.model}${llm.interactiveModel ? ` / 交互 ${llm.interactiveModel}` : ""} · 累计 ${llm.usage.totalTokens.toLocaleString()} tokens`
+          : (llm.reason ?? "纯结构模式")
+      }
+    >
+      AI {ready ? "已就绪" : "未启用"}
+    </span>
   );
 }
 

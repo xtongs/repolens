@@ -15,9 +15,16 @@ export const DEFAULT_CONFIG: RepolensConfig = {
   llm: {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
+    interactiveModel: null,
     apiKeyEnv: "OPENAI_API_KEY",
     maxConcurrency: 4,
     temperature: 0.1,
+    reasoningEffort: null,
+    maxOutputTokens: 1200,
+    requestTimeoutMs: 30_000,
+    maxRetries: 2,
+    scanBatchSize: 8,
+    scanMaxCalls: 99,
     outputLanguage: "zh",
     enabled: true,
   },
@@ -49,6 +56,38 @@ function mergeConfig(base: RepolensConfig, patch: unknown): RepolensConfig {
     maxFileBytes: p.maxFileBytes ?? base.maxFileBytes,
     maxNodesPerView: p.maxNodesPerView ?? base.maxNodesPerView,
     defaultRoles: p.defaultRoles ?? base.defaultRoles,
-    llm: { ...base.llm, ...(p.llm ?? {}) },
+    llm: normalizeLlmConfig({ ...base.llm, ...(p.llm ?? {}) }),
   };
+}
+
+function normalizeLlmConfig(config: RepolensConfig["llm"]): RepolensConfig["llm"] {
+  return {
+    ...config,
+    baseUrl: config.baseUrl.replace(/\/+$/, ""),
+    interactiveModel:
+      typeof config.interactiveModel === "string" && config.interactiveModel.trim() !== ""
+        ? config.interactiveModel.trim()
+        : null,
+    maxConcurrency: clampInt(config.maxConcurrency, 1, 16, 4),
+    temperature: Number.isFinite(config.temperature)
+      ? Math.min(2, Math.max(0, config.temperature))
+      : 0.1,
+    reasoningEffort:
+      config.reasoningEffort === "low" ||
+      config.reasoningEffort === "medium" ||
+      config.reasoningEffort === "high" ||
+      config.reasoningEffort === null
+        ? config.reasoningEffort
+        : "low",
+    maxOutputTokens: clampInt(config.maxOutputTokens, 64, 16_384, 1200),
+    requestTimeoutMs: clampInt(config.requestTimeoutMs, 1_000, 300_000, 30_000),
+    maxRetries: clampInt(config.maxRetries, 0, 8, 2),
+    scanBatchSize: clampInt(config.scanBatchSize, 1, 20, 8),
+    scanMaxCalls: clampInt(config.scanMaxCalls, 1, 99, 99),
+  };
+}
+
+function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(value)));
 }

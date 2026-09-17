@@ -21,8 +21,20 @@ export function languageColor(language: Language | null | undefined): string {
 export function nodeAccent(node: GraphNodeDto): string {
   if (node.kind === "external") return "#6b7583";
   if (node.kind === "aggregate") return "#6b7583";
+  if (node.layer) return layerColor(node.layer);
   if (node.language) return languageColor(node.language);
   return "#5f6b7d";
+}
+
+const LAYER_COLORS = ["#5eb0ff", "#5ecb9e", "#c58af9", "#e0a458", "#e08758", "#56c7d6"];
+
+function layerColor(layer: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < layer.length; i++) {
+    hash ^= layer.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return LAYER_COLORS[Math.abs(hash) % LAYER_COLORS.length] ?? "#5eb0ff";
 }
 
 export const METRIC_LABELS: Record<MetricKey, string> = {

@@ -291,7 +291,10 @@ CREATE TABLE IF NOT EXISTS layers (
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   ordinal     INTEGER NOT NULL DEFAULT 0,
-  members     TEXT NOT NULL DEFAULT '[]'   -- JSON: 节点 id 数组
+  members     TEXT NOT NULL DEFAULT '[]',  -- JSON: 节点 id 数组
+  source_hash TEXT NOT NULL DEFAULT '',
+  model       TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT ''
 );
 
 -- ---------------------------------------------------------------------------
@@ -312,4 +315,4 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 `;
 
 /** schema 版本，变更时 bump，旧库会被重建 */
-export const SCHEMA_VERSION = "3";
+export const SCHEMA_VERSION = "4";

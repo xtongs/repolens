@@ -29,8 +29,10 @@ import type {
   SymbolKind,
   SymbolSummaryDto,
   TreeNodeDto,
+  LlmStatusDto,
 } from "../types.js";
 import { getMeta, getMetaJson, type Db } from "./database.js";
+import { readLlmStatus, semanticLanguage } from "../llm/cache.js";
 
 export const EXTERNAL_NODE_ID = "external";
 
@@ -103,6 +105,15 @@ export function getOverview(db: Db): OverviewDto {
     files: row.files,
   }));
 
+  const layers = (db
+    .prepare("SELECT name, description, members FROM layers ORDER BY ordinal, id")
+    .all() as Array<{ name: string; description: string; members: string }>).map((row) => ({
+      name: row.name,
+      description: row.description,
+      nodeIds: parseStringArray(row.members),
+    }));
+  const llmStatus = readLlmStatus(db);
+
   return {
     repoName: getMeta(db, "repo_name") ?? "repo",
     repoRoot: getMeta(db, "repo_root") ?? "",
@@ -118,7 +129,8 @@ export function getOverview(db: Db): OverviewDto {
     languages,
     packages,
     summary: readSummary(db, "repo", "."),
-    layers: null,
+    layers: layers.length > 0 ? layers : null,
+    llm: llmStatus as LlmStatusDto | null,
   };
 }
 
@@ -774,6 +786,7 @@ export function getCallGraph(db: Db, options: CallGraphOptions): GraphDto {
   }
 
   const nodes = symbolNodes(db, [...seen], options.symbolId);
+  attachSemantics(db, nodes);
   attachFindings(db, nodes);
   // 这里不走 finalizeGraph 的折叠：中心节点被折进「其他 N 项」的话
   // 整张图就没有锚点了，而每层限量已经把规模控住了。
@@ -882,7 +895,8 @@ function finalizeGraph(
   let finalEdges = edges;
   let truncated = 0;
 
-  // 体检角标要在折叠之前挂，否则被折进聚合节点的问题就丢了
+  // 摘要和体检角标都要在折叠之前挂，聚合节点本身不冒充有语义。
+  attachSemantics(db, nodes);
   attachFindings(db, nodes);
 
   if (nodes.length > limit) {
@@ -1039,7 +1053,7 @@ function packageDir(db: Db, name: string): string | null {
 export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
   const file = db
     .prepare(
-      `SELECT f.id, f.path, f.language, f.role, f.loc, f.bytes, f.parse_error AS parseError,
+      `SELECT f.id, f.path, f.language, f.role, f.loc, f.bytes, f.hash, f.parse_error AS parseError,
               p.name AS packageName
        FROM files f LEFT JOIN packages p ON p.id = f.package_id
        WHERE f.id = ?`,
@@ -1052,6 +1066,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
         role: string;
         loc: number;
         bytes: number;
+        hash: string;
         parseError: string | null;
         packageName: string | null;
       }
@@ -1141,7 +1156,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
         )
         .all(fileId) as Array<{ id: number; path: string }>
     ).map((row) => ({ id: `file:${row.id}`, path: row.path })),
-    summary: readSummary(db, "file", file.path),
+    summary: readSummary(db, "file", file.path, "summary", file.hash),
   };
 }
 
@@ -1235,7 +1250,12 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
 
   const name = row["name"] as string;
   const container = (row["container"] as string | null) ?? null;
-  const summaryKey = symbolKey(row["filePath"], container, name);
+  const summaryKey = symbolKey(
+    row["filePath"],
+    container,
+    name,
+    row["start_line"] as number,
+  );
 
   return {
     id: `sym:${symbolId}`,
@@ -1263,13 +1283,19 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
       target: t.target,
       targetId: t.targetId !== null ? `sym:${t.targetId}` : null,
     })),
-    summary: readSummary(db, "symbol", summaryKey),
-    pseudocode: readSummary(db, "symbol", summaryKey, "pseudocode"),
+    summary: readSummary(db, "symbol", summaryKey, "summary", row["hash"] as string),
+    pseudocode: readSummary(db, "symbol", summaryKey, "pseudocode", row["hash"] as string),
   };
 }
 
-export function symbolKey(filePath: string, container: string | null, name: string): string {
-  return container !== null ? `${filePath}#${container}.${name}` : `${filePath}#${name}`;
+export function symbolKey(
+  filePath: string,
+  container: string | null,
+  name: string,
+  startLine?: number,
+): string {
+  const base = container !== null ? `${filePath}#${container}.${name}` : `${filePath}#${name}`;
+  return startLine === undefined ? base : `${base}:${startLine}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,14 +1390,67 @@ function readSummary(
   targetKind: string,
   targetKey: string,
   flavor = "summary",
+  sourceHash?: string,
 ): string | null {
+  const args: unknown[] = [targetKind, targetKey, flavor, semanticLanguage(db)];
+  const hashClause = sourceHash === undefined ? "" : "AND source_hash = ?";
+  if (sourceHash !== undefined) args.push(sourceHash);
   const row = db
     .prepare(
       `SELECT content FROM summaries
-       WHERE target_kind = ? AND target_key = ? AND flavor = ? LIMIT 1`,
+       WHERE target_kind = ? AND target_key = ? AND flavor = ? AND lang = ? ${hashClause}
+       ORDER BY created_at DESC LIMIT 1`,
     )
-    .get(targetKind, targetKey, flavor) as { content: string } | undefined;
+    .get(...args) as { content: string } | undefined;
   return row?.content ?? null;
+}
+
+/** 给图节点挂上扫描期摘要与架构层；结构事实不依赖这些字段。 */
+function attachSemantics(db: Db, nodes: GraphNodeDto[]): void {
+  if (nodes.length === 0) return;
+  const layerByNode = new Map<string, string>();
+  for (const row of db.prepare("SELECT name, members FROM layers ORDER BY ordinal").all() as Array<{ name: string; members: string }>) {
+    for (const id of parseStringArray(row.members)) if (!layerByNode.has(id)) layerByNode.set(id, row.name);
+  }
+
+  const lang = semanticLanguage(db);
+  const summary = db.prepare(
+    `SELECT content FROM summaries
+     WHERE target_kind = ? AND target_key = ? AND flavor = 'summary' AND lang = ?
+     ORDER BY created_at DESC LIMIT 1`,
+  );
+  const symbolSummary = db.prepare(
+    `SELECT sm.content FROM symbols s JOIN files f ON f.id = s.file_id
+     JOIN summaries sm ON sm.target_kind = 'symbol'
+       AND sm.target_key = (CASE WHEN s.container IS NULL THEN f.path || '#' || s.name
+                                ELSE f.path || '#' || s.container || '.' || s.name END) || ':' || s.start_line
+       AND sm.flavor = 'summary' AND sm.lang = ? AND sm.source_hash = s.hash
+     WHERE s.id = ? ORDER BY sm.created_at DESC LIMIT 1`,
+  );
+  const fileSummary = db.prepare(
+    `SELECT sm.content FROM files f JOIN summaries sm ON sm.target_kind = 'file'
+       AND sm.target_key = f.path AND sm.flavor = 'summary' AND sm.lang = ? AND sm.source_hash = f.hash
+     WHERE f.id = ? ORDER BY sm.created_at DESC LIMIT 1`,
+  );
+
+  for (const node of nodes) {
+    node.layer = layerByNode.get(node.id) ?? null;
+    let row: { content: string } | undefined;
+    if (node.kind === "package") row = summary.get("package", node.id.slice(4), lang) as { content: string } | undefined;
+    else if (node.kind === "directory") row = summary.get("directory", node.path ?? node.id.slice(4), lang) as { content: string } | undefined;
+    else if (node.kind === "file") row = fileSummary.get(lang, Number(node.id.slice(5))) as { content: string } | undefined;
+    else if (node.kind === "symbol") row = symbolSummary.get(lang, Number(node.id.slice(4))) as { content: string } | undefined;
+    node.summary = row?.content ?? null;
+  }
+}
+
+function parseStringArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 export function nodeMetricsZero(): NodeMetrics {

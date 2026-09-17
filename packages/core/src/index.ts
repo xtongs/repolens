@@ -5,6 +5,7 @@ export {
   getMeta,
   getMetaJson,
   indexPath,
+  isIndexCurrent,
   INDEX_DIR,
   INDEX_FILE,
   openDb,
@@ -47,6 +48,12 @@ export {
 } from "./registry.js";
 
 export { scanRepo, type ScanOptions, type ScanPhase } from "./pipeline/scan.js";
+export {
+  enrichRepository,
+  generateFileSummary,
+  generateSymbolSemantics,
+} from "./llm/enrich.js";
+export { LlmResponseError, LlmUnavailableError, OpenAiCompatibleClient } from "./llm/client.js";
 export { countLoc } from "./pipeline/metrics.js";
 
 export { detectLanguage, isAnalyzable } from "./discovery/language.js";
