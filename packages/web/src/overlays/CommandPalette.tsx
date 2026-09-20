@@ -70,7 +70,7 @@ export function CommandPalette() {
 
   return (
     <div
-      className="anim-fade fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[14vh]"
+      className="anim-fade fixed inset-0 z-50 flex items-start justify-center bg-[var(--color-overlay)] pt-[14vh]"
       onClick={() => setOpen(false)}
     >
       <div

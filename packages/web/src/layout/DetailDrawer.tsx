@@ -104,12 +104,12 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
     };
   }, [id]);
 
-  const generateSemantics = () => {
+  const generateSemantics = (refresh = false) => {
     if (semanticLoading) return;
     setSemanticLoading(true);
     setSemanticError(null);
     void api
-      .generateSymbolSemantics(id)
+      .generateSymbolSemantics(id, refresh)
       .then((result) => {
         setDetail((current) =>
           current?.id === id
@@ -277,10 +277,16 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
 
       {detail.summary ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
-          <Label ai>AI 摘要</Label>
-          <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
+          <div className="flex items-center justify-between gap-2">
+            <Label ai>AI 摘要</Label>
+            <SemanticRefreshButton loading={semanticLoading} onClick={() => generateSemantics(true)} />
+          </div>
+          <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
+          {semanticError && (
+            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
+          )}
         </div>
       ) : semanticLoading ? (
         <SemanticLoading label="正在生成函数摘要与伪代码…" />
@@ -441,18 +447,24 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
     };
   }, [id]);
 
-  const generateSummary = () => {
+  const generateSummary = (refresh = false) => {
     if (semanticLoading) return;
     setSemanticLoading(true);
     setSemanticError(null);
     void api
-      .generateFileSummary(id)
+      .generateFileSummary(id, refresh)
       .then((result) =>
         setDetail((current) => (current?.id === id ? { ...current, summary: result.summary } : current)),
       )
       .catch((e: Error) => setSemanticError(e.message))
       .finally(() => setSemanticLoading(false));
   };
+
+  // 首次打开文件且缓存中没有摘要时立即生成，不再要求用户多点一次按钮。
+  useEffect(() => {
+    if (detail === null || detail.summary || semanticLoading || semanticError) return;
+    generateSummary();
+  }, [detail, semanticLoading, semanticError]);
 
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
@@ -523,21 +535,25 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
 
       {detail.summary ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
-          <Label ai>AI 摘要</Label>
-          <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
+          <div className="flex items-center justify-between gap-2">
+            <Label ai>AI 摘要</Label>
+            <SemanticRefreshButton loading={semanticLoading} onClick={() => generateSummary(true)} />
+          </div>
+          <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
+          {semanticError && (
+            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
+          )}
         </div>
-      ) : semanticLoading ? (
+      ) : semanticLoading || !semanticError ? (
         <SemanticLoading label="正在生成文件摘要…" />
       ) : semanticError ? (
         <div className="mt-2">
           <div className="text-[11px] text-[var(--color-warn)]">{semanticError}</div>
           <RetryButton onClick={generateSummary}>重试</RetryButton>
         </div>
-      ) : (
-        <RetryButton onClick={generateSummary}>生成 AI 文件摘要</RetryButton>
-      )}
+      ) : null}
 
       <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--color-line)] pt-2.5">
         <Metric label="代码行" value={formatCount(detail.loc)} />
@@ -726,6 +742,21 @@ function SemanticLoading({ label }: { label: string }) {
       <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]" />
       {label}
     </div>
+  );
+}
+
+function SemanticRefreshButton({ loading, onClick }: { loading: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      disabled={loading}
+      onClick={onClick}
+      aria-label={loading ? "正在重新生成 AI 摘要" : "重新生成 AI 摘要"}
+      title={loading ? "正在重新生成…" : "重新生成 AI 摘要"}
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[14px] leading-none text-[var(--color-ink-faint)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-accent)] disabled:cursor-wait disabled:opacity-60"
+    >
+      <span className={loading ? "animate-spin" : ""}>↻</span>
+    </button>
   );
 }
 

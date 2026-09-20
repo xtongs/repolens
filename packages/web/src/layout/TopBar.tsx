@@ -69,6 +69,9 @@ export function TopBar() {
           <kbd className="mono rounded bg-[var(--color-surface-3)] px-1 text-[10px]">⌘K</kbd>
         </button>
 
+        <FontSizeControl />
+        <ThemeToggle />
+
         <button
           type="button"
           onClick={() => store.setHelpOpen(true)}
@@ -79,6 +82,127 @@ export function TopBar() {
         </button>
       </div>
     </header>
+  );
+}
+
+type Theme = "dark" | "light";
+const THEME_STORAGE_KEY = "repolens-theme";
+type FontSize = "small" | "medium" | "large";
+const FONT_SIZE_STORAGE_KEY = "repolens-font-size";
+const FONT_SIZES: ReadonlyArray<{ key: FontSize; label: string }> = [
+  { key: "small", label: "100%" },
+  { key: "medium", label: "115%" },
+  { key: "large", label: "130%" },
+];
+
+function FontSizeControl() {
+  const [fontSize, setFontSize] = useState<FontSize>(() => {
+    const current = document.documentElement.dataset["fontSize"];
+    return current === "small" || current === "large" ? current : "medium";
+  });
+  const index = FONT_SIZES.findIndex((option) => option.key === fontSize);
+  const current = FONT_SIZES[index] ?? FONT_SIZES[1];
+
+  const apply = (nextIndex: number) => {
+    const next = FONT_SIZES[nextIndex];
+    if (!next) return;
+    document.documentElement.dataset.fontSize = next.key;
+    try {
+      localStorage.setItem(FONT_SIZE_STORAGE_KEY, next.key);
+    } catch {
+      // 浏览器禁用存储时，本次调节仍然有效。
+    }
+    setFontSize(next.key);
+  };
+
+  return (
+    <div
+      className="flex h-7 items-stretch overflow-hidden rounded-md border border-[var(--color-line)]"
+      role="group"
+      aria-label="字体大小"
+    >
+      <button
+        type="button"
+        disabled={index === 0}
+        onClick={() => apply(index - 1)}
+        className="flex w-7 items-center justify-center text-[11px] text-[var(--color-ink-muted)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-35"
+        title="缩小字体"
+        aria-label="缩小字体"
+      >
+        A−
+      </button>
+      <span
+        className="mono flex min-w-10 items-center justify-center border-x border-[var(--color-line)] bg-[var(--color-surface-2)] px-1 text-[9px] tabular-nums text-[var(--color-ink-faint)]"
+        aria-live="polite"
+      >
+        {current?.label}
+      </span>
+      <button
+        type="button"
+        disabled={index === FONT_SIZES.length - 1}
+        onClick={() => apply(index + 1)}
+        className="flex w-7 items-center justify-center text-[11px] text-[var(--color-ink-muted)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-35"
+        title="放大字体"
+        aria-label="放大字体"
+      >
+        A+
+      </button>
+    </div>
+  );
+}
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState<Theme>(() =>
+    document.documentElement.dataset["theme"] === "light" ? "light" : "dark",
+  );
+  const target = theme === "dark" ? "light" : "dark";
+  const label = target === "light" ? "切换到浅色模式" : "切换到深色模式";
+
+  const toggle = () => {
+    const next = target;
+    const root = document.documentElement;
+    root.dataset["theme"] = next;
+    root.classList.toggle("dark", next === "dark");
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute(
+      "content",
+      next === "light" ? "#f3f5f8" : "#0b0d10",
+    );
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // 浏览器禁用存储时，本次切换仍然有效。
+    }
+    setTheme(next);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-line)] text-[var(--color-ink-faint)] transition-colors hover:border-[var(--color-line-strong)] hover:text-[var(--color-ink-muted)]"
+      title={label}
+      aria-label={label}
+      aria-pressed={theme === "light"}
+    >
+      {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+    </button>
+  );
+}
+
+function SunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 15.2A8 8 0 0 1 8.8 4a8 8 0 1 0 11.2 11.2Z" />
+    </svg>
   );
 }
 

@@ -269,7 +269,12 @@ function CanvasInner() {
         elementsSelectable={false}
         zoomOnDoubleClick={false}
       >
-        <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#1e232b" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={22}
+          size={1}
+          color="var(--color-graph-grid)"
+        />
         <Controls
           showInteractive={false}
           className="!border-[var(--color-line)] !bg-[var(--color-surface)]"

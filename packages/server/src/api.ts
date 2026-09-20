@@ -136,7 +136,9 @@ export function createApi(deps: ApiDeps): Hono {
     if (getSymbolDetail(db, id) === null) return c.json({ error: "符号不存在" }, 404);
     return withWritableDb(repoRoot, async (writeDb) => {
       try {
-        return c.json(await generateSymbolSemantics(writeDb, repoRoot, id));
+        return c.json(await generateSymbolSemantics(writeDb, repoRoot, id, {
+          force: parseBool(c.req.query("refresh")),
+        }));
       } catch (err) {
         const message = (err as Error).message;
         const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
@@ -154,7 +156,9 @@ export function createApi(deps: ApiDeps): Hono {
     if (getFileDetail(db, id) === null) return c.json({ error: "文件不存在" }, 404);
     return withWritableDb(repoRoot, async (writeDb) => {
       try {
-        return c.json(await generateFileSummary(writeDb, repoRoot, id));
+        return c.json(await generateFileSummary(writeDb, repoRoot, id, {
+          force: parseBool(c.req.query("refresh")),
+        }));
       } catch (err) {
         const message = (err as Error).message;
         const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;

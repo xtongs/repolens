@@ -98,10 +98,13 @@ function StepRow({ step, last, narrative, onOpen }: {
   return (
     <div className="relative grid min-h-[126px] grid-cols-3 gap-4">
       {!last && <span className="absolute left-1/2 top-[62px] h-[126px] border-l border-dashed border-[var(--color-line-strong)]" />}
-      <span className={`absolute left-1/2 top-[54px] z-10 h-4 w-4 -translate-x-1/2 rounded-full border-2 bg-[var(--color-canvas)] ${step.source === "deterministic" ? "border-emerald-400" : "border-[var(--color-warn)]"}`} />
+      <span
+        className="absolute left-1/2 top-[54px] z-10 h-4 w-4 -translate-x-1/2 rounded-full border-2 bg-[var(--color-canvas)]"
+        style={{ borderColor: step.source === "deterministic" ? "var(--color-success)" : "var(--color-warn)" }}
+      />
       <div className="min-w-0" style={{ gridColumn: column }}>
         <button type="button" onClick={onOpen} disabled={!step.symbolId}
-          className={`w-full rounded-lg border bg-[var(--color-surface)] p-3 text-left transition-colors disabled:cursor-default ${step.source === "deterministic" ? "border-[var(--color-line)] hover:border-emerald-400/40" : "border-dashed border-[var(--color-warn)]/60 hover:border-[var(--color-warn)]"}`}>
+          className={`w-full rounded-lg border bg-[var(--color-surface)] p-3 text-left transition-colors disabled:cursor-default ${step.source === "deterministic" ? "border-[var(--color-line)] hover:border-[var(--color-success)]/40" : "border-dashed border-[var(--color-warn)]/60 hover:border-[var(--color-warn)]"}`}>
           <div className="flex items-center gap-2">
             <span className="rounded bg-[var(--color-surface-3)] px-1.5 py-0.5 text-[9px] text-[var(--color-ink-faint)]">{step.ordinal + 1}</span>
             <span className="truncate text-[12px] font-medium">{step.label}</span>
@@ -134,7 +137,7 @@ function StepRow({ step, last, narrative, onOpen }: {
 }
 
 function EvidenceBadge({ confidence }: { confidence: "exact" | "likely" }) {
-  return <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[8.5px] ${confidence === "exact" ? "bg-emerald-400/10 text-emerald-400" : "bg-[var(--color-warn)]/10 text-[var(--color-warn)]"}`}>
+  return <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[8.5px] ${confidence === "exact" ? "bg-[var(--color-success)]/10 text-[var(--color-success)]" : "bg-[var(--color-warn)]/10 text-[var(--color-warn)]"}`}>
     {confidence === "exact" ? "确定" : "推断"}
   </span>;
 }

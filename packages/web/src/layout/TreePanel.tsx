@@ -132,7 +132,10 @@ function TraceEntryRow({
                   <button key={trace.id} type="button" onClick={() => onOpen(trace.id, trace.label)}
                     className={`block w-full px-7 py-1.5 text-left hover:bg-[var(--color-surface-3)] ${activeTrace === trace.id ? "bg-[var(--color-surface-3)]" : ""}`}>
                     <div className="flex items-center gap-1.5">
-                      <span className={`h-1.5 w-1.5 rounded-full ${trace.confidence === "exact" ? "bg-emerald-400" : "bg-[var(--color-warn)]"}`} />
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ background: trace.confidence === "exact" ? "var(--color-success)" : "var(--color-warn)" }}
+                      />
                       <span className="truncate text-[11px]">{trace.label}</span>
                     </div>
                     <div className="ml-3 mt-0.5 text-[9.5px] text-[var(--color-ink-faint)]">

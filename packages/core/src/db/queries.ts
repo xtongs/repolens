@@ -1156,7 +1156,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
         )
         .all(fileId) as Array<{ id: number; path: string }>
     ).map((row) => ({ id: `file:${row.id}`, path: row.path })),
-    summary: readSummary(db, "file", file.path, "summary", file.hash),
+    summary: readSummary(db, "file", file.path, "summary-v2", file.hash),
   };
 }
 
@@ -1283,7 +1283,7 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
       target: t.target,
       targetId: t.targetId !== null ? `sym:${t.targetId}` : null,
     })),
-    summary: readSummary(db, "symbol", summaryKey, "summary", row["hash"] as string),
+    summary: readSummary(db, "symbol", summaryKey, "summary-v2", row["hash"] as string),
     pseudocode: readSummary(db, "symbol", summaryKey, "pseudocode", row["hash"] as string),
   };
 }
@@ -1424,12 +1424,12 @@ function attachSemantics(db: Db, nodes: GraphNodeDto[]): void {
      JOIN summaries sm ON sm.target_kind = 'symbol'
        AND sm.target_key = (CASE WHEN s.container IS NULL THEN f.path || '#' || s.name
                                 ELSE f.path || '#' || s.container || '.' || s.name END) || ':' || s.start_line
-       AND sm.flavor = 'summary' AND sm.lang = ? AND sm.source_hash = s.hash
+       AND sm.flavor = 'summary-v2' AND sm.lang = ? AND sm.source_hash = s.hash
      WHERE s.id = ? ORDER BY sm.created_at DESC LIMIT 1`,
   );
   const fileSummary = db.prepare(
     `SELECT sm.content FROM files f JOIN summaries sm ON sm.target_kind = 'file'
-       AND sm.target_key = f.path AND sm.flavor = 'summary' AND sm.lang = ? AND sm.source_hash = f.hash
+       AND sm.target_key = f.path AND sm.flavor = 'summary-v2' AND sm.lang = ? AND sm.source_hash = f.hash
      WHERE f.id = ? ORDER BY sm.created_at DESC LIMIT 1`,
   );
 

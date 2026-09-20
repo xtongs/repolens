@@ -20,7 +20,7 @@ export function HelpSheet() {
 
   return (
     <div
-      className="anim-fade fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="anim-fade fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-overlay)]"
       onClick={() => setOpen(false)}
     >
       <div

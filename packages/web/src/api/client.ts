@@ -57,8 +57,15 @@ async function get<T>(path: string, params: Record<string, string | number | boo
   return (await response.json()) as T;
 }
 
-async function post<T>(path: string): Promise<T> {
+async function post<T>(
+  path: string,
+  params: Record<string, string | number | boolean | undefined> = {},
+): Promise<T> {
   const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    search.set(key, String(value));
+  }
   if (activeRepo !== undefined) search.set("repo", activeRepo);
   const query = search.toString();
   const response = await fetch(`${BASE}${path}${query.length > 0 ? `?${query}` : ""}`, {
@@ -152,11 +159,15 @@ export const api = {
 
   symbol: (id: string) => get<SymbolDetailDto>(`/symbol/${stripPrefix(id)}`),
 
-  generateSymbolSemantics: (id: string) =>
-    post<SemanticResultDto>(`/semantic/symbol/${stripPrefix(id)}`),
+  generateSymbolSemantics: (id: string, refresh = false) =>
+    post<SemanticResultDto>(`/semantic/symbol/${stripPrefix(id)}`, {
+      refresh: refresh ? 1 : undefined,
+    }),
 
-  generateFileSummary: (id: string) =>
-    post<SemanticResultDto>(`/semantic/file/${stripPrefix(id)}`),
+  generateFileSummary: (id: string, refresh = false) =>
+    post<SemanticResultDto>(`/semantic/file/${stripPrefix(id)}`, {
+      refresh: refresh ? 1 : undefined,
+    }),
 
   source: (fileId: string, from?: number, to?: number) =>
     get<SourceSliceDto>(`/source/${stripPrefix(fileId)}`, { from, to }),

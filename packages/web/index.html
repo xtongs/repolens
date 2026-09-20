@@ -1,8 +1,27 @@
 <!doctype html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN" class="dark" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b0d10" />
+    <script>
+      (() => {
+        let theme = "dark";
+        let fontSize = "medium";
+        try {
+          if (localStorage.getItem("repolens-theme") === "light") theme = "light";
+          const savedFontSize = localStorage.getItem("repolens-font-size");
+          if (savedFontSize === "small" || savedFontSize === "large") fontSize = savedFontSize;
+        } catch {
+          // 隐私模式禁用存储时仍使用默认主题和字号。
+        }
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.fontSize = fontSize;
+        document.documentElement.classList.toggle("dark", theme === "dark");
+        document.querySelector('meta[name="theme-color"]')
+          ?.setAttribute("content", theme === "light" ? "#f3f5f8" : "#0b0d10");
+      })();
+    </script>
     <title>RepoLens</title>
   </head>
   <body>

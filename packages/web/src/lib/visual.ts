@@ -2,16 +2,16 @@ import type { GraphNodeDto, Language, SymbolKind } from "@repolens/core/types";
 import type { MetricKey } from "../store/useAppStore";
 
 const LANGUAGE_COLORS: Record<string, string> = {
-  typescript: "#4a9eff",
-  tsx: "#4a9eff",
-  javascript: "#e5c06b",
-  jsx: "#e5c06b",
-  python: "#5ecb9e",
-  go: "#56c7d6",
-  rust: "#e08758",
+  typescript: "var(--lang-typescript)",
+  tsx: "var(--lang-tsx)",
+  javascript: "var(--lang-javascript)",
+  jsx: "var(--lang-jsx)",
+  python: "var(--lang-python)",
+  go: "var(--lang-go)",
+  rust: "var(--lang-rust)",
 };
 
-const NEUTRAL = "#8b95a5";
+const NEUTRAL = "var(--lang-other)";
 
 export function languageColor(language: Language | null | undefined): string {
   if (!language) return NEUTRAL;
@@ -19,14 +19,21 @@ export function languageColor(language: Language | null | undefined): string {
 }
 
 export function nodeAccent(node: GraphNodeDto): string {
-  if (node.kind === "external") return "#6b7583";
-  if (node.kind === "aggregate") return "#6b7583";
+  if (node.kind === "external") return "var(--color-ink-faint)";
+  if (node.kind === "aggregate") return "var(--color-ink-faint)";
   if (node.layer) return layerColor(node.layer);
   if (node.language) return languageColor(node.language);
-  return "#5f6b7d";
+  return "var(--color-ink-muted)";
 }
 
-const LAYER_COLORS = ["#5eb0ff", "#5ecb9e", "#c58af9", "#e0a458", "#e08758", "#56c7d6"];
+const LAYER_COLORS = [
+  "var(--layer-blue)",
+  "var(--layer-green)",
+  "var(--layer-purple)",
+  "var(--layer-yellow)",
+  "var(--layer-orange)",
+  "var(--layer-cyan)",
+];
 
 function layerColor(layer: string): string {
   let hash = 2166136261;
@@ -34,7 +41,7 @@ function layerColor(layer: string): string {
     hash ^= layer.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
   }
-  return LAYER_COLORS[Math.abs(hash) % LAYER_COLORS.length] ?? "#5eb0ff";
+  return LAYER_COLORS[Math.abs(hash) % LAYER_COLORS.length] ?? "var(--color-accent)";
 }
 
 export const METRIC_LABELS: Record<MetricKey, string> = {

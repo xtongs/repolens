@@ -217,11 +217,13 @@ export async function generateSymbolSemantics(
   db: Db,
   root: string,
   symbolId: number,
+  options: { force?: boolean } = {},
 ): Promise<SemanticResultDto> {
-  const key = `${root}:symbol:${symbolId}`;
+  const force = options.force === true;
+  const key = `${root}:symbol:${symbolId}:${force ? "force" : "cached"}`;
   const pending = inflight.get(key);
   if (pending) return pending;
-  const task = generateSymbolSemanticsInner(db, root, symbolId).finally(() => inflight.delete(key));
+  const task = generateSymbolSemanticsInner(db, root, symbolId, force).finally(() => inflight.delete(key));
   inflight.set(key, task);
   return task;
 }
@@ -230,6 +232,7 @@ async function generateSymbolSemanticsInner(
   db: Db,
   root: string,
   symbolId: number,
+  force: boolean,
 ): Promise<SemanticResultDto> {
   const config = loadConfig(root).llm;
   const row = db
@@ -252,12 +255,12 @@ async function generateSymbolSemanticsInner(
   const lang = config.outputLanguage;
   const requestConfig = interactiveConfig(config);
   const summary = getCachedSemantic(
-    db, "symbol", targetKey, "summary", lang, row.hash, requestConfig.model,
+    db, "symbol", targetKey, "summary-v2", lang, row.hash, requestConfig.model,
   );
   const pseudocode = getCachedSemantic(
     db, "symbol", targetKey, "pseudocode", lang, row.hash, requestConfig.model,
   );
-  if (summary && pseudocode) {
+  if (!force && summary && pseudocode) {
     return {
       summary: summary.content,
       pseudocode: pseudocode.content,
@@ -287,9 +290,9 @@ async function generateSymbolSemanticsInner(
         source,
       },
     }),
-    { maxOutputTokens: 384 },
+    { maxOutputTokens: 900 },
   );
-  const generatedSummary = cleanText(result.data.summary, 1_000);
+  const generatedSummary = cleanText(result.data.summary, 2_000);
   const generatedPseudocode = cleanText(result.data.pseudocode, 8_000);
   if (generatedSummary === null || generatedPseudocode === null) {
     throw new Error("LLM 返回缺少 summary 或 pseudocode");
@@ -298,7 +301,7 @@ async function generateSymbolSemanticsInner(
   transact(db, () => {
     invalidateCachedSemantic(db, "symbol", targetKey, row.hash);
     for (const [flavor, content] of [
-      ["summary", generatedSummary],
+      ["summary-v2", generatedSummary],
       ["pseudocode", generatedPseudocode],
     ] as const) {
       putCachedSemantic(db, {
@@ -336,11 +339,13 @@ export async function generateFileSummary(
   db: Db,
   root: string,
   fileId: number,
+  options: { force?: boolean } = {},
 ): Promise<SemanticResultDto> {
-  const key = `${root}:file:${fileId}`;
+  const force = options.force === true;
+  const key = `${root}:file:${fileId}:${force ? "force" : "cached"}`;
   const pending = inflight.get(key);
   if (pending) return pending;
-  const task = generateFileSummaryInner(db, root, fileId).finally(() => inflight.delete(key));
+  const task = generateFileSummaryInner(db, root, fileId, force).finally(() => inflight.delete(key));
   inflight.set(key, task);
   return task;
 }
@@ -410,17 +415,19 @@ async function generateTraceNarrativeInner(
   return { narrative, generated: true, cacheHit: false, model: requestConfig.model, usage: result.usage };
 }
 
-async function generateFileSummaryInner(db: Db, root: string, fileId: number): Promise<SemanticResultDto> {
+async function generateFileSummaryInner(
+  db: Db, root: string, fileId: number, force: boolean,
+): Promise<SemanticResultDto> {
   const config = loadConfig(root).llm;
   const row = db.prepare("SELECT path, language, hash FROM files WHERE id = ?").get(fileId) as
     | { path: string; language: string; hash: string }
     | undefined;
   if (!row) throw new Error("文件不存在");
   const cached = getCachedSemantic(
-    db, "file", row.path, "summary", config.outputLanguage, row.hash,
+    db, "file", row.path, "summary-v2", config.outputLanguage, row.hash,
     interactiveConfig(config).model,
   );
-  if (cached) {
+  if (!force && cached) {
     return { summary: cached.content, generated: false, cacheHit: true, model: cached.model, usage: emptyUsage() };
   }
 
@@ -437,12 +444,12 @@ async function generateFileSummaryInner(db: Db, root: string, fileId: number): P
     fileSystem(config.outputLanguage),
     JSON.stringify({ file: { path: row.path, language: row.language, symbols, imports, source } }),
   );
-  const generatedSummary = cleanText(result.data.summary, 1_000);
+  const generatedSummary = cleanText(result.data.summary, 2_000);
   if (generatedSummary === null) throw new Error("LLM 返回缺少 summary");
   transact(db, () => {
     invalidateCachedSemantic(db, "file", row.path, row.hash);
     putCachedSemantic(db, {
-      targetKind: "file", targetKey: row.path, flavor: "summary",
+      targetKind: "file", targetKey: row.path, flavor: "summary-v2",
       lang: config.outputLanguage, content: generatedSummary, sourceHash: row.hash, model: requestConfig.model,
     });
     mergeLlmStatusUsage(db, {
@@ -569,8 +576,30 @@ function digest(value: unknown): string {
 
 function cleanText(value: unknown, maxLength: number): string | null {
   if (typeof value !== "string") return null;
-  const text = value.trim();
+  const text = decodeHtmlEntities(value)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .trim();
   return text === "" ? null : text.slice(0, maxLength);
+}
+
+/**
+ * 模型偶尔会把普通文本写成 HTML 实体。前端按文本渲染，不应把 `&#x20;`
+ * 这样的传输噪音展示给用户；这里只解码明确的字符实体，不解析 HTML。
+ */
+function decodeHtmlEntities(value: string): string {
+  const named: Record<string, string> = {
+    nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+  };
+  return value
+    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));/gi, (entity, hex: string | undefined, decimal: string | undefined) => {
+      const codePoint = Number.parseInt(hex ?? decimal ?? "", hex === undefined ? 10 : 16);
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff &&
+        !(codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    })
+    .replace(/&(nbsp|amp|lt|gt|quot|apos);/gi, (entity, name: string) => named[name.toLowerCase()] ?? entity);
 }
 
 function cleanLayers(
@@ -636,13 +665,47 @@ function summarySystem(lang: "zh" | "en"): string {
 
 function symbolSystem(lang: "zh" | "en"): string {
   return `你是代码解释器。只根据给定源码、签名和确定性调用关系解释符号。用${languageName(lang)}输出。` +
-    `只返回 JSON：{"summary":"一句话说明用途和关键行为","pseudocode":"逻辑伪代码"}。` +
+    readableSummaryInstructions(lang, false) +
+    `只返回 JSON：{"summary":"带有段落换行的摘要","pseudocode":"逻辑伪代码"}。` +
     `伪代码最多 12 行，不要复述语法，要呈现分支、循环、错误处理、输入输出；不得声称源码被截断。`;
 }
 
 function fileSystem(lang: "zh" | "en"): string {
-  return `你是代码文件摘要器。根据源码、导入和符号列表，用${languageName(lang)}写一句准确摘要。` +
-    `不得编造。只返回 JSON：{"summary":"一句话"}。`;
+  return `你是代码文件摘要器。只根据给定源码、导入和符号列表解释文件。用${languageName(lang)}输出。` +
+    readableSummaryInstructions(lang, true) +
+    `不得编造源码中没有的业务用途、运行效果或约束。只返回 JSON：{"summary":"带有段落换行的摘要"}。`;
+}
+
+function readableSummaryInstructions(lang: "zh" | "en", requireConcepts: boolean): string {
+  const structure = lang === "zh"
+    ? `用 3-4 个短段落，段落之间用 \n\n 分隔：` +
+      `「用途：」先用日常语言说明它解决什么问题、谁会在什么情况下使用；` +
+      `「核心概念：」用“术语（通俗解释）”说明理解代码所需的 1-4 个领域术语；` +
+      `「工作方式：」说明关键输入、输出和主要流程；` +
+      `有重要限制、替代实现或易错边界时，再写「使用提示：」，否则省略。`
+    : `Use 3-4 short paragraphs separated by \n\n: ` +
+      `"Purpose:" explains in plain language what problem it solves and when someone uses it; ` +
+      `"Key concepts:" defines 1-4 necessary domain terms as "term (plain explanation)"; ` +
+      `"How it works:" covers important inputs, outputs, and flow; ` +
+      `add "Usage notes:" only for meaningful constraints, alternatives, or pitfalls.`;
+  if (lang === "en") {
+    return `Write for developers who can code but are unfamiliar with this domain. ${structure}` +
+      `Explain why it is needed before how it is implemented. Do not list every export or pack concepts into one long sentence. ` +
+      `Do not begin with unexplained jargon; define every specialized term in parentheses at its first use. ` +
+      `Derive every claim from the input, not from general knowledge of the domain. Do not imply timing, persistence, ` +
+      `network reporting, runtime validation, or other behavior unless the source explicitly implements it. ` +
+      (requireConcepts
+        ? `Keep the Key concepts paragraph; if there is little domain jargon, explain the most important code concept. `
+        : `For a simple symbol with no domain jargon, the Key concepts paragraph may be omitted. `);
+  }
+  return `面向会写代码、但不了解当前领域的开发者。${structure}` +
+    `先讲“为什么需要”，再讲“如何实现”；不要罗列全部导出名，也不要用一句长句堆砌概念。` +
+    `第一段不要直接使用未解释的专业术语；任何专业术语首次出现时都要紧跟括号解释。` +
+    `每项结论都必须来自输入，不能套用该领域的一般知识。除非源码明确实现，否则不要暗示耗时统计、` +
+    `持久化、网络上报、运行时校验或其他能力。` +
+    (requireConcepts
+      ? `必须保留核心概念段；如果几乎没有领域术语，就解释最关键的代码概念。`
+      : `符号很简单且没有领域术语时，可以省略核心概念段。`);
 }
 
 function traceSystem(lang: "zh" | "en"): string {

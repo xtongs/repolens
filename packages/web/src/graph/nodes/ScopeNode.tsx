@@ -155,7 +155,7 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
             : selected
               ? `0 0 0 1px ${accent}`
               : active
-                ? "0 8px 24px rgba(0,0,0,0.45)"
+                ? "var(--node-hover-shadow)"
                 : "none",
         }}
       >
