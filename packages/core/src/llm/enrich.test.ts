@@ -57,7 +57,7 @@ describe("generateFileSummary", () => {
 
     // 从上一版本升级时已有详细摘要，但仍要调用一次模型补齐 Tooltip 与伪代码。
     expect(getFileDetail(db, fileId)).toMatchObject({
-      summary: "旧缓存只有详细摘要", shortSummary: null, pseudocode: null,
+      summary: "用途：旧缓存只有详细摘要", shortSummary: null, pseudocode: null,
     });
 
     const calls: Array<{ system: string; authorization: string | null }> = [];
@@ -87,16 +87,16 @@ describe("generateFileSummary", () => {
     const first = await generateFileSummary(db, repo, fileId);
     expect(first).toMatchObject({
       generated: true, cacheHit: false, model: "test-model",
-      summary: "用途：处理请求。\n\n核心概念：Span（一次可追踪的操作）。\n\n工作方式：接收输入并返回结果。",
+      summary: "用途：处理请求。\n\n核心概念：\n- Span（一次可追踪的操作）。\n\n工作方式：\n1. 接收输入并返回结果。",
       shortSummary: "处理请求并返回结果。",
-      pseudocode: "函数 run：\n  返回 ok",
+      pseudocode: "1. 函数 run：\n  - 返回 ok",
     });
     expect(first.summary).not.toContain("&#x20;");
     expect(first.summary).not.toContain("&nbsp;");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.authorization).toBe("Bearer test-secret");
-    expect(calls[0]?.system).toContain("用途：");
-    expect(calls[0]?.system).toContain("核心概念：");
+    expect(calls[0]?.system).toContain("purpose");
+    expect(calls[0]?.system).toContain("keyConcepts");
     expect(calls[0]?.system).toContain("专业术语首次出现时");
     expect(calls[0]?.system).toContain("为什么需要");
     expect(calls[0]?.system).toContain("不要暗示耗时统计");
@@ -128,7 +128,7 @@ describe("generateFileSummary", () => {
     expect(refreshed).toMatchObject({
       generated: true, cacheHit: false, summary: "用途：这是手动刷新后生成的新摘要。",
       shortSummary: "刷新后的简短摘要。",
-      pseudocode: "函数 run：\n  返回刷新后的结果",
+      pseudocode: "1. 函数 run：\n  - 返回刷新后的结果",
     });
     expect(calls).toHaveLength(2);
     expect(getFileDetail(db, fileId)).toMatchObject({

@@ -7,6 +7,7 @@ import { getMeta, setMeta, type Db, transact } from "../db/database.js";
 import { symbolKey } from "../db/queries.js";
 import { getTrace } from "../db/traces.js";
 import { addUsage, emptyUsage, LlmUnavailableError, OpenAiCompatibleClient } from "./client.js";
+import { cleanSingleLine, cleanText, normalizePseudocode, normalizeSummary } from "./format.js";
 import {
   getCachedSemantic,
   invalidateCachedSemantic,
@@ -303,9 +304,9 @@ async function generateSymbolSemanticsInner(
     }),
     { maxOutputTokens: 1_000 },
   );
-  const generatedSummary = cleanText(result.data.summary, 2_000);
+  const generatedSummary = normalizeSummary(result.data.summary, 2_000, config.outputLanguage);
   const generatedShortSummary = cleanSingleLine(result.data.shortSummary, 240);
-  const generatedPseudocode = cleanText(result.data.pseudocode, 8_000);
+  const generatedPseudocode = normalizePseudocode(result.data.pseudocode, 8_000, 12);
   if (generatedSummary === null || generatedShortSummary === null || generatedPseudocode === null) {
     throw new Error("LLM 返回缺少 summary、shortSummary 或 pseudocode");
   }
@@ -482,9 +483,9 @@ async function generateFileSummaryInner(
     JSON.stringify({ file: { path: row.path, language: row.language, symbols, imports, calls, source } }),
     { maxOutputTokens: 1_200 },
   );
-  const generatedSummary = cleanText(result.data.summary, 2_000);
+  const generatedSummary = normalizeSummary(result.data.summary, 2_000, config.outputLanguage);
   const generatedShortSummary = cleanSingleLine(result.data.shortSummary, 240);
-  const generatedPseudocode = cleanText(result.data.pseudocode, 12_000);
+  const generatedPseudocode = normalizePseudocode(result.data.pseudocode, 12_000, 24);
   if (generatedSummary === null || generatedShortSummary === null || generatedPseudocode === null) {
     throw new Error("LLM 返回缺少 summary、shortSummary 或 pseudocode");
   }
@@ -625,44 +626,6 @@ function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function cleanText(value: unknown, maxLength: number): string | null {
-  if (typeof value !== "string") return null;
-  const text = decodeHtmlEntities(value)
-    .replace(/\r\n?/g, "\n")
-    .replace(/[ \t]+$/gm, "")
-    .trim();
-  return text === "" ? null : text.slice(0, maxLength);
-}
-
-function cleanSingleLine(value: unknown, maxLength: number): string | null {
-  const text = cleanText(value, maxLength);
-  if (text === null) return null;
-  const compact = text.replace(/\s+/g, " ").replace(/^(用途|Purpose)\s*[:：]\s*/i, "").trim();
-  const cjkSentence = /^(.+?[。！？])/.exec(compact)?.[1];
-  const latinSentence = /^(.+?[.!?])(?:\s|$)/.exec(compact)?.[1];
-  const sentence = cjkSentence ?? latinSentence ?? compact;
-  return sentence === "" ? null : sentence.slice(0, maxLength);
-}
-
-/**
- * 模型偶尔会把普通文本写成 HTML 实体。前端按文本渲染，不应把 `&#x20;`
- * 这样的传输噪音展示给用户；这里只解码明确的字符实体，不解析 HTML。
- */
-function decodeHtmlEntities(value: string): string {
-  const named: Record<string, string> = {
-    nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
-  };
-  return value
-    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));/gi, (entity, hex: string | undefined, decimal: string | undefined) => {
-      const codePoint = Number.parseInt(hex ?? decimal ?? "", hex === undefined ? 10 : 16);
-      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff &&
-        !(codePoint >= 0xd800 && codePoint <= 0xdfff)
-        ? String.fromCodePoint(codePoint)
-        : entity;
-    })
-    .replace(/&(nbsp|amp|lt|gt|quot|apos);/gi, (entity, name: string) => named[name.toLowerCase()] ?? entity);
-}
-
 function cleanLayers(
   input: ArchitectureResponse["layers"],
   allowed: ReadonlySet<string>,
@@ -704,9 +667,13 @@ function safeMessage(error: unknown): string {
 }
 
 function interactiveConfig(config: LlmConfig): LlmConfig {
-  return config.interactiveModel === null
-    ? config
-    : { ...config, model: config.interactiveModel };
+  return {
+    ...config,
+    ...(config.interactiveModel === null ? {} : { model: config.interactiveModel }),
+    // 文件/函数解释需要稳定而不是创意。结构仍由后处理器强制统一，0 温度
+    // 则尽量降低用户手动刷新后措辞和步骤顺序大幅漂移的概率。
+    temperature: 0,
+  };
 }
 
 function languageName(lang: "zh" | "en"): string {
@@ -728,9 +695,9 @@ function symbolSystem(lang: "zh" | "en"): string {
   return `你是代码解释器。只根据给定源码、签名和确定性调用关系解释符号。用${languageName(lang)}输出。` +
     readableSummaryInstructions(lang, false) +
     `shortSummary 必须是一句不带标题的通俗用途说明，供悬停卡片快速阅读，不超过 80 个汉字或 160 个英文字符。` +
-    `只返回 JSON：{"summary":"带有段落换行的摘要","shortSummary":"一句话用途","pseudocode":"逻辑伪代码"}。` +
     `伪代码最多 12 行，每行尽量不超过 72 个显示字符并保持层级缩进；` +
-    `不要复述语法，要呈现分支、循环、错误处理、输入输出；不得声称源码被截断。`;
+    `不要复述语法，要呈现分支、循环、错误处理、输入输出；不得声称源码被截断。` +
+    semanticJsonContract();
 }
 
 function fileSystem(lang: "zh" | "en"): string {
@@ -742,21 +709,17 @@ function fileSystem(lang: "zh" | "en"): string {
     `文件只有类型或常量时，应如实描述声明与导出关系。伪代码控制在 24 行内，` +
     `每行尽量不超过 72 个显示字符，较长步骤拆成带缩进的子步骤。` +
     `不得编造源码中没有的业务用途、运行效果或约束。` +
-    `只返回 JSON：{"summary":"带有段落换行的摘要","shortSummary":"一句话用途","pseudocode":"文件级逻辑伪代码"}。`;
+    semanticJsonContract();
 }
 
 function readableSummaryInstructions(lang: "zh" | "en", requireConcepts: boolean): string {
   const structure = lang === "zh"
-    ? `用 3-4 个短段落，段落之间用 \n\n 分隔：` +
-      `「用途：」先用日常语言说明它解决什么问题、谁会在什么情况下使用；` +
-      `「核心概念：」用“术语（通俗解释）”说明理解代码所需的 1-4 个领域术语；` +
-      `「工作方式：」说明关键输入、输出和主要流程；` +
-      `有重要限制、替代实现或易错边界时，再写「使用提示：」，否则省略。`
-    : `Use 3-4 short paragraphs separated by \n\n: ` +
-      `"Purpose:" explains in plain language what problem it solves and when someone uses it; ` +
-      `"Key concepts:" defines 1-4 necessary domain terms as "term (plain explanation)"; ` +
-      `"How it works:" covers important inputs, outputs, and flow; ` +
-      `add "Usage notes:" only for meaningful constraints, alternatives, or pitfalls.`;
+    ? `summary 使用固定字段：purpose 只用日常语言说明用途，不要写“为什么需要”或“如何实现”标题；` +
+      `keyConcepts 用字符串数组解释 1-4 个“术语（通俗解释）”；` +
+      `workflow 用字符串数组按顺序说明关键输入、输出和流程；notes 只放重要限制、替代实现或易错边界，没有则为空数组。`
+    : `Use fixed summary fields: purpose explains the use in plain language; keyConcepts is an array of 1-4 ` +
+      `"term (plain explanation)" strings; workflow is an ordered array of key inputs, outputs, and flow; ` +
+      `notes contains only meaningful constraints, alternatives, or pitfalls, otherwise an empty array.`;
   if (lang === "en") {
     return `Write for developers who can code but are unfamiliar with this domain. ${structure}` +
       `Explain why it is needed before how it is implemented. Do not list every export or pack concepts into one long sentence. ` +
@@ -775,6 +738,15 @@ function readableSummaryInstructions(lang: "zh" | "en", requireConcepts: boolean
     (requireConcepts
       ? `必须保留核心概念段；如果几乎没有领域术语，就解释最关键的代码概念。`
       : `符号很简单且没有领域术语时，可以省略核心概念段。`);
+}
+
+function semanticJsonContract(): string {
+  return `只返回以下结构的 JSON，不要使用 Markdown，不要在字符串里写 \\n 或 \\r\\n：` +
+    `{"summary":{"purpose":"用途","keyConcepts":["术语（解释）"],` +
+    `"workflow":["步骤"],"notes":["提示"]},` +
+    `"shortSummary":"一句话用途",` +
+    `"pseudocode":[{"step":"顶层步骤","details":["子步骤"]}]}。` +
+    `数组顺序必须遵循源码组织或执行顺序；没有内容时返回空数组，不得更换字段名。`;
 }
 
 function traceSystem(lang: "zh" | "en"): string {

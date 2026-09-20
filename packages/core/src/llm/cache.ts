@@ -1,6 +1,7 @@
 import type { LlmUsage } from "../types.js";
 import { getMeta, getMetaJson, setMetaJson, type Db } from "../db/database.js";
 import { emptyUsage } from "./client.js";
+import { normalizeSemanticContent } from "./format.js";
 
 export type SemanticTargetKind = "repo" | "package" | "directory" | "file" | "symbol" | "trace";
 export type SemanticFlavor =
@@ -39,7 +40,9 @@ export function getCachedSemantic(
        ORDER BY created_at DESC LIMIT 1`,
     )
     .get(...args) as CachedSemantic | undefined;
-  return row ?? null;
+  return row === undefined
+    ? null
+    : { ...row, content: normalizeSemanticContent(row.content, flavor, lang === "en" ? "en" : "zh") };
 }
 
 export function putCachedSemantic(
@@ -54,6 +57,9 @@ export function putCachedSemantic(
     model: string;
   },
 ): void {
+  const content = normalizeSemanticContent(
+    input.content, input.flavor, input.lang === "en" ? "en" : "zh",
+  );
   db.prepare(
     `INSERT INTO summaries
        (target_kind, target_key, flavor, lang, content, source_hash, model, created_at)
@@ -61,7 +67,7 @@ export function putCachedSemantic(
      ON CONFLICT(target_kind, target_key, flavor, lang) DO UPDATE SET
        content = excluded.content, source_hash = excluded.source_hash,
        model = excluded.model, created_at = excluded.created_at`,
-  ).run({ ...input, createdAt: new Date().toISOString() });
+  ).run({ ...input, content, createdAt: new Date().toISOString() });
 }
 
 export function invalidateCachedSemantic(

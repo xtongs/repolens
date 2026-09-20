@@ -33,6 +33,7 @@ import type {
 } from "../types.js";
 import { getMeta, getMetaJson, type Db } from "./database.js";
 import { readLlmStatus, semanticLanguage } from "../llm/cache.js";
+import { normalizeSemanticContent, type SemanticTextFlavor } from "../llm/format.js";
 
 export const EXTERNAL_NODE_ID = "external";
 
@@ -1474,7 +1475,7 @@ function readSummary(
   db: Db,
   targetKind: string,
   targetKey: string,
-  flavor = "summary",
+  flavor: SemanticTextFlavor = "summary",
   sourceHash?: string,
 ): string | null {
   const args: unknown[] = [targetKind, targetKey, flavor, semanticLanguage(db)];
@@ -1487,7 +1488,10 @@ function readSummary(
        ORDER BY created_at DESC LIMIT 1`,
     )
     .get(...args) as { content: string } | undefined;
-  return row?.content ?? null;
+  if (!row) return null;
+  const lang = semanticLanguage(db);
+  const content = normalizeSemanticContent(row.content, flavor, lang === "en" ? "en" : "zh");
+  return content === "" ? null : content;
 }
 
 /** 给图节点挂上扫描期摘要与架构层；结构事实不依赖这些字段。 */
@@ -1532,7 +1536,15 @@ function attachSemantics(db: Db, nodes: GraphNodeDto[]): void {
       row = symbolSemantic.get("tooltip-summary", lang, id) as { content: string } | undefined;
       row ??= symbolSemantic.get("summary-v2", lang, id) as { content: string } | undefined;
     }
-    node.summary = row?.content ?? null;
+    if (!row) node.summary = null;
+    else {
+      const flavor = node.kind === "file" || node.kind === "symbol"
+        ? "tooltip-summary"
+        : "summary";
+      node.summary = normalizeSemanticContent(
+        row.content, flavor, lang === "en" ? "en" : "zh",
+      ) || null;
+    }
   }
 }
 
