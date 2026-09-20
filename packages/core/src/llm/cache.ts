@@ -3,7 +3,12 @@ import { getMeta, getMetaJson, setMetaJson, type Db } from "../db/database.js";
 import { emptyUsage } from "./client.js";
 
 export type SemanticTargetKind = "repo" | "package" | "directory" | "file" | "symbol" | "trace";
-export type SemanticFlavor = "summary" | "summary-v2" | "pseudocode" | "narrative";
+export type SemanticFlavor =
+  | "summary"
+  | "summary-v2"
+  | "tooltip-summary"
+  | "pseudocode"
+  | "narrative";
 
 export interface CachedSemantic {
   content: string;

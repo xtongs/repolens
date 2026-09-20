@@ -27,7 +27,7 @@ function tempDir(prefix: string): string {
 }
 
 describe("generateFileSummary", () => {
-  it("生成结构化通俗摘要、清理 HTML 实体并使用新版缓存", async () => {
+  it("生成详细/单句摘要和文件伪代码，并补齐只有摘要的旧缓存", async () => {
     const repo = tempDir("repolens-summary-repo-");
     const configHome = tempDir("repolens-summary-config-");
     mkdirSync(join(repo, "src"));
@@ -51,12 +51,14 @@ describe("generateFileSummary", () => {
     ).run("src/example.ts", "src", "example.ts", "typescript", "source", 1, 39, "file-hash");
     const fileId = Number(inserted.lastInsertRowid);
     putCachedSemantic(db, {
-      targetKind: "file", targetKey: "src/example.ts", flavor: "summary", lang: "zh",
-      content: "旧版晦涩摘要", sourceHash: "file-hash", model: "test-model",
+      targetKind: "file", targetKey: "src/example.ts", flavor: "summary-v2", lang: "zh",
+      content: "旧缓存只有详细摘要", sourceHash: "file-hash", model: "test-model",
     });
 
-    // 老 flavor 仍可供扫描期包/目录使用，但不能污染新版文件摘要。
-    expect(getFileDetail(db, fileId)?.summary).toBeNull();
+    // 从上一版本升级时已有详细摘要，但仍要调用一次模型补齐 Tooltip 与伪代码。
+    expect(getFileDetail(db, fileId)).toMatchObject({
+      summary: "旧缓存只有详细摘要", shortSummary: null, pseudocode: null,
+    });
 
     const calls: Array<{ system: string; authorization: string | null }> = [];
     vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
@@ -68,10 +70,14 @@ describe("generateFileSummary", () => {
       const summary = calls.length === 1
         ? "用途：处理请求。&#x20;\n\n核心概念：Span（一次可追踪的操作）。&nbsp;\n\n工作方式：接收输入并返回结果。"
         : "用途：这是手动刷新后生成的新摘要。";
+      const shortSummary = calls.length === 1 ? "处理请求并返回结果。" : "刷新后的简短摘要。";
+      const pseudocode = calls.length === 1
+        ? "函数 run：\n  返回 ok"
+        : "函数 run：\n  返回刷新后的结果";
       return new Response(JSON.stringify({
         choices: [{
           message: {
-            content: JSON.stringify({ summary }),
+            content: JSON.stringify({ summary, shortSummary, pseudocode }),
           },
         }],
         usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
@@ -82,6 +88,8 @@ describe("generateFileSummary", () => {
     expect(first).toMatchObject({
       generated: true, cacheHit: false, model: "test-model",
       summary: "用途：处理请求。\n\n核心概念：Span（一次可追踪的操作）。\n\n工作方式：接收输入并返回结果。",
+      shortSummary: "处理请求并返回结果。",
+      pseudocode: "函数 run：\n  返回 ok",
     });
     expect(first.summary).not.toContain("&#x20;");
     expect(first.summary).not.toContain("&nbsp;");
@@ -92,21 +100,39 @@ describe("generateFileSummary", () => {
     expect(calls[0]?.system).toContain("专业术语首次出现时");
     expect(calls[0]?.system).toContain("为什么需要");
     expect(calls[0]?.system).toContain("不要暗示耗时统计");
+    expect(calls[0]?.system).toContain("文件整体");
+    expect(calls[0]?.system).toContain("主要导出");
+    expect(calls[0]?.system).toContain("shortSummary");
 
     expect(getCachedSemantic(
       db, "file", "src/example.ts", "summary-v2", "zh", "file-hash", "test-model",
     )?.content).toBe(first.summary);
-    expect(getFileDetail(db, fileId)?.summary).toBe(first.summary);
+    expect(getCachedSemantic(
+      db, "file", "src/example.ts", "tooltip-summary", "zh", "file-hash", "test-model",
+    )?.content).toBe(first.shortSummary);
+    expect(getCachedSemantic(
+      db, "file", "src/example.ts", "pseudocode", "zh", "file-hash", "test-model",
+    )?.content).toBe(first.pseudocode);
+    expect(getFileDetail(db, fileId)).toMatchObject({
+      summary: first.summary, shortSummary: first.shortSummary, pseudocode: first.pseudocode,
+    });
 
     const second = await generateFileSummary(db, repo, fileId);
-    expect(second).toMatchObject({ generated: false, cacheHit: true, summary: first.summary });
+    expect(second).toMatchObject({
+      generated: false, cacheHit: true, summary: first.summary,
+      shortSummary: first.shortSummary, pseudocode: first.pseudocode,
+    });
     expect(calls).toHaveLength(1);
 
     const refreshed = await generateFileSummary(db, repo, fileId, { force: true });
     expect(refreshed).toMatchObject({
       generated: true, cacheHit: false, summary: "用途：这是手动刷新后生成的新摘要。",
+      shortSummary: "刷新后的简短摘要。",
+      pseudocode: "函数 run：\n  返回刷新后的结果",
     });
     expect(calls).toHaveLength(2);
-    expect(getFileDetail(db, fileId)?.summary).toBe(refreshed.summary);
+    expect(getFileDetail(db, fileId)).toMatchObject({
+      summary: refreshed.summary, shortSummary: refreshed.shortSummary, pseudocode: refreshed.pseudocode,
+    });
   });
 });

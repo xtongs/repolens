@@ -590,6 +590,8 @@ export interface FileDetailDto {
   }>;
   importedBy: Array<{ id: string; path: string }>;
   summary?: string | null;
+  shortSummary?: string | null;
+  pseudocode?: string | null;
 }
 
 export interface ParamDto {
@@ -636,12 +638,14 @@ export interface SymbolDetailDto {
   typeRelations: Array<{ relation: "extends" | "implements" | "embeds"; target: string; targetId?: string | null }>;
   /** M3，按需生成 */
   summary?: string | null;
+  shortSummary?: string | null;
   pseudocode?: string | null;
 }
 
 /** 文件/符号按需生成接口的统一返回形状。 */
 export interface SemanticResultDto {
   summary: string | null;
+  shortSummary?: string | null;
   pseudocode?: string | null;
   generated: boolean;
   cacheHit: boolean;

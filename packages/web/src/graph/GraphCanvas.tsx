@@ -22,6 +22,8 @@ import { ScopeNode, type ScopeNodeType } from "./nodes/ScopeNode";
 import { useElkLayout, type PositionedNode } from "./layout/useElkLayout";
 
 const NODE_TYPES = { scope: ScopeNode };
+const EDGE_DOT_MARKER = "repolens-edge-dot";
+const ACTIVE_EDGE_DOT_MARKER = "repolens-active-edge-dot";
 
 /** 缩放低于这个值就切低细节渲染，避免小字糊成一片 */
 const LOW_DETAIL_ZOOM = 0.45;
@@ -155,6 +157,7 @@ function CanvasInner() {
         const active = highlight?.edges.has(edge.id) ?? false;
         const dimmed = highlight !== null && !active;
         const isUncertain = edge.confidence === "ambiguous" || edge.confidence === "likely";
+        const color = active ? "var(--color-accent)" : "var(--color-line-strong)";
         return {
           id: edge.id,
           source: edge.source,
@@ -163,12 +166,15 @@ function CanvasInner() {
           style: {
             // 边宽编码依赖强度，最细也要 1px 否则在暗色背景上会消失
             strokeWidth: 1 + edge.weight * 2.4,
-            stroke: active ? "var(--color-accent)" : "var(--color-line-strong)",
+            stroke: color,
             strokeDasharray:
               edge.confidence === "ambiguous" ? "2 4" : edge.confidence === "likely" ? "6 4" : undefined,
             opacity: dimmed ? 0.2 : isUncertain ? 0.7 : 0.95,
+            strokeLinecap: "round",
             transition: "opacity 140ms ease, stroke 140ms ease",
           },
+          // 自定义实心圆使用 userSpaceOnUse，不会跟随依赖线宽放大。
+          markerEnd: active ? ACTIVE_EDGE_DOT_MARKER : EDGE_DOT_MARKER,
           zIndex: active ? 5 : 0,
         };
       }),
@@ -248,6 +254,7 @@ function CanvasInner() {
 
   return (
     <div className="relative h-full w-full">
+      <EdgeDotMarkers />
       <ReactFlow<ScopeNodeType>
         nodes={nodes}
         edges={edges}
@@ -287,6 +294,10 @@ function CanvasInner() {
         </div>
       )}
 
+      <div className="pointer-events-none absolute bottom-4 right-4 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)]/90 px-2.5 py-1 text-[10px] text-[var(--color-ink-faint)] shadow-sm backdrop-blur">
+        {horizontal ? "调用方向：调用方 → 被调用方" : "依赖方向：使用方 ↓ 被依赖方"}
+      </div>
+
       {overview?.summary && !callGraph && (
         <div className="pointer-events-none absolute left-12 top-4 max-w-[420px] rounded-lg border border-[var(--color-accent)]/20 bg-[var(--color-surface)]/90 px-3 py-2 shadow-lg backdrop-blur">
           <div className="text-[9px] uppercase tracking-wider text-[var(--color-accent)]">AI 仓库概览</div>
@@ -299,6 +310,43 @@ function CanvasInner() {
       <HoverCard />
       {menu && <NodeContextMenu state={menu} onClose={() => setMenu(null)} />}
     </div>
+  );
+}
+
+/**
+ * 连接线末端只表达方向，不再用视觉重量很强的三角箭头。marker 的视口仍是
+ * 原来的 13×13，圆点直径与旧箭头高度接近，并且与线宽完全解耦。
+ */
+function EdgeDotMarkers() {
+  return (
+    <svg aria-hidden="true" className="pointer-events-none absolute h-0 w-0">
+      <defs>
+        <marker
+          id={EDGE_DOT_MARKER}
+          markerWidth="13"
+          markerHeight="13"
+          markerUnits="userSpaceOnUse"
+          orient="auto"
+          refX="0"
+          refY="0"
+          viewBox="-9 -6.5 13 13"
+        >
+          <circle cx="-4.5" cy="0" r="4" fill="var(--color-line-strong)" />
+        </marker>
+        <marker
+          id={ACTIVE_EDGE_DOT_MARKER}
+          markerWidth="13"
+          markerHeight="13"
+          markerUnits="userSpaceOnUse"
+          orient="auto"
+          refX="0"
+          refY="0"
+          viewBox="-9 -6.5 13 13"
+        >
+          <circle cx="-4.5" cy="0" r="4" fill="var(--color-accent)" />
+        </marker>
+      </defs>
+    </svg>
   );
 }
 

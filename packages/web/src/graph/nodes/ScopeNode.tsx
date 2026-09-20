@@ -189,8 +189,13 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
                 <span className="text-[var(--color-ink-faint)]">· {dto.childCount} 项</span>
               )}
               {dto.metrics.inDegree + dto.metrics.outDegree > 0 && (
-                <span className="ml-auto tabular-nums">
-                  ↓{dto.metrics.inDegree} ↑{dto.metrics.outDegree}
+                <span
+                  className="ml-auto tabular-nums"
+                  title={dto.kind === "symbol" ? "调用 / 被调用" : "依赖 / 被依赖"}
+                >
+                  {horizontal
+                    ? `→${dto.metrics.outDegree} ←${dto.metrics.inDegree}`
+                    : `↓${dto.metrics.outDegree} ↑${dto.metrics.inDegree}`}
                 </span>
               )}
             </div>

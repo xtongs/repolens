@@ -392,7 +392,7 @@ function tryPackageGraph(
               COALESCE(SUM(f.complexity), 0) AS complexity
        FROM packages p
        LEFT JOIN files f ON f.package_id = p.id AND f.role = 'source'
-       GROUP BY p.id`,
+       GROUP BY p.id ORDER BY p.dir, p.name`,
     )
     .all() as Array<{
     name: string;
@@ -472,7 +472,8 @@ function directoryScopeGraph(
     .prepare(
       `SELECT path, name, loc, file_count AS files, symbol_count AS symbols, complexity
        FROM directories
-       WHERE ${scopeDir === "." ? "depth = 1" : "parent_path = ?"} AND file_count > 0`,
+       WHERE ${scopeDir === "." ? "depth = 1" : "parent_path = ?"} AND file_count > 0
+       ORDER BY path`,
     )
     .all(...(scopeDir === "." ? [] : [scopeDir])) as Array<{
     path: string;
@@ -488,7 +489,7 @@ function directoryScopeGraph(
     .prepare(
       `SELECT id, path, name, language, role, loc, complexity,
               (SELECT COUNT(*) FROM symbols s WHERE s.file_id = files.id) AS symbols
-       FROM files WHERE dir_path = ? AND role IN (${placeholders})`,
+       FROM files WHERE dir_path = ? AND role IN (${placeholders}) ORDER BY path`,
     )
     .all(scopeDir, ...roles) as Array<{
     id: number;
@@ -790,9 +791,11 @@ export function getCallGraph(db: Db, options: CallGraphOptions): GraphDto {
   attachFindings(db, nodes);
   // 这里不走 finalizeGraph 的折叠：中心节点被折进「其他 N 项」的话
   // 整张图就没有锚点了，而每层限量已经把规模控住了。
+  const normalizedEdges = normalizeEdges(nodes, [...edges.values()]);
+  attachDetailRelationCounts(db, nodes);
   return {
     nodes,
-    edges: normalizeEdges(nodes, [...edges.values()]),
+    edges: normalizedEdges,
     truncated: omittedAtCenter(db, options.symbolId, direction, confidence, perLevel),
   };
 }
@@ -839,7 +842,7 @@ function symbolNodes(db: Db, ids: readonly number[], focusId: number): GraphNode
               s.start_line AS startLine, s.end_line AS endLine,
               f.path, f.language, f.role
        FROM symbols s JOIN files f ON f.id = s.file_id
-       WHERE s.id IN (${placeholders})`,
+       WHERE s.id IN (${placeholders}) ORDER BY f.path, s.start_line, s.id`,
     )
     .all(...ids) as Array<{
     id: number;
@@ -900,7 +903,7 @@ function finalizeGraph(
   attachFindings(db, nodes);
 
   if (nodes.length > limit) {
-    const sorted = [...nodes].sort((a, b) => b.metrics.loc - a.metrics.loc);
+    const sorted = [...nodes].sort((a, b) => b.metrics.loc - a.metrics.loc || a.id.localeCompare(b.id));
     // 被锁住的节点排到最前，这样它一定落在保留区里
     if (keep !== undefined) {
       const at = sorted.findIndex((n) => n.id === keep);
@@ -959,7 +962,9 @@ function finalizeGraph(
   const nodeIds = new Set(finalNodes.map((n) => n.id));
   finalEdges = finalEdges.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target));
 
-  return { nodes: finalNodes, edges: normalizeEdges(finalNodes, finalEdges), truncated };
+  const normalizedEdges = normalizeEdges(finalNodes, finalEdges);
+  attachDetailRelationCounts(db, finalNodes);
+  return { nodes: finalNodes, edges: normalizedEdges, truncated };
 }
 
 /**
@@ -980,7 +985,84 @@ function normalizeEdges(nodes: readonly GraphNodeDto[], edges: GraphEdgeDto[]): 
 
   const maxWeight = Math.max(1, ...edges.map((e) => e.weight));
   for (const edge of edges) edge.weight = edge.weight / maxWeight;
-  return edges;
+  return edges.sort((a, b) =>
+    a.source.localeCompare(b.source) || a.target.localeCompare(b.target) || a.id.localeCompare(b.id),
+  );
+}
+
+/**
+ * 文件和符号卡片展示的是对象自身的完整关系统计，而不是当前画布恰好可见的边数。
+ *
+ * 例如一个文件有 5 条 import 声明，但其中两条指向同一文件、另一条跨出当前
+ * 目录时，局部图只会画出 3 个目标节点。若直接使用图的 degree，卡片显示 3，
+ * 点开详情却显示 5。这里在完成边布局统计后覆写叶子节点，使两个位置口径一致。
+ * 包、目录和聚合节点仍保留当前层的聚合边数，因为它们没有独立的详情关系表。
+ */
+function attachDetailRelationCounts(db: Db, nodes: readonly GraphNodeDto[]): void {
+  const fileIds = nodes
+    .filter((node) => node.kind === "file")
+    .map((node) => Number(node.id.slice("file:".length)))
+    .filter(Number.isInteger);
+  const symbolIds = nodes
+    .filter((node) => node.kind === "symbol")
+    .map((node) => Number(node.id.slice("sym:".length)))
+    .filter(Number.isInteger);
+
+  const fileOutgoing = groupedCounts(
+    db, fileIds,
+    "SELECT file_id AS id, COUNT(*) AS n FROM imports WHERE file_id IN",
+    "GROUP BY file_id",
+  );
+  const fileIncoming = groupedCounts(
+    db, fileIds,
+    `SELECT dst_id AS id, COUNT(DISTINCT src_id) AS n FROM edges
+     WHERE type = 'imports' AND src_kind = 'file' AND dst_kind = 'file' AND dst_id IN`,
+    "GROUP BY dst_id",
+  );
+  const symbolOutgoing = groupedCounts(
+    db, symbolIds,
+    `SELECT src_id AS id, COUNT(*) AS n FROM edges
+     WHERE type = 'calls' AND src_kind = 'symbol' AND dst_kind = 'symbol' AND src_id IN`,
+    "GROUP BY src_id",
+  );
+  const symbolIncoming = groupedCounts(
+    db, symbolIds,
+    `SELECT dst_id AS id, COUNT(*) AS n FROM edges
+     WHERE type = 'calls' AND src_kind = 'symbol' AND dst_kind = 'symbol' AND dst_id IN`,
+    "GROUP BY dst_id",
+  );
+
+  for (const node of nodes) {
+    if (node.kind === "file") {
+      const id = Number(node.id.slice("file:".length));
+      node.metrics.outDegree = fileOutgoing.get(id) ?? 0;
+      node.metrics.inDegree = fileIncoming.get(id) ?? 0;
+    } else if (node.kind === "symbol") {
+      const id = Number(node.id.slice("sym:".length));
+      // 详情关系列表目前最多返回 200 项，数字也遵循相同上限。
+      node.metrics.outDegree = Math.min(symbolOutgoing.get(id) ?? 0, 200);
+      node.metrics.inDegree = Math.min(symbolIncoming.get(id) ?? 0, 200);
+    }
+  }
+}
+
+/** SQLite 默认参数上限因构建而异，分批查询避免大调用图越界。 */
+function groupedCounts(
+  db: Db,
+  ids: readonly number[],
+  sqlBeforeIn: string,
+  sqlAfterIn: string,
+): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (let offset = 0; offset < ids.length; offset += 400) {
+    const batch = ids.slice(offset, offset + 400);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db
+      .prepare(`${sqlBeforeIn} (${placeholders}) ${sqlAfterIn}`)
+      .all(...batch) as Array<{ id: number; n: number }>;
+    for (const row of rows) counts.set(row.id, row.n);
+  }
+  return counts;
 }
 
 function collectExternalEdges(db: Db, nodes: readonly GraphNodeDto[]): GraphEdgeDto[] {
@@ -1157,6 +1239,8 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
         .all(fileId) as Array<{ id: number; path: string }>
     ).map((row) => ({ id: `file:${row.id}`, path: row.path })),
     summary: readSummary(db, "file", file.path, "summary-v2", file.hash),
+    shortSummary: readSummary(db, "file", file.path, "tooltip-summary", file.hash),
+    pseudocode: readSummary(db, "file", file.path, "pseudocode", file.hash),
   };
 }
 
@@ -1284,6 +1368,7 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
       targetId: t.targetId !== null ? `sym:${t.targetId}` : null,
     })),
     summary: readSummary(db, "symbol", summaryKey, "summary-v2", row["hash"] as string),
+    shortSummary: readSummary(db, "symbol", summaryKey, "tooltip-summary", row["hash"] as string),
     pseudocode: readSummary(db, "symbol", summaryKey, "pseudocode", row["hash"] as string),
   };
 }
@@ -1419,17 +1504,17 @@ function attachSemantics(db: Db, nodes: GraphNodeDto[]): void {
      WHERE target_kind = ? AND target_key = ? AND flavor = 'summary' AND lang = ?
      ORDER BY created_at DESC LIMIT 1`,
   );
-  const symbolSummary = db.prepare(
+  const symbolSemantic = db.prepare(
     `SELECT sm.content FROM symbols s JOIN files f ON f.id = s.file_id
      JOIN summaries sm ON sm.target_kind = 'symbol'
        AND sm.target_key = (CASE WHEN s.container IS NULL THEN f.path || '#' || s.name
                                 ELSE f.path || '#' || s.container || '.' || s.name END) || ':' || s.start_line
-       AND sm.flavor = 'summary-v2' AND sm.lang = ? AND sm.source_hash = s.hash
+       AND sm.flavor = ? AND sm.lang = ? AND sm.source_hash = s.hash
      WHERE s.id = ? ORDER BY sm.created_at DESC LIMIT 1`,
   );
-  const fileSummary = db.prepare(
+  const fileSemantic = db.prepare(
     `SELECT sm.content FROM files f JOIN summaries sm ON sm.target_kind = 'file'
-       AND sm.target_key = f.path AND sm.flavor = 'summary-v2' AND sm.lang = ? AND sm.source_hash = f.hash
+       AND sm.target_key = f.path AND sm.flavor = ? AND sm.lang = ? AND sm.source_hash = f.hash
      WHERE f.id = ? ORDER BY sm.created_at DESC LIMIT 1`,
   );
 
@@ -1438,8 +1523,15 @@ function attachSemantics(db: Db, nodes: GraphNodeDto[]): void {
     let row: { content: string } | undefined;
     if (node.kind === "package") row = summary.get("package", node.id.slice(4), lang) as { content: string } | undefined;
     else if (node.kind === "directory") row = summary.get("directory", node.path ?? node.id.slice(4), lang) as { content: string } | undefined;
-    else if (node.kind === "file") row = fileSummary.get(lang, Number(node.id.slice(5))) as { content: string } | undefined;
-    else if (node.kind === "symbol") row = symbolSummary.get(lang, Number(node.id.slice(4))) as { content: string } | undefined;
+    else if (node.kind === "file") {
+      const id = Number(node.id.slice(5));
+      row = fileSemantic.get("tooltip-summary", lang, id) as { content: string } | undefined;
+      row ??= fileSemantic.get("summary-v2", lang, id) as { content: string } | undefined;
+    } else if (node.kind === "symbol") {
+      const id = Number(node.id.slice(4));
+      row = symbolSemantic.get("tooltip-summary", lang, id) as { content: string } | undefined;
+      row ??= symbolSemantic.get("summary-v2", lang, id) as { content: string } | undefined;
+    }
     node.summary = row?.content ?? null;
   }
 }

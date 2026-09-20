@@ -33,6 +33,13 @@ interface ArchitectureResponse {
 
 interface SymbolSemanticResponse {
   summary?: unknown;
+  shortSummary?: unknown;
+  pseudocode?: unknown;
+}
+
+interface FileSemanticResponse {
+  summary?: unknown;
+  shortSummary?: unknown;
   pseudocode?: unknown;
 }
 
@@ -260,9 +267,13 @@ async function generateSymbolSemanticsInner(
   const pseudocode = getCachedSemantic(
     db, "symbol", targetKey, "pseudocode", lang, row.hash, requestConfig.model,
   );
-  if (!force && summary && pseudocode) {
+  const shortSummary = getCachedSemantic(
+    db, "symbol", targetKey, "tooltip-summary", lang, row.hash, requestConfig.model,
+  );
+  if (!force && summary && shortSummary && pseudocode) {
     return {
       summary: summary.content,
+      shortSummary: shortSummary.content,
       pseudocode: pseudocode.content,
       generated: false,
       cacheHit: true,
@@ -290,18 +301,20 @@ async function generateSymbolSemanticsInner(
         source,
       },
     }),
-    { maxOutputTokens: 900 },
+    { maxOutputTokens: 1_000 },
   );
   const generatedSummary = cleanText(result.data.summary, 2_000);
+  const generatedShortSummary = cleanSingleLine(result.data.shortSummary, 240);
   const generatedPseudocode = cleanText(result.data.pseudocode, 8_000);
-  if (generatedSummary === null || generatedPseudocode === null) {
-    throw new Error("LLM 返回缺少 summary 或 pseudocode");
+  if (generatedSummary === null || generatedShortSummary === null || generatedPseudocode === null) {
+    throw new Error("LLM 返回缺少 summary、shortSummary 或 pseudocode");
   }
 
   transact(db, () => {
     invalidateCachedSemantic(db, "symbol", targetKey, row.hash);
     for (const [flavor, content] of [
       ["summary-v2", generatedSummary],
+      ["tooltip-summary", generatedShortSummary],
       ["pseudocode", generatedPseudocode],
     ] as const) {
       putCachedSemantic(db, {
@@ -326,6 +339,7 @@ async function generateSymbolSemanticsInner(
 
   return {
     summary: generatedSummary,
+    shortSummary: generatedShortSummary,
     pseudocode: generatedPseudocode,
     generated: true,
     cacheHit: false,
@@ -423,41 +437,78 @@ async function generateFileSummaryInner(
     | { path: string; language: string; hash: string }
     | undefined;
   if (!row) throw new Error("文件不存在");
-  const cached = getCachedSemantic(
+  const summary = getCachedSemantic(
     db, "file", row.path, "summary-v2", config.outputLanguage, row.hash,
     interactiveConfig(config).model,
   );
-  if (!force && cached) {
-    return { summary: cached.content, generated: false, cacheHit: true, model: cached.model, usage: emptyUsage() };
+  const shortSummary = getCachedSemantic(
+    db, "file", row.path, "tooltip-summary", config.outputLanguage, row.hash,
+    interactiveConfig(config).model,
+  );
+  const pseudocode = getCachedSemantic(
+    db, "file", row.path, "pseudocode", config.outputLanguage, row.hash,
+    interactiveConfig(config).model,
+  );
+  if (!force && summary && shortSummary && pseudocode) {
+    return {
+      summary: summary.content, shortSummary: shortSummary.content, pseudocode: pseudocode.content,
+      generated: false, cacheHit: true, model: summary.model, usage: emptyUsage(),
+    };
   }
 
   const requestConfig = interactiveConfig(config);
   const client = new OpenAiCompatibleClient(requestConfig);
   const symbols = db.prepare(
-    "SELECT name, kind, signature, doc FROM symbols WHERE file_id = ? ORDER BY start_line LIMIT 80",
+    `SELECT name, kind, container, exported, signature, doc,
+            start_line AS startLine, end_line AS endLine
+     FROM symbols WHERE file_id = ? ORDER BY start_line LIMIT 80`,
   ).all(fileId);
   const imports = db.prepare(
-    "SELECT raw_source AS source FROM imports WHERE file_id = ? ORDER BY line LIMIT 80",
+    "SELECT raw_source AS source, line FROM imports WHERE file_id = ? ORDER BY line LIMIT 80",
   ).all(fileId);
+  const calls = db.prepare(
+    `SELECT caller.name AS caller, caller.container AS callerContainer,
+            callee.name AS callee, callee.container AS calleeContainer,
+            e.line, e.confidence
+     FROM edges e
+     JOIN symbols caller ON e.src_kind = 'symbol' AND caller.id = e.src_id
+     JOIN symbols callee ON e.dst_kind = 'symbol' AND callee.id = e.dst_id
+     WHERE e.type = 'calls' AND caller.file_id = ? AND callee.file_id = ?
+     ORDER BY e.line LIMIT 160`,
+  ).all(fileId, fileId);
   const source = readFileCapped(root, row.path, 24_000);
-  const result = await client.completeJson<{ summary?: unknown }>(
+  const result = await client.completeJson<FileSemanticResponse>(
     fileSystem(config.outputLanguage),
-    JSON.stringify({ file: { path: row.path, language: row.language, symbols, imports, source } }),
+    JSON.stringify({ file: { path: row.path, language: row.language, symbols, imports, calls, source } }),
+    { maxOutputTokens: 1_200 },
   );
   const generatedSummary = cleanText(result.data.summary, 2_000);
-  if (generatedSummary === null) throw new Error("LLM 返回缺少 summary");
+  const generatedShortSummary = cleanSingleLine(result.data.shortSummary, 240);
+  const generatedPseudocode = cleanText(result.data.pseudocode, 12_000);
+  if (generatedSummary === null || generatedShortSummary === null || generatedPseudocode === null) {
+    throw new Error("LLM 返回缺少 summary、shortSummary 或 pseudocode");
+  }
   transact(db, () => {
     invalidateCachedSemantic(db, "file", row.path, row.hash);
-    putCachedSemantic(db, {
-      targetKind: "file", targetKey: row.path, flavor: "summary-v2",
-      lang: config.outputLanguage, content: generatedSummary, sourceHash: row.hash, model: requestConfig.model,
-    });
+    for (const [flavor, content] of [
+      ["summary-v2", generatedSummary],
+      ["tooltip-summary", generatedShortSummary],
+      ["pseudocode", generatedPseudocode],
+    ] as const) {
+      putCachedSemantic(db, {
+        targetKind: "file", targetKey: row.path, flavor, lang: config.outputLanguage,
+        content, sourceHash: row.hash, model: requestConfig.model,
+      });
+    }
     mergeLlmStatusUsage(db, {
       enabled: true, available: true, model: config.model,
       interactiveModel: config.interactiveModel, reason: null, usage: result.usage,
     });
   });
-  return { summary: generatedSummary, generated: true, cacheHit: false, model: requestConfig.model, usage: result.usage };
+  return {
+    summary: generatedSummary, shortSummary: generatedShortSummary, pseudocode: generatedPseudocode,
+    generated: true, cacheHit: false, model: requestConfig.model, usage: result.usage,
+  };
 }
 
 function semanticTargets(db: Db): SemanticTarget[] {
@@ -583,6 +634,16 @@ function cleanText(value: unknown, maxLength: number): string | null {
   return text === "" ? null : text.slice(0, maxLength);
 }
 
+function cleanSingleLine(value: unknown, maxLength: number): string | null {
+  const text = cleanText(value, maxLength);
+  if (text === null) return null;
+  const compact = text.replace(/\s+/g, " ").replace(/^(用途|Purpose)\s*[:：]\s*/i, "").trim();
+  const cjkSentence = /^(.+?[。！？])/.exec(compact)?.[1];
+  const latinSentence = /^(.+?[.!?])(?:\s|$)/.exec(compact)?.[1];
+  const sentence = cjkSentence ?? latinSentence ?? compact;
+  return sentence === "" ? null : sentence.slice(0, maxLength);
+}
+
 /**
  * 模型偶尔会把普通文本写成 HTML 实体。前端按文本渲染，不应把 `&#x20;`
  * 这样的传输噪音展示给用户；这里只解码明确的字符实体，不解析 HTML。
@@ -666,14 +727,22 @@ function summarySystem(lang: "zh" | "en"): string {
 function symbolSystem(lang: "zh" | "en"): string {
   return `你是代码解释器。只根据给定源码、签名和确定性调用关系解释符号。用${languageName(lang)}输出。` +
     readableSummaryInstructions(lang, false) +
-    `只返回 JSON：{"summary":"带有段落换行的摘要","pseudocode":"逻辑伪代码"}。` +
-    `伪代码最多 12 行，不要复述语法，要呈现分支、循环、错误处理、输入输出；不得声称源码被截断。`;
+    `shortSummary 必须是一句不带标题的通俗用途说明，供悬停卡片快速阅读，不超过 80 个汉字或 160 个英文字符。` +
+    `只返回 JSON：{"summary":"带有段落换行的摘要","shortSummary":"一句话用途","pseudocode":"逻辑伪代码"}。` +
+    `伪代码最多 12 行，每行尽量不超过 72 个显示字符并保持层级缩进；` +
+    `不要复述语法，要呈现分支、循环、错误处理、输入输出；不得声称源码被截断。`;
 }
 
 function fileSystem(lang: "zh" | "en"): string {
   return `你是代码文件摘要器。只根据给定源码、导入和符号列表解释文件。用${languageName(lang)}输出。` +
     readableSummaryInstructions(lang, true) +
-    `不得编造源码中没有的业务用途、运行效果或约束。只返回 JSON：{"summary":"带有段落换行的摘要"}。`;
+    `shortSummary 必须是一句不带标题的通俗用途说明，供悬停卡片快速阅读，不超过 80 个汉字或 160 个英文字符。` +
+    `pseudocode 要从文件整体出发，按源码中的组织或执行顺序列出主要导出、初始化步骤、关键函数及函数间的调用关系，` +
+    `让读者不打开源码也能理解“文件里有哪些主要逻辑、它们怎样协作”；不要逐行翻译，也不要虚构执行顺序。` +
+    `文件只有类型或常量时，应如实描述声明与导出关系。伪代码控制在 24 行内，` +
+    `每行尽量不超过 72 个显示字符，较长步骤拆成带缩进的子步骤。` +
+    `不得编造源码中没有的业务用途、运行效果或约束。` +
+    `只返回 JSON：{"summary":"带有段落换行的摘要","shortSummary":"一句话用途","pseudocode":"文件级逻辑伪代码"}。`;
 }
 
 function readableSummaryInstructions(lang: "zh" | "en", requireConcepts: boolean): string {

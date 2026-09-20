@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS summaries (
   id          INTEGER PRIMARY KEY,
   target_kind TEXT NOT NULL,        -- repo | package | directory | file | symbol
   target_key  TEXT NOT NULL,        -- 稳定键：包名 / 目录路径 / 文件路径 / 符号签名键
-  flavor      TEXT NOT NULL,        -- summary | pseudocode | layer
+  flavor      TEXT NOT NULL,        -- summary | summary-v2 | tooltip-summary | pseudocode | narrative
   lang        TEXT NOT NULL,
   content     TEXT NOT NULL,
   /** 生成时目标的内容指纹，不匹配则视为过期 */

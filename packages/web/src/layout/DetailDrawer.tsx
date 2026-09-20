@@ -41,7 +41,7 @@ export function DetailDrawer() {
   const availableTabs: Tab[] = isSymbol
     ? ["overview", "params", "pseudocode", "source", "relations"]
     : isFile
-      ? ["overview", "source", "relations"]
+      ? ["overview", "pseudocode", "source", "relations"]
       : ["overview"];
 
   return (
@@ -113,7 +113,10 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
       .then((result) => {
         setDetail((current) =>
           current?.id === id
-            ? { ...current, summary: result.summary, pseudocode: result.pseudocode ?? null }
+            ? {
+                ...current, summary: result.summary, shortSummary: result.shortSummary ?? null,
+                pseudocode: result.pseudocode ?? null,
+              }
             : current,
         );
       })
@@ -454,20 +457,53 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
     void api
       .generateFileSummary(id, refresh)
       .then((result) =>
-        setDetail((current) => (current?.id === id ? { ...current, summary: result.summary } : current)),
+        setDetail((current) => (current?.id === id
+          ? {
+              ...current, summary: result.summary, shortSummary: result.shortSummary ?? null,
+              pseudocode: result.pseudocode ?? null,
+            }
+          : current)),
       )
       .catch((e: Error) => setSemanticError(e.message))
       .finally(() => setSemanticLoading(false));
   };
 
-  // 首次打开文件且缓存中没有摘要时立即生成，不再要求用户多点一次按钮。
+  // 文件语义是一个整体：摘要、Tooltip 单句和文件伪代码缺一项都补齐。
   useEffect(() => {
-    if (detail === null || detail.summary || semanticLoading || semanticError) return;
+    if (
+      detail === null ||
+      (detail.summary && detail.shortSummary && detail.pseudocode) ||
+      semanticLoading || semanticError
+    ) return;
     generateSummary();
   }, [detail, semanticLoading, semanticError]);
 
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
+
+  if (tab === "pseudocode") {
+    return (
+      <div className="p-3">
+        <div className="mb-2 text-[9.5px] uppercase tracking-wider text-[var(--color-accent)]">
+          AI 生成 · 文件整体逻辑 · 可能不准确
+        </div>
+        {detail.pseudocode ? (
+          <pre className="mono whitespace-pre-wrap rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+            {detail.pseudocode}
+          </pre>
+        ) : semanticLoading ? (
+          <SemanticLoading label="正在分析文件内函数与整体逻辑…" />
+        ) : semanticError ? (
+          <div>
+            <Empty>{semanticError}</Empty>
+            <RetryButton onClick={generateSummary}>重新生成</RetryButton>
+          </div>
+        ) : (
+          <Empty>当前索引里还没有这个文件的伪代码。</Empty>
+        )}
+      </div>
+    );
+  }
 
   if (tab === "source") return <SourceView fileId={detail.id} />;
 
@@ -547,7 +583,7 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
           )}
         </div>
       ) : semanticLoading || !semanticError ? (
-        <SemanticLoading label="正在生成文件摘要…" />
+        <SemanticLoading label="正在生成文件摘要与伪代码…" />
       ) : semanticError ? (
         <div className="mt-2">
           <div className="text-[11px] text-[var(--color-warn)]">{semanticError}</div>
@@ -555,10 +591,11 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
         </div>
       ) : null}
 
-      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--color-line)] pt-2.5">
+      <div className="mt-3 grid grid-cols-4 gap-2 border-t border-[var(--color-line)] pt-2.5">
         <Metric label="代码行" value={formatCount(detail.loc)} />
         <Metric label="符号" value={String(detail.symbols.length)} />
         <Metric label="依赖" value={String(detail.imports.length)} />
+        <Metric label="被依赖" value={String(detail.importedBy.length)} />
       </div>
 
       <div className="mt-3">
@@ -632,8 +669,8 @@ function ScopeBody({ id }: { id: string }) {
         <Metric label="文件" value={formatCount(node.metrics.files)} />
         <Metric label="符号" value={formatCount(node.metrics.symbols)} />
         <Metric label="复杂度" value={formatCount(node.metrics.complexity)} />
-        <Metric label="被依赖" value={String(node.metrics.inDegree)} />
         <Metric label="依赖" value={String(node.metrics.outDegree)} />
+        <Metric label="被依赖" value={String(node.metrics.inDegree)} />
       </div>
 
       {node.expandable && (
