@@ -159,4 +159,28 @@ describe("M4 trace analysis", () => {
       expect(requests).toBe(1);
     } finally { db.close(); }
   });
+
+  it("同一行的多个边界调用按实参区分且不会重复写步骤", async () => {
+    const root = mkdtempSync(join(tmpdir(), "repolens-trace-collision-"));
+    roots.push(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "trace-collision" }));
+    writeFileSync(join(root, ".repolens.json"), JSON.stringify({ llm: { enabled: false } }));
+    writeFileSync(join(root, "src/store.ts"), `
+      const db = { query(sql: string): string { return sql; } };
+      export function choose(flag: boolean): string { return flag ? db.query("left") : db.query("right"); }
+    `);
+
+    await expect(scanRepo({ root, fresh: true })).resolves.toBeDefined();
+    const db = openDb(indexPath(root), { readonly: true });
+    try {
+      const entry = getEntryPoints(db).find((item) => item.label === "choose");
+      const traces = getTraceSummaries(db, Number(entry?.id.split(":")[1]));
+      expect(traces).toHaveLength(2);
+      const args = traces.map((summary) =>
+        getTrace(db, Number(summary.id.split(":")[1]))?.orderedSteps.at(-1)?.arguments[0],
+      );
+      expect(args.sort()).toEqual(["\"left\"", "\"right\""]);
+    } finally { db.close(); }
+  });
 });

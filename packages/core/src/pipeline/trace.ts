@@ -82,7 +82,6 @@ export function analyzeTraces(db: Db): TraceAnalysisStats {
     `INSERT OR IGNORE INTO traces (entry_id, boundary_id, label, confidence, fingerprint)
      VALUES (@entryId, @boundaryId, @label, @confidence, @fingerprint)`,
   );
-  const traceId = db.prepare("SELECT id FROM traces WHERE fingerprint = ?");
   const insertStep = db.prepare(
     `INSERT INTO trace_steps
        (trace_id, ordinal, kind, source, confidence, label, symbol_id, file_id, line, call_file_id, call_line, callee, arg_count, arguments, params, return_type)
@@ -104,16 +103,23 @@ export function analyzeTraces(db: Db): TraceAnalysisStats {
       const pathConfidence = found.edges.some((edge) => edge.confidence === "likely") ||
           entry.confidence === "likely" || found.boundary.confidence === "likely"
         ? "likely" : "exact";
-      const fingerprint = traceFingerprint(entry, found.symbols, found.edges, found.boundary, byId);
+      const boundaryCall = calls.find((call) => call.id === found.boundary.callSiteId);
+      const fingerprint = traceFingerprint(
+        entry, found.symbols, found.edges, found.boundary, boundaryCall, byId,
+      );
       const label = `${entry.label} → ${boundaryLabel(found.boundary.kind)} · ${found.boundary.callee}`;
-      insertTrace.run({ entryId, boundaryId, label, confidence: pathConfidence, fingerprint });
-      const traceRow = traceId.get(fingerprint) as { id: number } | undefined;
-      if (!traceRow) continue;
+      const inserted = insertTrace.run({
+        entryId, boundaryId, label, confidence: pathConfidence, fingerprint,
+      });
+      // 完全等价的路径可能由多个启发式候选汇合而来。fingerprint 唯一约束
+      // 已经保留了第一条，此时不能再次向同一个 trace 写 ordinal=0。
+      if (inserted.changes === 0) continue;
+      const traceId = Number(inserted.lastInsertRowid);
 
       const first = byId.get(found.symbols[0] as number);
       if (!first) continue;
       insertStep.run({
-        traceId: traceRow.id, ordinal: 0, kind: "entry",
+        traceId, ordinal: 0, kind: "entry",
         source: entry.confidence === "exact" ? "deterministic" : "inferred",
         confidence: entry.confidence, label: entry.label, symbolId: first.id, fileId: first.fileId,
         line: first.startLine, callFileId: null, callLine: null, callee: null, argCount: 0,
@@ -129,7 +135,7 @@ export function analyzeTraces(db: Db): TraceAnalysisStats {
           item.callee === symbol.name || item.calleePath?.endsWith(`.${symbol.name}`),
         );
         insertStep.run({
-          traceId: traceRow.id, ordinal: i, kind: "call",
+          traceId, ordinal: i, kind: "call",
           source: edge.confidence === "exact" ? "deterministic" : "inferred",
           confidence: edge.confidence, label: qualifiedName(symbol), symbolId: symbol.id, fileId: symbol.fileId,
           line: symbol.startLine, callFileId: byId.get(edge.from)?.fileId ?? null, callLine: edge.line,
@@ -138,9 +144,8 @@ export function analyzeTraces(db: Db): TraceAnalysisStats {
         });
       }
 
-      const boundaryCall = calls.find((call) => call.id === found.boundary.callSiteId);
       insertStep.run({
-        traceId: traceRow.id, ordinal: found.symbols.length, kind: "boundary",
+        traceId, ordinal: found.symbols.length, kind: "boundary",
         source: found.boundary.confidence === "exact" ? "deterministic" : "inferred",
         confidence: found.boundary.confidence,
         label: `${boundaryLabel(found.boundary.kind)} · ${found.boundary.callee}`, symbolId: null,
@@ -452,7 +457,7 @@ function indexCalls(calls: readonly CallRow[]): Map<string, CallRow[]> {
 
 function traceFingerprint(
   entry: EntryCandidate, symbols: readonly number[], edges: readonly CallEdge[], boundary: BoundaryCandidate,
-  byId: ReadonlyMap<number, SymbolRow>,
+  boundaryCall: CallRow | undefined, byId: ReadonlyMap<number, SymbolRow>,
 ): string {
   return createHash("sha256").update(JSON.stringify({
     entry: [entry.kind, entry.method, entry.route, entry.line, entry.evidence],
@@ -461,7 +466,10 @@ function traceFingerprint(
       return symbol ? [symbol.filePath, qualifiedName(symbol), symbol.hash] : [id];
     }),
     edges: edges.map((edge) => [edge.line, edge.confidence]),
-    boundary: [boundary.kind, boundary.callee, boundary.line, boundary.confidence],
+    boundary: [
+      boundary.kind, boundaryCall?.filePath, boundary.callee, boundary.line, boundary.confidence,
+      boundaryCall?.receiver, boundaryCall?.calleePath, boundaryCall?.arguments,
+    ],
   })).digest("hex");
 }
 
