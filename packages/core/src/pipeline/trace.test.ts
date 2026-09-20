@@ -1,13 +1,19 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { indexPath, openDb } from "../db/database.js";
 import { getEntryPoints, getTrace, getTraceSummaries } from "../db/traces.js";
 import { generateTraceNarrative } from "../llm/enrich.js";
 import { scanRepo } from "./scan.js";
 
 const roots: string[] = [];
+beforeEach(() => {
+  const configHome = mkdtempSync(join(tmpdir(), "repolens-trace-config-"));
+  roots.push(configHome);
+  vi.stubEnv("XDG_CONFIG_HOME", configHome);
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

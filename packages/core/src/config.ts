@@ -1,8 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FileRole, RepolensConfig } from "./types.js";
 
 export const CONFIG_FILENAME = ".repolens.json";
+export const GLOBAL_CONFIG_DIR = "repolens";
+export const GLOBAL_CONFIG_FILENAME = "config.json";
 
 export const DEFAULT_ROLES: FileRole[] = ["source"];
 
@@ -30,21 +33,35 @@ export const DEFAULT_CONFIG: RepolensConfig = {
   },
 };
 
+/** 用户级共享配置路径。遵循 XDG；macOS 未设置时落到 ~/.config。 */
+export function globalConfigPath(): string {
+  const xdg = process.env["XDG_CONFIG_HOME"]?.trim();
+  const configHome = xdg && xdg.length > 0 ? xdg : join(homedir(), ".config");
+  return join(configHome, GLOBAL_CONFIG_DIR, GLOBAL_CONFIG_FILENAME);
+}
+
 /**
- * 读取 `<repo>/.repolens.json`。配置缺失是常态而不是错误——
- * RepoLens 的核心功能不依赖任何配置。
+ * 三级配置继承：内置默认值 → 用户级共享配置 → 仓库级覆盖。
+ *
+ * 两个文件都可以缺失；仓库级尤其适合 exclude/include，以及显式关闭某个
+ * 仓库的 LLM。凭据始终只由 apiKeyEnv 指向环境变量，不在这里读取明文 key。
  */
 export function loadConfig(repoRoot: string): RepolensConfig {
-  const path = join(repoRoot, CONFIG_FILENAME);
-  if (!existsSync(path)) return structuredClone(DEFAULT_CONFIG);
+  let config = structuredClone(DEFAULT_CONFIG);
+  const globalPath = globalConfigPath();
+  if (existsSync(globalPath)) config = mergeConfig(config, readConfig(globalPath));
 
-  let raw: unknown;
+  const repoPath = join(repoRoot, CONFIG_FILENAME);
+  if (existsSync(repoPath)) config = mergeConfig(config, readConfig(repoPath));
+  return config;
+}
+
+function readConfig(path: string): unknown {
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readFileSync(path, "utf8")) as unknown;
   } catch (err) {
-    throw new Error(`${CONFIG_FILENAME} 解析失败：${(err as Error).message}`);
+    throw new Error(`RepoLens 配置解析失败：${path}：${(err as Error).message}`);
   }
-  return mergeConfig(DEFAULT_CONFIG, raw);
 }
 
 function mergeConfig(base: RepolensConfig, patch: unknown): RepolensConfig {

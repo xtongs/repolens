@@ -1,5 +1,12 @@
 export * from "./types.js";
-export { CONFIG_FILENAME, DEFAULT_CONFIG, loadConfig } from "./config.js";
+export {
+  CONFIG_FILENAME,
+  DEFAULT_CONFIG,
+  GLOBAL_CONFIG_DIR,
+  GLOBAL_CONFIG_FILENAME,
+  globalConfigPath,
+  loadConfig,
+} from "./config.js";
 
 export {
   getMeta,

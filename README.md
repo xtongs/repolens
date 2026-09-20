@@ -96,7 +96,8 @@ pnpm lens serve ~/Workspace/pi -p 7174
 RepoLens 的结构图和调用关系始终由解析器生成；LLM 只补充明确标为 **AI 生成** 的
 仓库/包/目录摘要、架构分层、文件摘要、函数伪代码和关键链路叙述。模型不可用时会自动退化为纯结构模式。
 
-在目标仓库根目录创建 `.repolens.json`（建议加入该仓库的 `.gitignore`）：
+共享的模型配置写在 `~/.config/repolens/config.json`（若设置了
+`XDG_CONFIG_HOME`，则写在 `$XDG_CONFIG_HOME/repolens/config.json`）：
 
 ```json
 {
@@ -117,6 +118,16 @@ Key 只通过环境变量读取，不要写进 JSON：
 export TRAEX_BRIDGE_API_KEY="$(cat ~/.traex-bridge/api-key)"
 pnpm lens scan /path/to/some-repo
 ```
+
+配置按以下顺序合并，后者覆盖前者：
+
+```text
+内置默认值 → ~/.config/repolens/config.json → <仓库>/.repolens.json
+```
+
+多数情况下只需配置一次全局文件。仓库内 `.repolens.json` 是可选覆盖层，适合设置
+`exclude` / `include`，或对敏感仓库单独设置 `"llm": { "enabled": false }`；若使用，
+建议将它加入该仓库的 `.gitignore`。两个配置文件都只保存环境变量名，不保存 API Key。
 
 扫描期只生成仓库、包和目录级语义；文件摘要、函数伪代码和链路叙述在界面中按需生成，
 并按源码内容指纹缓存在 `.repolens/index.db`。代码未变时不会重复请求模型。兼容 Ollama
