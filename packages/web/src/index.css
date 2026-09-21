@@ -120,6 +120,15 @@ body {
   overflow: hidden;
 }
 
+/*
+ * Tailwind v4 的 preflight 会让 button 继承普通光标。所有未禁用的语义按钮
+ * 都是可点击控件，应统一显示手型；禁用态继续由各组件的 not-allowed、wait
+ * 或 default 样式表达，不能被这条规则覆盖。
+ */
+button:enabled {
+  cursor: pointer;
+}
+
 code,
 pre,
 .mono {

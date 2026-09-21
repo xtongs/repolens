@@ -61,13 +61,17 @@ export class ApiError extends Error {
   }
 }
 
-async function get<T>(path: string, params: Record<string, string | number | boolean | undefined> = {}): Promise<T> {
+async function get<T>(
+  path: string,
+  params: Record<string, string | number | boolean | undefined> = {},
+  repo: string | undefined = activeRepo,
+): Promise<T> {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue;
     search.set(key, String(value));
   }
-  if (activeRepo !== undefined) search.set("repo", activeRepo);
+  if (repo !== undefined) search.set("repo", repo);
   const query = search.toString();
   const response = await fetch(`${BASE}${path}${query.length > 0 ? `?${query}` : ""}`);
 
@@ -150,6 +154,9 @@ export const api = {
     get<{ chain: string[] }>(`/reveal/${nodeId}`),
 
   overview: () => get<OverviewDto>("/overview"),
+
+  /** 读取仓库列表中任意仓库的概览，不切换当前仓库或改写 URL。 */
+  repoOverview: (id: string) => get<OverviewDto>("/overview", {}, id),
 
   tree: (path: string, depth = 1, roles?: string) =>
     get<TreeNodeDto>("/tree", { path, depth, roles }),

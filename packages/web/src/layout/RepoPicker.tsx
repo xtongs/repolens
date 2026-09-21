@@ -1,5 +1,13 @@
-import type { RepoEntry, RepoScanTaskDto, RepoStatus, ScanPhase } from "@repolens/core/types";
-import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  LlmStatusDto,
+  OverviewDto,
+  RepoEntry,
+  RepoScanTaskDto,
+  RepoStatus,
+  ScanPhase,
+} from "@repolens/core/types";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api/client";
 import { useAppStore } from "../store/useAppStore";
 
@@ -17,6 +25,14 @@ const PHASE_LABELS: Record<ScanPhase, string> = {
   enrich: "生成 AI 语义",
   index: "建立索引",
 };
+
+const TOOLTIP_WIDTH = 420;
+const TOOLTIP_GAP = 8;
+const VIEWPORT_MARGIN = 12;
+
+/** 下拉菜单关闭后仍保留已经读到的概览；重扫会改变 lastOpenedAt，从而自然失效。 */
+const overviewCache = new Map<string, OverviewDto>();
+const overviewRequests = new Map<string, Promise<OverviewDto>>();
 
 /**
  * 仓库选择器。
@@ -145,7 +161,12 @@ export function RepoPicker() {
         <div className="anim-fade absolute left-0 top-full z-50 mt-1 w-[360px] overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-surface-2)] shadow-xl">
           <div className="max-h-[60vh] overflow-y-auto py-1">
             {repos.map((repo) => (
-              <RepoRow key={repo.id} repo={repo} active={repo.id === repoId} />
+              <RepoRow
+                key={repo.id}
+                repo={repo}
+                active={repo.id === repoId}
+                activeOverview={repo.id === repoId ? overview : null}
+              />
             ))}
           </div>
 
@@ -231,16 +252,37 @@ function FolderPlusIcon() {
   );
 }
 
-function RepoRow({ repo, active }: { repo: RepoEntry; active: boolean }) {
+function RepoRow({
+  repo,
+  active,
+  activeOverview,
+}: {
+  repo: RepoEntry;
+  active: boolean;
+  activeOverview: OverviewDto | null;
+}) {
   const switchRepo = useAppStore((s) => s.switchRepo);
   const forget = useAppStore((s) => s.forgetRepo);
   const setOpen = useAppStore((s) => s.setRepoPickerOpen);
   const [error, setError] = useState<string | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
 
   const usable = repo.status === "ok";
 
+  const showOverview = () => {
+    setHovered(true);
+  };
+
   return (
     <div
+      ref={rowRef}
+      onMouseEnter={showOverview}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={showOverview}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setHovered(false);
+      }}
       className={`group flex items-center gap-2 px-2 py-1.5 ${
         usable ? "hover:bg-[var(--color-surface-3)]" : ""
       }`}
@@ -255,7 +297,7 @@ function RepoRow({ repo, active }: { repo: RepoEntry; active: boolean }) {
         className={`flex min-w-0 flex-1 flex-col items-start text-left ${
           usable ? "" : "cursor-not-allowed opacity-45"
         }`}
-        title={usable ? repo.root : STATUS_HINT[repo.status as Exclude<RepoStatus, "ok">]}
+        aria-describedby={hovered ? `repo-overview-${repo.id}` : undefined}
       >
         <span className="flex w-full items-center gap-1.5">
           <span
@@ -300,8 +342,195 @@ function RepoRow({ repo, active }: { repo: RepoEntry; active: boolean }) {
       )}
 
       {error !== null && <span className="text-[10px] text-[var(--color-danger)]">{error}</span>}
+
+      {hovered && (
+        <RepoOverviewTooltip
+          id={`repo-overview-${repo.id}`}
+          repo={repo}
+          activeOverview={activeOverview}
+          anchor={rowRef}
+        />
+      )}
     </div>
   );
+}
+
+type OverviewLoadState =
+  | { status: "loading" }
+  | { status: "ready"; overview: OverviewDto }
+  | { status: "error"; message: string };
+
+function RepoOverviewTooltip({
+  id,
+  repo,
+  activeOverview,
+  anchor,
+}: {
+  id: string;
+  repo: RepoEntry;
+  activeOverview: OverviewDto | null;
+  anchor: React.RefObject<HTMLDivElement | null>;
+}) {
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [load, setLoad] = useState<OverviewLoadState>(() => {
+    if (activeOverview) return { status: "ready", overview: activeOverview };
+    const cached = overviewCache.get(overviewCacheKey(repo));
+    return cached ? { status: "ready", overview: cached } : { status: "loading" };
+  });
+  const [position, setPosition] = useState({ left: VIEWPORT_MARGIN, top: VIEWPORT_MARGIN, width: TOOLTIP_WIDTH });
+
+  const placeTooltip = useCallback(() => {
+    const row = anchor.current;
+    if (!row) return;
+    const rect = row.getBoundingClientRect();
+    const width = Math.min(TOOLTIP_WIDTH, Math.max(240, window.innerWidth - VIEWPORT_MARGIN * 2));
+    const fitsRight = rect.right + TOOLTIP_GAP + width <= window.innerWidth - VIEWPORT_MARGIN;
+    const preferredLeft = fitsRight
+      ? rect.right + TOOLTIP_GAP
+      : rect.left - TOOLTIP_GAP - width;
+    const left = Math.min(
+      Math.max(VIEWPORT_MARGIN, preferredLeft),
+      Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN),
+    );
+    const height = tooltipRef.current?.getBoundingClientRect().height ?? 0;
+    const top = Math.min(
+      Math.max(VIEWPORT_MARGIN, rect.top),
+      Math.max(VIEWPORT_MARGIN, window.innerHeight - height - VIEWPORT_MARGIN),
+    );
+    setPosition((current) =>
+      current.left === left && current.top === top && current.width === width
+        ? current
+        : { left, top, width },
+    );
+  }, [anchor]);
+
+  useEffect(() => {
+    if (repo.status !== "ok") return;
+    if (activeOverview) {
+      overviewCache.set(overviewCacheKey(repo), activeOverview);
+      setLoad({ status: "ready", overview: activeOverview });
+      return;
+    }
+
+    const key = overviewCacheKey(repo);
+    const cached = overviewCache.get(key);
+    if (cached) {
+      setLoad({ status: "ready", overview: cached });
+      return;
+    }
+
+    let disposed = false;
+    let request = overviewRequests.get(key);
+    if (!request) {
+      request = api.repoOverview(repo.id);
+      overviewRequests.set(key, request);
+      // 不用 finally：finally 返回的派生 Promise 会在请求失败时再次 reject，
+      // 即使原请求下面已 catch，浏览器仍会报告一次未处理拒绝。
+      void request.then(
+        () => overviewRequests.delete(key),
+        () => overviewRequests.delete(key),
+      );
+    }
+    void request
+      .then((next) => {
+        overviewCache.set(key, next);
+        if (!disposed) setLoad({ status: "ready", overview: next });
+      })
+      .catch((err: Error) => {
+        if (!disposed) setLoad({ status: "error", message: err.message });
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activeOverview, repo]);
+
+  useLayoutEffect(() => {
+    placeTooltip();
+  }, [load, placeTooltip]);
+
+  useEffect(() => {
+    const update = () => placeTooltip();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [placeTooltip]);
+
+  const content = repo.status === "ok" ? load : null;
+
+  return createPortal(
+    <div
+      ref={tooltipRef}
+      id={id}
+      role="tooltip"
+      className="pointer-events-none fixed z-[80] rounded-lg border border-[var(--color-accent)]/20 bg-[var(--color-surface)]/95 px-3 py-2.5 shadow-xl backdrop-blur"
+      style={position}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="min-w-0 truncate text-[11px] font-semibold text-[var(--color-ink)]">{repo.name}</span>
+        <span className="shrink-0 text-[9px] uppercase tracking-wider text-[var(--color-accent)]">
+          AI 仓库概览
+        </span>
+      </div>
+      <div className="mono mt-1 break-all text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
+        {repo.root}
+      </div>
+
+      {repo.status !== "ok" ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-danger)]">
+          {STATUS_HINT[repo.status]}
+        </p>
+      ) : content?.status === "ready" ? (
+        <>
+          <div className="mt-1.5 text-[9.5px] text-[var(--color-ink-faint)]">
+            {overviewFacts(content.overview)}
+          </div>
+          <p className="mt-2 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+            {content.overview.summary ??
+              missingOverviewMessage(
+                content.overview.summaryUnavailableReason,
+                content.overview.llm,
+              )}
+          </p>
+        </>
+      ) : content?.status === "error" ? (
+        <p className="mt-2 break-words text-[11px] leading-relaxed text-[var(--color-danger)]">
+          无法读取仓库概览：{content.message}
+        </p>
+      ) : (
+        <p className="mt-2 text-[11px] text-[var(--color-ink-faint)]">正在读取仓库概览…</p>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
+function overviewCacheKey(repo: RepoEntry): string {
+  return `${repo.id}:${repo.lastOpenedAt}`;
+}
+
+function overviewFacts(overview: OverviewDto): string {
+  const languages = overview.languages
+    .slice(0, 3)
+    .map((item) => item.language)
+    .join(" / ");
+  return [
+    `${overview.totals.files.toLocaleString("zh-CN")} 个文件`,
+    `${overview.totals.loc.toLocaleString("zh-CN")} 行代码`,
+    languages || null,
+  ].filter(Boolean).join(" · ");
+}
+
+function missingOverviewMessage(
+  scanReason: string | null | undefined,
+  llm: LlmStatusDto | null | undefined,
+): string {
+  if (scanReason) return `仓库概览未生成：${scanReason}。重新扫描后会再次尝试。`;
+  if (llm?.enabled === false) return "当前仓库扫描时未启用 AI，因此没有生成仓库概览。";
+  if (llm && !llm.available && llm.reason) return `仓库概览未生成：${llm.reason}。重新扫描后会再次尝试。`;
+  return "这个索引尚未生成仓库概览，通常是旧索引或上次扫描时模型不可用；重新扫描后会再次尝试。";
 }
 
 /**
