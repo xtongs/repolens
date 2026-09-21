@@ -130,6 +130,7 @@ export function getOverview(db: Db): OverviewDto {
     languages,
     packages,
     summary: readSummary(db, "repo", "."),
+    summaryUnavailableReason: lastRun.llm?.reason ?? null,
     layers: layers.length > 0 ? layers : null,
     llm: llmStatus as LlmStatusDto | null,
   };

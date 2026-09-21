@@ -18,19 +18,13 @@ import type {
   DiscoveredPackage,
   ParsedFile,
   ResolveContext,
+  ScanPhase,
   ScanStats,
 } from "../types.js";
 import { linkGraph } from "./link.js";
 import { countLoc } from "./metrics.js";
 
-export type ScanPhase =
-  | "discover"
-  | "parse"
-  | "resolve"
-  | "link"
-  | "rollup"
-  | "enrich"
-  | "index";
+export type { ScanPhase } from "../types.js";
 
 export interface ScanOptions {
   root: string;

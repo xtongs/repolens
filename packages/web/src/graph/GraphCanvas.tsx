@@ -1,4 +1,4 @@
-import type { GraphNodeDto } from "@repolens/core/types";
+import type { GraphNodeDto, LlmStatusDto } from "@repolens/core/types";
 import {
   Background,
   BackgroundVariant,
@@ -298,11 +298,11 @@ function CanvasInner() {
         {horizontal ? "调用方向：调用方 → 被调用方" : "依赖方向：使用方 ↓ 被依赖方"}
       </div>
 
-      {overview?.summary && !callGraph && (
+      {overview && !callGraph && (
         <div className="pointer-events-none absolute left-12 top-4 max-w-[420px] rounded-lg border border-[var(--color-accent)]/20 bg-[var(--color-surface)]/90 px-3 py-2 shadow-lg backdrop-blur">
           <div className="text-[9px] uppercase tracking-wider text-[var(--color-accent)]">AI 仓库概览</div>
-          <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
-            {overview.summary}
+          <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+            {overview.summary ?? missingOverviewMessage(overview.summaryUnavailableReason, overview.llm)}
           </p>
         </div>
       )}
@@ -311,6 +311,16 @@ function CanvasInner() {
       {menu && <NodeContextMenu state={menu} onClose={() => setMenu(null)} />}
     </div>
   );
+}
+
+function missingOverviewMessage(
+  scanReason: string | null | undefined,
+  llm: LlmStatusDto | null | undefined,
+): string {
+  if (scanReason) return `仓库概览未生成：${scanReason}。重新扫描后会再次尝试。`;
+  if (llm?.enabled === false) return "当前仓库扫描时未启用 AI，因此没有生成仓库概览。";
+  if (llm && !llm.available && llm.reason) return `仓库概览未生成：${llm.reason}。重新扫描后会再次尝试。`;
+  return "这个索引尚未生成仓库概览，通常是旧索引或上次扫描时模型不可用；重新扫描后会再次尝试。";
 }
 
 /**

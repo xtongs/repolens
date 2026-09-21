@@ -67,6 +67,9 @@ const RULES: RoleRule[] = [
     patterns: [
       "**/*.config.*",
       "**/*.conf.*",
+      // JSON 通常承载配置、清单或静态数据，不包含可调用的程序逻辑。
+      // 即使文件很大，把它画成源码节点也只会挤掉真正的实现文件。
+      "**/*.json",
       "**/tsconfig*.json",
       "**/jsconfig*.json",
       "**/package.json",
@@ -84,7 +87,11 @@ const RULES: RoleRule[] = [
       "**/docker-compose*.y*ml",
       "**/*.lock",
       "**/.eslintrc*",
+      "**/.prettierrc*",
+      "**/prettierrc.*",
       "**/biome.json",
+      // 只隐藏明确的构建入口；普通 shell 脚本仍可能是仓库的核心逻辑。
+      "**/build.sh",
       "**/.github/**",
       "**/*.yaml",
       "**/*.yml",

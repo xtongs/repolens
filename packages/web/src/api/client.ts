@@ -4,6 +4,8 @@ import type {
   FindingSummaryDto,
   GraphDto,
   OverviewDto,
+  PickRepoResultDto,
+  RepoScanTaskDto,
   ReposDto,
   SearchHitDto,
   SemanticResultDto,
@@ -28,10 +30,26 @@ const BASE = "/api";
  * 留 undefined 时服务端落到启动时那个仓库，所以首屏不必先取一次清单
  * 才敢发第一个请求。
  */
-let activeRepo: string | undefined;
+let activeRepo: string | undefined = repoFromLocation();
+
+/** 当前 URL 指定的仓库。Store 首次启动用它恢复刷新前的选择。 */
+export function getActiveRepo(): string | undefined {
+  return activeRepo;
+}
 
 export function setActiveRepo(id: string | undefined): void {
   activeRepo = id;
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (id === undefined || id === "") url.searchParams.delete("repo");
+  else url.searchParams.set("repo", id);
+  window.history.replaceState(window.history.state, "", url);
+}
+
+function repoFromLocation(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const value = new URL(window.location.href).searchParams.get("repo")?.trim();
+  return value ? value : undefined;
 }
 
 export class ApiError extends Error {
@@ -60,6 +78,7 @@ async function get<T>(path: string, params: Record<string, string | number | boo
 async function post<T>(
   path: string,
   params: Record<string, string | number | boolean | undefined> = {},
+  intent = "generate-semantic",
 ): Promise<T> {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -70,7 +89,7 @@ async function post<T>(
   const query = search.toString();
   const response = await fetch(`${BASE}${path}${query.length > 0 ? `?${query}` : ""}`, {
     method: "POST",
-    headers: { "x-repolens-intent": "generate-semantic" },
+    headers: { "x-repolens-intent": intent },
   });
   if (!response.ok) throw await toError(response);
   return (await response.json()) as T;
@@ -111,6 +130,13 @@ export interface FindingsResponse {
 
 export const api = {
   repos: () => get<ReposDto>("/repos"),
+
+  pickAndScanRepo: () =>
+    post<PickRepoResultDto>("/repos/pick-and-scan", {}, "scan-repository"),
+
+  repoScans: () => get<{ tasks: RepoScanTaskDto[] }>("/repo-scans"),
+
+  repoScan: (id: string) => get<RepoScanTaskDto>(`/repo-scans/${encodeURIComponent(id)}`),
 
   forgetRepo: async (id: string): Promise<void> => {
     const response = await fetch(`${BASE}/repos/${id}`, { method: "DELETE" });

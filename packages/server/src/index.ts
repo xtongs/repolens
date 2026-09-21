@@ -5,7 +5,9 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
 import { Hono } from "hono";
+import { DirectoryPickerUnavailableError, pickDirectory } from "./directory-picker.js";
 import { RepoPool, RepoUnavailableError } from "./repo-pool.js";
+import { InvalidScanRootError, ScanBusyError, ScanManager } from "./scan-manager.js";
 
 export { createApi, type ApiDeps } from "./api.js";
 export { RepoPool, RepoUnavailableError } from "./repo-pool.js";
@@ -43,6 +45,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
   }
 
   const pool = new RepoPool(repoRoot);
+  const scans = new ScanManager();
   const app = new Hono();
 
   // Hono 默认把异常吞成一句 "Internal Server Error"。这是个本地工具，
@@ -55,6 +58,32 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
   // 仓库清单本身不属于任何一个仓库，所以不走下面的按仓库分发。
   // 必须注册在分发之前，否则会被 /api/* 抢走然后在子应用里 404。
   app.get("/api/repos", (c) => c.json({ current: pool.currentId, repos: pool.list() }));
+
+  // 路径不由浏览器提交：这个端点在服务进程里唤起系统目录选择器，并把
+  // 选择结果直接交给扫描器，避免新增一个可读取任意绝对路径的 HTTP API。
+  app.post("/api/repos/pick-and-scan", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "scan-repository") {
+      return c.json({ error: "缺少仓库扫描确认标记" }, 403);
+    }
+
+    try {
+      const selected = await pickDirectory();
+      if (selected === null) return c.json({ cancelled: true });
+      return c.json({ cancelled: false, task: scans.start(selected) });
+    } catch (err) {
+      if (err instanceof ScanBusyError) return c.json({ error: err.message }, 409);
+      if (err instanceof InvalidScanRootError) return c.json({ error: err.message }, 400);
+      if (err instanceof DirectoryPickerUnavailableError) return c.json({ error: err.message }, 501);
+      throw err;
+    }
+  });
+
+  app.get("/api/repo-scans", (c) => c.json({ tasks: scans.list() }));
+
+  app.get("/api/repo-scans/:id", (c) => {
+    const task = scans.get(c.req.param("id"));
+    return task ? c.json(task) : c.json({ error: "扫描任务不存在或服务已经重启" }, 404);
+  });
 
   // 只从清单里移除，不动仓库和索引。仓库被删或移走后清单里会留下死条目，
   // 没有这个端点就只能手改 ~/.repolens/repos.json。
@@ -103,8 +132,10 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     close: () =>
       new Promise<void>((done) => {
         server.close(() => {
-          pool.close();
-          done();
+          void scans.close().finally(() => {
+            pool.close();
+            done();
+          });
         });
       }),
   };

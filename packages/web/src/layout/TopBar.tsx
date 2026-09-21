@@ -30,7 +30,7 @@ export function TopBar() {
         }`}
         title="结构树"
       >
-        ☰
+        <SidebarIcon />
       </button>
 
       <FindingsPill />
@@ -82,6 +82,22 @@ export function TopBar() {
         </button>
       </div>
     </header>
+  );
+}
+
+function SidebarIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className="block h-3.5 w-3.5"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    >
+      <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
+    </svg>
   );
 }
 

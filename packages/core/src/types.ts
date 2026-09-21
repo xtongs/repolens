@@ -496,6 +496,8 @@ export interface OverviewDto {
   }>;
   /** M3 */
   summary?: string | null;
+  /** 仓库概览缺失时，上次扫描记录的具体原因。 */
+  summaryUnavailableReason?: string | null;
   layers?: Array<{ name: string; description: string; nodeIds: string[] }> | null;
   llm?: LlmStatusDto | null;
 }
@@ -536,6 +538,43 @@ export interface ReposDto {
   /** 启动时指定的那个仓库，缺省请求都落到它 */
   current: string;
   repos: RepoEntry[];
+}
+
+// ---------------------------------------------------------------------------
+// 仓库扫描任务
+// ---------------------------------------------------------------------------
+
+/** 扫描流水线阶段；CLI、服务端任务和前端进度提示共用同一组值。 */
+export type ScanPhase =
+  | "discover"
+  | "parse"
+  | "resolve"
+  | "link"
+  | "rollup"
+  | "enrich"
+  | "index";
+
+export type RepoScanStatus = "running" | "completed" | "failed";
+
+/** Web 端可轮询的扫描任务快照。progress 的范围是 0..1。 */
+export interface RepoScanTaskDto {
+  id: string;
+  root: string;
+  name: string;
+  status: RepoScanStatus;
+  phase: ScanPhase | null;
+  done: number;
+  total: number;
+  progress: number;
+  startedAt: string;
+  completedAt: string | null;
+  error: string | null;
+  repo: RepoEntry | null;
+}
+
+export interface PickRepoResultDto {
+  cancelled: boolean;
+  task?: RepoScanTaskDto;
 }
 
 export interface TreeNodeDto {

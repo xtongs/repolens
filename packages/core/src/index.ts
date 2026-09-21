@@ -56,7 +56,7 @@ export {
   repoId,
 } from "./registry.js";
 
-export { scanRepo, type ScanOptions, type ScanPhase } from "./pipeline/scan.js";
+export { scanRepo, type ScanOptions } from "./pipeline/scan.js";
 export {
   enrichRepository,
   generateFileSummary,

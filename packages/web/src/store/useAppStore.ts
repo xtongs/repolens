@@ -9,7 +9,7 @@ import type {
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { GraphSlice } from "../graph/model";
-import { api, setActiveRepo } from "../api/client";
+import { api, getActiveRepo, setActiveRepo } from "../api/client";
 
 export type MetricKey = "loc" | "complexity" | "symbols";
 
@@ -52,6 +52,7 @@ export interface AppState {
   repos: RepoEntry[];
   /** 当前浏览的仓库 id；null 表示还没取到清单 */
   repoId: string | null;
+  refreshRepos: () => Promise<void>;
   switchRepo: (id: string) => Promise<void>;
   forgetRepo: (id: string) => Promise<void>;
 
@@ -139,7 +140,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   bootError: null,
 
   repos: [],
-  repoId: null,
+  // 模块加载时就从 URL 恢复，确保首个 /overview 请求不会先读到启动仓库。
+  repoId: getActiveRepo() ?? null,
 
   rootScope: "dir:.",
   subgraphs: {},
@@ -175,6 +177,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   hiddenNodes: [],
 
   async boot() {
+    // 先取清单以验证 URL 里的 repo。无效、已移走或索引缺失时回退到
+    // 服务启动仓库，避免一个过期书签把页面永久卡在错误页。
+    try {
+      const { current, repos } = await api.repos();
+      const requested = get().repoId;
+      const selected = requested && repos.some((repo) => repo.id === requested && repo.status === "ok")
+        ? requested
+        : current;
+      setActiveRepo(selected);
+      set({ repos, repoId: selected });
+    } catch {
+      // 清单不可用时仍尝试当前 URL/服务缺省仓库，保持原有降级能力。
+    }
+
     try {
       const overview = await api.overview();
       set({ overview, bootError: null });
@@ -182,20 +198,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       set({ bootError: (err as Error).message });
     }
-
-    // 清单单独取、且失败不上报：它只决定「能不能换仓库」，拿不到的话
-    // 当前仓库照样看得好好的，没道理为此在首屏弹个错。
-    try {
-      const { current, repos } = await api.repos();
-      set({ repos, repoId: get().repoId ?? current });
-    } catch {
-      // 没有清单就没有切换入口，顶栏退化成纯文字仓库名
-    }
   },
 
   async switchRepo(id) {
-    if (id === get().repoId) return;
+    // 即使已经是当前仓库，也要把 URL 补齐；例如首次从无参数地址打开。
     setActiveRepo(id);
+    if (id === get().repoId) return;
     // 视图状态全部丢掉：展开的层级、选中项、隐藏项都是上一个仓库的节点 id，
     // 留着会让新仓库的图上凭空多出几层展不开的空壳。
     // 但偏好（噪音、外部依赖、指标、置信度、面板开合）是跟着人的，不重置。
@@ -219,6 +227,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       revealed: null,
     });
     await get().boot();
+  },
+
+  async refreshRepos() {
+    const { current, repos } = await api.repos();
+    set({ repos, repoId: get().repoId ?? current });
   },
 
   async forgetRepo(id) {
