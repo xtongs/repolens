@@ -25,6 +25,7 @@ describe("loadConfig", () => {
     mkdirSync(join(configHome, "repolens"));
     writeFileSync(join(configHome, "repolens/config.json"), JSON.stringify({
       maxNodesPerView: 44,
+      roleOverrides: { "legacy/**": "generated", "bad/**": "unknown" },
       llm: {
         baseUrl: "http://127.0.0.1:8317/v1/",
         model: "global-model",
@@ -34,6 +35,7 @@ describe("loadConfig", () => {
     }));
     writeFileSync(join(repo, ".repolens.json"), JSON.stringify({
       exclude: ["fixtures/**"],
+      roleOverrides: { "runtime/**/*.json": "source" },
       llm: { model: "repo-model", enabled: false },
     }));
 
@@ -41,6 +43,10 @@ describe("loadConfig", () => {
     expect(globalConfigPath()).toBe(join(configHome, "repolens/config.json"));
     expect(config.exclude).toEqual(["fixtures/**"]);
     expect(config.maxNodesPerView).toBe(44);
+    expect(config.roleOverrides).toEqual({
+      "legacy/**": "generated",
+      "runtime/**/*.json": "source",
+    });
     expect(config.llm).toMatchObject({
       baseUrl: "http://127.0.0.1:8317/v1",
       model: "repo-model",

@@ -129,8 +129,25 @@ pnpm lens scan /path/to/some-repo
 ```
 
 多数情况下只需配置一次全局文件。仓库内 `.repolens.json` 是可选覆盖层，适合设置
-`exclude` / `include`，或对敏感仓库单独设置 `"llm": { "enabled": false }`；若使用，
+`exclude` / `include`、文件角色覆盖，或对敏感仓库单独设置 `"llm": { "enabled": false }`；若使用，
 建议将它加入该仓库的 `.gitignore`。两个配置文件都只保存环境变量名，不保存 API Key。
+
+噪音分类默认参考常见生态约定和 GitHub Linguist：测试、配置、生成代码、文档、
+第三方依赖默认不进入主干图。遇到仓库自己的特殊约定时，用 `roleOverrides` 做最终裁决：
+
+```json
+{
+  "roleOverrides": {
+    "runtime/**/*.json": "source",
+    "fixtures/**/*.ts": "test",
+    "src/legacy-generated/**": "generated"
+  }
+}
+```
+
+glob 后写的规则优先。可用角色为 `source`、`test`、`config`、`generated`、
+`types`、`docs`、`asset`、`vendor`；修改后重新扫描即可生效。扫描还会遵循仓库根目录的
+`.gitignore`、`.repolensignore` 以及 `exclude` / `include`。
 
 扫描期只生成仓库、包和目录级语义；文件摘要、函数伪代码和链路叙述在界面中按需生成，
 并按源码内容指纹缓存在 `.repolens/index.db`。代码未变时不会重复请求模型。兼容 Ollama

@@ -37,14 +37,18 @@
 
 | 类别 | 判定 |
 | --- | --- |
-| 测试 | `*.test.*` `*.spec.*` `__tests__/` `*_test.go` `tests/` `conftest.py` |
-| 配置构建 | `tsconfig*.json` `*.config.*` `Makefile` `Dockerfile` `*.lock` |
-| 生成代码 | `*.pb.go` `*_pb2.py` `*.d.ts`（非手写）`dist/` `generated/` 带生成头注释的文件 |
+| 测试 | `*.test.*` `*.spec.*` `*.stories.*` `__tests__/` `__fixtures__/` `__snapshots__/` `*_test.go` `tests/` `testdata/` |
+| 配置构建 | `*.json/jsonc/yaml/toml` `*.config.*` `Makefile` `Dockerfile` `*.lock` IDE/CI 配置目录 |
+| 生成代码 | protobuf 常见后缀 `*.generated.*` `*.gen.*` `dist/` `generated/` 以及文件头的 `generated / do not edit` 标记 |
 | 纯类型声明 | 只含类型/接口声明、无运行时导出的文件 |
-| 第三方依赖 | 解析到 `node_modules` / site-packages / crates.io / Go module cache |
+| 第三方依赖 | `node_modules/` `vendor/` `third_party/` `.yarn/cache/` `Pods/` 等依赖目录 |
 
 第三方依赖不是简单丢弃，而是**聚合成单个 `external` 节点**，保留「本仓库有多少边打向外部」
 这个信息量，但不展开内部。
+
+分类采用“项目显式规则优先、内置启发式兜底”：`.repolens.json` 的
+`roleOverrides` 可以把任意 glob 强制指定为某个角色。无法确定时宁可保留为 `source`，
+不因目录名包含 `scripts`、`tools`、`examples` 就武断隐藏真实逻辑。
 
 ### 不做的功能
 

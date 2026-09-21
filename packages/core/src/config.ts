@@ -12,6 +12,7 @@ export const DEFAULT_ROLES: FileRole[] = ["source"];
 export const DEFAULT_CONFIG: RepolensConfig = {
   exclude: [],
   include: [],
+  roleOverrides: {},
   maxFileBytes: 1_500_000,
   maxNodesPerView: 30,
   defaultRoles: DEFAULT_ROLES,
@@ -70,11 +71,32 @@ function mergeConfig(base: RepolensConfig, patch: unknown): RepolensConfig {
   return {
     exclude: p.exclude ?? base.exclude,
     include: p.include ?? base.include,
+    roleOverrides: normalizeRoleOverrides(p.roleOverrides, base.roleOverrides),
     maxFileBytes: p.maxFileBytes ?? base.maxFileBytes,
     maxNodesPerView: p.maxNodesPerView ?? base.maxNodesPerView,
     defaultRoles: p.defaultRoles ?? base.defaultRoles,
     llm: normalizeLlmConfig({ ...base.llm, ...(p.llm ?? {}) }),
   };
+}
+
+const FILE_ROLES = new Set<FileRole>([
+  "source", "test", "config", "generated", "types", "docs", "asset", "vendor",
+]);
+
+function normalizeRoleOverrides(
+  value: unknown,
+  fallback: Record<string, FileRole>,
+): Record<string, FileRole> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return structuredClone(fallback);
+  }
+  const out: Record<string, FileRole> = {};
+  for (const [pattern, role] of Object.entries(value)) {
+    if (pattern.trim() !== "" && typeof role === "string" && FILE_ROLES.has(role as FileRole)) {
+      out[pattern] = role as FileRole;
+    }
+  }
+  return { ...fallback, ...out };
 }
 
 function normalizeLlmConfig(config: RepolensConfig["llm"]): RepolensConfig["llm"] {

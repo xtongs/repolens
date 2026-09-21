@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { DiscoveredFile, DiscoveredPackage, RepolensConfig } from "../types.js";
 import { buildIgnoreMatcher, HARD_IGNORED_DIRS } from "./ignore.js";
 import { detectLanguage } from "./language.js";
-import { classifyRole } from "./roles.js";
+import { createRoleClassifier } from "./roles.js";
 
 export interface WalkResult {
   files: DiscoveredFile[];
@@ -25,6 +25,7 @@ export function walkRepo(
   packages: readonly DiscoveredPackage[],
 ): WalkResult {
   const ignore = buildIgnoreMatcher(repoRoot, config.exclude, config.include);
+  const classify = createRoleClassifier(config.roleOverrides);
   const packageDirs = [...packages]
     .map((p) => p.dir)
     .sort((a, b) => b.length - a.length); // 最长前缀优先，嵌套包归属到最内层
@@ -52,8 +53,8 @@ export function walkRepo(
       if (ignore.ignores(rel)) continue;
 
       const language = detectLanguage(rel);
-      const role = classifyRole(rel, language);
-      if (role === "vendor") continue;
+      const pathRole = classify(rel, language);
+      if (pathRole === "vendor") continue;
 
       const abs = join(absDir, name);
       let bytes: number;
@@ -68,11 +69,13 @@ export function walkRepo(
         continue;
       }
 
-      // 二进制资源不需要内容哈希，用 size 当指纹足够
-      const hash =
-        role === "asset"
-          ? `size:${bytes}`
-          : hashContent(readFileSafe(abs));
+      // 非资源文件本来就要读取内容算增量指纹，顺手检查开头的生成标记，
+      // 不增加一次额外磁盘读取。路径已经明确分类时不允许内容规则覆盖。
+      const content = pathRole === "asset" ? null : readFileSafe(abs);
+      const role = pathRole === "source" && content !== null
+        ? classify(rel, language, content.subarray(0, 12_000).toString("utf8"))
+        : pathRole;
+      const hash = content === null ? `size:${bytes}` : hashContent(content);
 
       files.push({
         path: rel,

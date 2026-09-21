@@ -292,6 +292,8 @@ export interface RepolensConfig {
   exclude: string[];
   /** 强制纳入的 glob，优先级高于 exclude */
   include: string[];
+  /** 路径 glob → 文件角色；显式覆盖内置启发式规则。 */
+  roleOverrides: Record<string, FileRole>;
   /** 超过此字节数的文件跳过解析 */
   maxFileBytes: number;
   /** 默认视图的节点数上限，超出则聚合 */

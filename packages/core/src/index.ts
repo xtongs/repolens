@@ -67,7 +67,7 @@ export { LlmResponseError, LlmUnavailableError, OpenAiCompatibleClient } from ".
 export { countLoc } from "./pipeline/metrics.js";
 
 export { detectLanguage, isAnalyzable } from "./discovery/language.js";
-export { classifyRole } from "./discovery/roles.js";
+export { classifyRole, createRoleClassifier, type RoleClassifier } from "./discovery/roles.js";
 export { discoverPackages } from "./discovery/workspace.js";
 export { walkRepo } from "./discovery/walk.js";
 

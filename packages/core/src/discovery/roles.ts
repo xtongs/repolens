@@ -20,6 +20,19 @@ const RULES: RoleRule[] = [
       "**/node_modules/**",
       "**/vendor/**",
       "**/third_party/**",
+      "**/third-party/**",
+      "**/thirdparty/**",
+      "**/3rd_party/**",
+      "**/3rd-party/**",
+      "**/bower_components/**",
+      "**/jspm_packages/**",
+      "**/web_modules/**",
+      "**/.yarn/cache/**",
+      "**/.yarn/unplugged/**",
+      "**/.yarn/sdks/**",
+      "**/Godeps/_workspace/**",
+      "**/Pods/**",
+      "**/Carthage/Build/**",
       "**/.venv/**",
       "**/site-packages/**",
     ],
@@ -40,6 +53,16 @@ const RULES: RoleRule[] = [
       "**/conftest.py",
       "**/*.bench.*",
       "**/benches/**",
+      "**/__fixtures__/**",
+      "**/__snapshots__/**",
+      "**/*.snap",
+      "**/testdata/**",
+      "**/test-data/**",
+      "**/{test,tests,spec,specs}/fixtures/**",
+      "**/*.stories.*",
+      "**/*.story.*",
+      "**/integration-tests/**",
+      "**/integration_test/**",
     ],
   },
   {
@@ -49,9 +72,16 @@ const RULES: RoleRule[] = [
       "**/*_pb2.py",
       "**/*_pb2_grpc.py",
       "**/*.pb.ts",
+      "**/*.pb.js",
+      "**/*_pb.js",
+      "**/*.pb.rs",
       "**/*_grpc.pb.go",
       "**/*.generated.*",
+      "**/*.gen.*",
       "**/*.gen.go",
+      "**/*_generated.py",
+      "**/*.designer.*",
+      "**/*.feature.cs",
       "**/generated/**",
       "**/__generated__/**",
       "**/dist/**",
@@ -60,6 +90,14 @@ const RULES: RoleRule[] = [
       "**/target/debug/**",
       "**/target/release/**",
       "**/*.min.js",
+      "**/*.min.css",
+      "**/*.js.map",
+      "**/*.css.map",
+      "**/htmlcov/**",
+      "**/storybook-static/**",
+      "**/.docusaurus/**",
+      "**/.vitepress/cache/**",
+      "**/.vitepress/dist/**",
     ],
   },
   {
@@ -70,6 +108,7 @@ const RULES: RoleRule[] = [
       // JSON 通常承载配置、清单或静态数据，不包含可调用的程序逻辑。
       // 即使文件很大，把它画成源码节点也只会挤掉真正的实现文件。
       "**/*.json",
+      "**/*.jsonc",
       "**/tsconfig*.json",
       "**/jsconfig*.json",
       "**/package.json",
@@ -89,8 +128,39 @@ const RULES: RoleRule[] = [
       "**/.eslintrc*",
       "**/.prettierrc*",
       "**/prettierrc.*",
+      "**/.babelrc*",
+      "**/.stylelintrc*",
+      "**/.commitlintrc*",
+      "**/.lintstagedrc*",
+      "**/.editorconfig",
+      "**/.gitignore",
+      "**/.gitattributes",
+      "**/.gitmodules",
+      "**/.ignore",
+      "**/.repolensignore",
+      "**/.dockerignore",
+      "**/.npmignore",
+      "**/.prettierignore",
+      "**/.eslintignore",
+      "**/.stylelintignore",
+      "**/.npmrc",
+      "**/.yarnrc*",
+      "**/.nvmrc",
+      "**/.tool-versions",
       "**/biome.json",
       "**/.cursor/**",
+      "**/.vscode/**",
+      "**/.devcontainer/**",
+      "**/.fleet/**",
+      "**/.zed/**",
+      "**/.obsidian/**",
+      "**/.teamcity/**",
+      "**/.circleci/**",
+      "**/.husky/**",
+      "**/.changeset/**",
+      "**/.storybook/**",
+      "**/.env",
+      "**/.env.*",
       // 只隐藏明确的构建入口；普通 shell 脚本仍可能是仓库的核心逻辑。
       "**/build.sh",
       "**/.github/**",
@@ -98,11 +168,49 @@ const RULES: RoleRule[] = [
       "**/*.yml",
       "**/*.toml",
       "**/*.ini",
+      "**/go.work",
+      "**/go.work.sum",
+      "**/Pipfile*",
+      "**/Gemfile*",
+      "**/pom.xml",
+      "**/build.gradle*",
+      "**/settings.gradle*",
+      "**/gradle.properties",
+      "**/WORKSPACE*",
+      "**/BUILD",
+      "**/BUILD.bazel",
+      "**/*.csproj",
+      "**/*.fsproj",
+      "**/*.vbproj",
+      "**/*.sln",
+      "**/Taskfile*",
+      "**/Justfile",
+      "**/Procfile",
+      "**/Vagrantfile",
+      "**/Jenkinsfile",
     ],
   },
   {
     role: "docs",
-    patterns: ["**/*.md", "**/*.mdx", "**/*.rst", "**/*.txt", "**/docs/**", "**/LICENSE*"],
+    patterns: [
+      "**/*.md",
+      "**/*.mdx",
+      "**/*.rst",
+      "**/*.txt",
+      "**/docs/**",
+      "**/documentation/**",
+      "**/javadoc/**",
+      "**/README*",
+      "**/CHANGELOG*",
+      "**/CHANGES*",
+      "**/CONTRIBUTING*",
+      "**/CODE_OF_CONDUCT*",
+      "**/SECURITY*",
+      "**/AUTHORS*",
+      "**/NOTICE*",
+      "**/COPYING*",
+      "**/LICENSE*",
+    ],
   },
   {
     role: "asset",
@@ -130,6 +238,20 @@ const MATCHERS = RULES.map((rule) => ({
 }));
 
 const D_TS = picomatch("**/*.d.ts", { dot: true });
+const PYI = picomatch("**/*.pyi", { dot: true });
+
+export type RoleClassifier = (path: string, language: Language, source?: string) => FileRole;
+
+/** 创建带显式覆盖的分类器；后写的 glob 优先，便于仓库配置覆盖全局配置。 */
+export function createRoleClassifier(overrides: Record<string, FileRole>): RoleClassifier {
+  const explicit = Object.entries(overrides)
+    .map(([pattern, role]) => ({ role, match: picomatch(pattern, { dot: true }) }))
+    .reverse();
+  return (path, language, source) => {
+    for (const item of explicit) if (item.match(path)) return item.role;
+    return classifyRole(path, language, source);
+  };
+}
 
 /**
  * 判定文件角色。
@@ -137,16 +259,34 @@ const D_TS = picomatch("**/*.d.ts", { dot: true });
  * `language` 参与判定是因为纯类型声明文件（`.d.ts`）在扩展名上和 TS 源码一样，
  * 但在依赖图上的意义完全不同——它们不含运行时逻辑，画进调用图只会增加噪音。
  */
-export function classifyRole(path: string, language: Language): FileRole {
+export function classifyRole(path: string, language: Language, source?: string): FileRole {
   for (const { role, match } of MATCHERS) {
     if (match(path)) return role;
   }
-  if (D_TS(path)) return "types";
+  if (D_TS(path) || PYI(path)) return "types";
+  if (source !== undefined && isGeneratedSource(source, language)) return "generated";
   if (language === "other") return "asset";
   return "source";
 }
 
+/**
+ * 只检查源码开头的高置信度生成标记。GitHub Linguist 和 scc 都把
+ * “generated / do not edit” 作为路径规则之外的第二证据；限制在前 40 行，
+ * 避免业务字符串或生成器模板正文里偶然出现这些词时误判。
+ */
+function isGeneratedSource(source: string, language: Language): boolean {
+  if (!(["typescript", "tsx", "javascript", "jsx", "python", "go", "rust"] as Language[]).includes(language)) {
+    return false;
+  }
+  const lines = source.slice(0, 12_000).split(/\r?\n/, 40);
+  const marker = /(?:code\s+generated[^\n]{0,160}do\s+not\s+edit|<auto-generated(?:\s|\/|>)|@generated\b|(?:this\s+file\s+(?:is|was)|file\s+was)\s+(?:automatically\s+|auto[- ]?)?generated|(?:auto[- ]?|automatically\s+)generated[^\n]{0,160}do\s+not\s+edit|generated\s+file[^\n]{0,120}do\s+not\s+edit)/i;
+  return lines.some((line) => {
+    const comment = /^\s*(?:\/\/|#|\/\*+|\*|<!--)\s?(.*)$/.exec(line);
+    return comment?.[1] !== undefined && marker.test(comment[1]);
+  });
+}
+
 /** 纯类型声明文件：被 import 时不产生运行时依赖 */
 export function isTypeDeclaration(path: string): boolean {
-  return D_TS(path) || path.endsWith(".pyi");
+  return D_TS(path) || PYI(path);
 }
