@@ -7,6 +7,8 @@ describe("classifyRole", () => {
     ["tools/prettierrc.js", "javascript"],
     ["common/config/rush/command-line.json", "json"],
     ["fixtures/payload.json", "json"],
+    [".cursor/rules/project.mdc", "other"],
+    ["packages/app/.cursor/settings.json", "json"],
     ["build.sh", "shell"],
     ["apps/api/build.sh", "shell"],
   ] as const)("把 %s 归为默认隐藏的配置噪音", (path, language) => {

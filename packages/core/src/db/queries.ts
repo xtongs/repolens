@@ -244,30 +244,17 @@ function treeNodeForDir(db: Db, path: string): TreeNodeDto {
 }
 
 function treeChildren(db: Db, parent: string, remainingDepth: number, roles: FileRole[]): TreeNodeDto[] {
-  const dirRows = db
-    .prepare(
-      `SELECT path, name, loc, file_count AS files, symbol_count AS symbols, complexity
-       FROM directories WHERE parent_path IS ? AND file_count > 0
-       ORDER BY loc DESC`,
-    )
-    .all(parent === "." ? null : parent) as Array<{
-    path: string;
-    name: string;
-    loc: number;
-    files: number;
-    symbols: number;
-    complexity: number;
-  }>;
+  const dirRows = visibleDirectoryRows(
+    db,
+    "d.parent_path IS ?",
+    [parent === "." ? null : parent],
+    roles,
+  ).sort((a, b) => b.loc - a.loc);
 
   // 根目录的直接子目录在 directories 表里 parent_path 为 null，需要单独兜一次
   const rootDirs =
     parent === "."
-      ? (db
-          .prepare(
-            `SELECT path, name, loc, file_count AS files, symbol_count AS symbols, complexity
-             FROM directories WHERE depth = 1 AND file_count > 0 ORDER BY loc DESC`,
-          )
-          .all() as typeof dirRows)
+      ? visibleDirectoryRows(db, "d.depth = 1", [], roles).sort((a, b) => b.loc - a.loc)
       : [];
 
   const dirs = parent === "." ? rootDirs : dirRows;
@@ -470,21 +457,12 @@ function directoryScopeGraph(
   includeExternal: boolean,
   keep?: string | undefined,
 ): GraphDto {
-  const childDirs = db
-    .prepare(
-      `SELECT path, name, loc, file_count AS files, symbol_count AS symbols, complexity
-       FROM directories
-       WHERE ${scopeDir === "." ? "depth = 1" : "parent_path = ?"} AND file_count > 0
-       ORDER BY path`,
-    )
-    .all(...(scopeDir === "." ? [] : [scopeDir])) as Array<{
-    path: string;
-    name: string;
-    loc: number;
-    files: number;
-    symbols: number;
-    complexity: number;
-  }>;
+  const childDirs = visibleDirectoryRows(
+    db,
+    scopeDir === "." ? "d.depth = 1" : "d.parent_path = ?",
+    scopeDir === "." ? [] : [scopeDir],
+    roles,
+  ).sort((a, b) => a.path.localeCompare(b.path));
 
   const placeholders = roles.map(() => "?").join(",");
   const looseFiles = db
@@ -642,6 +620,46 @@ function directoryScopeGraph(
     `dir:${scopeDir}`,
     keep,
   );
+}
+
+interface VisibleDirectoryRow {
+  path: string;
+  name: string;
+  loc: number;
+  files: number;
+  symbols: number;
+  complexity: number;
+}
+
+/**
+ * 按当前可见角色筛选目录，并现场计算这部分文件的指标。
+ *
+ * directories 表保存的是全角色汇总值，直接查询会让只含 config 的
+ * `.cursor/` 在默认 source 视图里留下一个空目录壳。
+ */
+function visibleDirectoryRows(
+  db: Db,
+  directoryPredicate: string,
+  predicateArgs: unknown[],
+  roles: FileRole[],
+): VisibleDirectoryRow[] {
+  if (roles.length === 0) return [];
+  const placeholders = roles.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT d.path, d.name,
+              COALESCE(SUM(f.loc), 0) AS loc,
+              COUNT(f.id) AS files,
+              COALESCE(SUM(f.complexity), 0) AS complexity,
+              COALESCE(SUM((SELECT COUNT(*) FROM symbols s WHERE s.file_id = f.id)), 0) AS symbols
+       FROM directories d
+       JOIN files f
+         ON substr(f.path, 1, length(d.path) + 1) = d.path || '/'
+        AND f.role IN (${placeholders})
+       WHERE ${directoryPredicate}
+       GROUP BY d.id, d.path, d.name`,
+    )
+    .all(...roles, ...predicateArgs) as VisibleDirectoryRow[];
 }
 
 /** 文件内的符号视图：文件里的符号 + 它们之间的调用边。 */

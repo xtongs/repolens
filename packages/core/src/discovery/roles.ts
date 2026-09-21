@@ -90,6 +90,7 @@ const RULES: RoleRule[] = [
       "**/.prettierrc*",
       "**/prettierrc.*",
       "**/biome.json",
+      "**/.cursor/**",
       // 只隐藏明确的构建入口；普通 shell 脚本仍可能是仓库的核心逻辑。
       "**/build.sh",
       "**/.github/**",

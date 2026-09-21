@@ -182,15 +182,15 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
                 {label}
               </span>
             </div>
-            <div className="flex items-center gap-2 text-[10.5px] text-[var(--color-ink-faint)]">
-              <span>{formatCount(value)}</span>
-              {dto.layer && <span className="max-w-20 truncate text-[var(--color-accent)]">· {dto.layer}</span>}
+            <div className="flex min-w-0 flex-nowrap items-center gap-2 whitespace-nowrap text-[10.5px] text-[var(--color-ink-faint)]">
+              <span className="shrink-0">{formatCount(value)}</span>
+              {dto.layer && <span className="shrink-0 text-[var(--color-accent)]">· {dto.layer}</span>}
               {dto.childCount > 0 && dto.kind !== "symbol" && (
-                <span className="text-[var(--color-ink-faint)]">· {dto.childCount} 项</span>
+                <span className="shrink-0 text-[var(--color-ink-faint)]">· {dto.childCount} 项</span>
               )}
               {dto.metrics.inDegree + dto.metrics.outDegree > 0 && (
                 <span
-                  className="ml-auto tabular-nums"
+                  className="ml-auto shrink-0 tabular-nums"
                   title={dto.kind === "symbol" ? "调用 / 被调用" : "依赖 / 被依赖"}
                 >
                   {horizontal

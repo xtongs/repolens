@@ -76,10 +76,33 @@ export function nodeSize(
 
   const raw = metricValue(node, metric);
   const t = maxMetric > 0 ? Math.sqrt(Math.max(0, raw) / maxMetric) : 0;
+  const metricWidth = 152 + 84 * t;
+  const metadata = [
+    formatCount(raw),
+    node.layer ? `· ${node.layer}` : null,
+    node.childCount > 0 && node.kind !== "symbol" ? `· ${node.childCount} 项` : null,
+    node.metrics.inDegree + node.metrics.outDegree > 0
+      ? `↓${node.metrics.outDegree} ↑${node.metrics.inDegree}`
+      : null,
+  ].filter((part): part is string => part !== null);
+
+  // 第二行不允许换行，架构层也不能被截成「工具与配…」。节点原先只按
+  // 指标决定宽度，小节点遇到长层名 + 子项数就装不下。这里按实际文案估算
+  // 一个内容下限；指标仍然可以把重要节点放大，但不会再压缩元信息。
+  const metadataWidth = metadata.reduce((sum, part) => sum + estimateLabelWidth(part), 0)
+    + Math.max(0, metadata.length - 1) * 8
+    + 28;
   return {
-    width: Math.round(152 + 84 * t),
+    width: Math.round(Math.max(metricWidth, metadataWidth)),
     height: Math.round(50 + 24 * t),
   };
+}
+
+/** 按 130% 最大字号档保守估算，切换字体大小后也不能重新发生裁切。 */
+function estimateLabelWidth(value: string): number {
+  let width = 0;
+  for (const char of value) width += char.charCodeAt(0) > 0x7f ? 14 : 8;
+  return width;
 }
 
 /**
