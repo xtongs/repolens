@@ -142,6 +142,9 @@ export const api = {
 
   repoScan: (id: string) => get<RepoScanTaskDto>(`/repo-scans/${encodeURIComponent(id)}`),
 
+  rescanRepo: (id: string) =>
+    post<RepoScanTaskDto>(`/repos/${encodeURIComponent(id)}/scan`, {}, "scan-repository"),
+
   forgetRepo: async (id: string): Promise<void> => {
     const response = await fetch(`${BASE}/repos/${id}`, { method: "DELETE" });
     if (!response.ok) throw await toError(response);

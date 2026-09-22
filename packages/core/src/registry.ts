@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { indexPath } from "./db/database.js";
 import type { RegisteredRepo, RepoEntry, RepoStatus } from "./types.js";
 
@@ -88,8 +88,49 @@ export function forgetRepo(id: string): boolean {
 /** 清单 + 现场探测的状态，按最近打开时间降序。 */
 export function listRepos(): RepoEntry[] {
   return readRegistry()
-    .map((repo) => ({ ...repo, status: probe(repo.root) }))
+    .map((repo) => ({ ...repo, status: probe(repo.root), branch: gitBranch(repo.root) }))
     .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt));
+}
+
+/**
+ * 不启动 git 子进程，直接读取 HEAD。这样仓库下拉每次打开都能拿到当前分支，
+ * 同时不会因为清单里有几十个仓库而串行执行几十次 git。`.git` 为文件的
+ * worktree/submodule 也按其中的 gitdir 指针解析。
+ */
+export function gitBranch(root: string): string | null {
+  try {
+    const dotGit = findGitMarker(root);
+    if (dotGit === null) return null;
+    const stat = statSync(dotGit);
+    let gitDir = dotGit;
+    if (stat.isFile()) {
+      const pointer = readFileSync(dotGit, "utf8").trim();
+      const match = /^gitdir:\s*(.+)$/i.exec(pointer);
+      if (!match?.[1]) return null;
+      gitDir = isAbsolute(match[1]) ? match[1] : resolve(dirname(dotGit), match[1]);
+    } else if (!stat.isDirectory()) {
+      return null;
+    }
+
+    const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+    const ref = /^ref:\s+refs\/heads\/(.+)$/.exec(head);
+    if (ref?.[1]) return ref[1];
+    return /^[0-9a-f]{7,64}$/i.test(head) ? `detached@${head.slice(0, 7)}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 扫描目标可以是 monorepo 的子目录，因此向上寻找最近的 Git 根。 */
+function findGitMarker(root: string): string | null {
+  let directory = resolve(root);
+  while (true) {
+    const marker = join(directory, ".git");
+    if (existsSync(marker)) return marker;
+    const parent = dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
 }
 
 export function probe(root: string): RepoStatus {

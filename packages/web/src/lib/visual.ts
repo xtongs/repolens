@@ -19,29 +19,13 @@ export function languageColor(language: Language | null | undefined): string {
 }
 
 export function nodeAccent(node: GraphNodeDto): string {
+  // 圆点、色条和 Tooltip 标记在全站只表达编程语言。架构层是模型推断，
+  // 继续用文字标签呈现，不能覆盖语言颜色，否则同一种蓝色会同时表示
+  // TypeScript 和某个 AI 架构层。
   if (node.kind === "external") return "var(--color-ink-faint)";
   if (node.kind === "aggregate") return "var(--color-ink-faint)";
-  if (node.layer) return layerColor(node.layer);
   if (node.language) return languageColor(node.language);
   return "var(--color-ink-muted)";
-}
-
-const LAYER_COLORS = [
-  "var(--layer-blue)",
-  "var(--layer-green)",
-  "var(--layer-purple)",
-  "var(--layer-yellow)",
-  "var(--layer-orange)",
-  "var(--layer-cyan)",
-];
-
-function layerColor(layer: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < layer.length; i++) {
-    hash ^= layer.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return LAYER_COLORS[Math.abs(hash) % LAYER_COLORS.length] ?? "var(--color-accent)";
 }
 
 export const METRIC_LABELS: Record<MetricKey, string> = {

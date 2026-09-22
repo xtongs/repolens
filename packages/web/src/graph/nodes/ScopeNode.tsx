@@ -57,7 +57,6 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
   // 衰减是为了让高亮那条链跳出来，不是为了把其余部分擦掉——
   // 压到看不见的话，用户就失去了「这条链在整体里的位置」这个上下文
   const opacity = dimmed ? 0.32 : 1;
-  const scale = active ? 1.15 : 1;
 
   if (isContainer) {
     return (
@@ -101,9 +100,10 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
       className="relative h-full w-full"
       style={{
         opacity,
-        transform: `scale(${scale})`,
-        transformOrigin: "center",
-        transition: "transform 140ms cubic-bezier(0.22,0.61,0.36,1), opacity 140ms ease",
+        // React Flow 按节点的未变形边界计算 Handle 和连线端点。这里不能
+        // scale 整个节点，否则视觉上的上下/左右 Handle 会移动，而 SVG 边
+        // 仍停在旧坐标，hover 时就像连接线发生了漂移或断开。
+        transition: "opacity 140ms ease",
         zIndex: active ? 10 : undefined,
       }}
     >

@@ -21,6 +21,8 @@ export function CommandPalette() {
   const setOpen = useAppStore((s) => s.setPaletteOpen);
   const reveal = useAppStore((s) => s.reveal);
   const showNoise = useAppStore((s) => s.showNoise);
+  const repoId = useAppStore((s) => s.repoId);
+  const repoRevision = useAppStore((s) => s.repoRevision);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHitDto[]>([]);
   const [cursor, setCursor] = useState(0);
@@ -34,10 +36,11 @@ export function CommandPalette() {
       // 等抽屉挂载完再聚焦，否则 autoFocus 会被动画吃掉
       requestAnimationFrame(() => inputRef.current?.focus());
     }
-  }, [open]);
+  }, [open, repoId, repoRevision]);
 
   useEffect(() => {
     if (!open) return;
+    let stale = false;
     const trimmed = query.trim();
     if (trimmed.length === 0) {
       setHits([]);
@@ -50,13 +53,19 @@ export function CommandPalette() {
         // 会从搜索结果里涌回来，前 20 条几乎全是 *.test.ts
         .search(trimmed, 24, (showNoise ? ALL_VISIBLE_ROLES : SOURCE_ONLY_ROLES).join(","))
         .then((result) => {
+          if (stale) return;
           setHits(result);
           setCursor(0);
         })
-        .catch(() => setHits([]));
+        .catch(() => {
+          if (!stale) setHits([]);
+        });
     }, 120);
-    return () => window.clearTimeout(timer);
-  }, [query, open, showNoise]);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, open, repoId, repoRevision, showNoise]);
 
   if (!open) return null;
 

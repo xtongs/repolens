@@ -52,8 +52,10 @@ export interface AppState {
   repos: RepoEntry[];
   /** 当前浏览的仓库 id；null 表示还没取到清单 */
   repoId: string | null;
+  /** 切换仓库或重扫当前仓库时递增，用来使本地视图和异步请求失效。 */
+  repoRevision: number;
   refreshRepos: () => Promise<void>;
-  switchRepo: (id: string) => Promise<void>;
+  switchRepo: (id: string, forceReload?: boolean) => Promise<void>;
   forgetRepo: (id: string) => Promise<void>;
 
   rootScope: string;
@@ -142,6 +144,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   repos: [],
   // 模块加载时就从 URL 恢复，确保首个 /overview 请求不会先读到启动仓库。
   repoId: getActiveRepo() ?? null,
+  repoRevision: 0,
 
   rootScope: "dir:.",
   subgraphs: {},
@@ -177,10 +180,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   hiddenNodes: [],
 
   async boot() {
+    const revision = get().repoRevision;
     // 先取清单以验证 URL 里的 repo。无效、已移走或索引缺失时回退到
     // 服务启动仓库，避免一个过期书签把页面永久卡在错误页。
     try {
       const { current, repos } = await api.repos();
+      if (revision !== get().repoRevision) return;
       const requested = get().repoId;
       const selected = requested && repos.some((repo) => repo.id === requested && repo.status === "ok")
         ? requested
@@ -193,22 +198,25 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const overview = await api.overview();
+      if (revision !== get().repoRevision) return;
       set({ overview, bootError: null });
       await get().loadScope(get().rootScope);
     } catch (err) {
-      set({ bootError: (err as Error).message });
+      if (revision === get().repoRevision) set({ bootError: (err as Error).message });
     }
   },
 
-  async switchRepo(id) {
+  async switchRepo(id, forceReload = false) {
     // 即使已经是当前仓库，也要把 URL 补齐；例如首次从无参数地址打开。
     setActiveRepo(id);
-    if (id === get().repoId) return;
+    if (id === get().repoId && !forceReload) return;
+    const repoRevision = get().repoRevision + 1;
     // 视图状态全部丢掉：展开的层级、选中项、隐藏项都是上一个仓库的节点 id，
     // 留着会让新仓库的图上凭空多出几层展不开的空壳。
     // 但偏好（噪音、外部依赖、指标、置信度、面板开合）是跟着人的，不重置。
     set({
       repoId: id,
+      repoRevision,
       overview: null,
       bootError: null,
       subgraphs: {},
@@ -242,6 +250,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   async loadScope(scopeId, limitOverride, keep) {
     const { loadingScopes, showNoise, showExternal, scopeLimits } = get();
     if (loadingScopes.includes(scopeId)) return;
+    const revision = get().repoRevision;
+    const repoId = get().repoId;
 
     const limit = limitOverride ?? scopeLimits[scopeId] ?? BASE_LIMIT;
     set({ loadingScopes: [...loadingScopes, scopeId] });
@@ -254,18 +264,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         external: showExternal && scopeId === get().rootScope,
         keep,
       });
+      if (revision !== get().repoRevision || get().repoId !== repoId) return;
       set((state) => ({
         subgraphs: { ...state.subgraphs, [scopeId]: graph },
         scopeLimits: { ...state.scopeLimits, [scopeId]: limit },
       }));
     } catch (err) {
+      if (revision !== get().repoRevision || get().repoId !== repoId) return;
       // 单个作用域加载失败不该清空整张图，把它当成空子图处理
       set((state) => ({
         subgraphs: { ...state.subgraphs, [scopeId]: { nodes: [], edges: [], truncated: 0 } },
         bootError: state.overview === null ? (err as Error).message : state.bootError,
       }));
     } finally {
-      set((state) => ({ loadingScopes: state.loadingScopes.filter((s) => s !== scopeId) }));
+      if (revision === get().repoRevision && get().repoId === repoId) {
+        set((state) => ({ loadingScopes: state.loadingScopes.filter((s) => s !== scopeId) }));
+      }
     }
   },
 
@@ -318,14 +332,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async loadCallGraph(mode) {
+    const revision = get().repoRevision;
+    const repoId = get().repoId;
     try {
       const graph = await api.callGraph(mode.symbolId, {
         depth: mode.depth,
         direction: mode.direction,
         confidence: get().confidence.join(","),
       });
+      if (revision !== get().repoRevision || get().repoId !== repoId) return;
       set((state) => ({ subgraphs: { ...state.subgraphs, [mode.scopeId]: graph } }));
     } catch {
+      if (revision !== get().repoRevision || get().repoId !== repoId) return;
       set((state) => ({
         subgraphs: { ...state.subgraphs, [mode.scopeId]: { nodes: [], edges: [], truncated: 0 } },
       }));
@@ -355,6 +373,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   async reveal(nodeId) {
+    const revision = get().repoRevision;
+    const repoId = get().repoId;
+    const isCurrentRepo = () => revision === get().repoRevision && repoId === get().repoId;
     // 调用图模式下坐标系完全不同，先退回结构视图再导航
     if (get().callGraph !== null || get().traceId !== null) {
       set({ callGraph: null, traceId: null, traceLabel: null });
@@ -362,6 +383,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const { chain } = await api.revealChain(nodeId);
+      if (!isCurrentRepo()) return;
       // 必须顺序展开：每一层的子图要等父层加载完才知道该请求哪个作用域。
       // 每层都带上 keep，因为目标的祖先同样可能因为体量小被折进聚合节点。
       for (const [i, scope] of chain.entries()) {
@@ -370,17 +392,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         const next = chain[i + 1] ?? nodeId;
         await get().loadScope(scope, get().scopeLimits[scope], next);
+        if (!isCurrentRepo()) return;
       }
       // 根作用域也要锁一次：包/顶层目录多的仓库里，目标所在的那个包
       // 自己就可能在根视图里被折叠
       const root = get().rootScope;
       await get().loadScope(root, get().scopeLimits[root], chain[0] ?? nodeId);
+      if (!isCurrentRepo()) return;
       set({ revealed: nodeId });
     } catch {
       // 链子拿不到就退化成只选中，至少详情抽屉还能看
     }
 
-    get().select(nodeId);
+    if (isCurrentRepo()) get().select(nodeId);
   },
 
   collapse(nodeId) {

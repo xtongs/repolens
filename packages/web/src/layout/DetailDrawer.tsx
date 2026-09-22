@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { formatCount, languageColor, symbolGlyph } from "../lib/visual";
 import { useAppStore } from "../store/useAppStore";
+import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 
 type Tab = "overview" | "params" | "source" | "relations";
 
@@ -28,6 +29,13 @@ export function DetailDrawer() {
   const selected = useAppStore((s) => s.selected);
   const setDrawerOpen = useAppStore((s) => s.setDrawerOpen);
   const [tab, setTab] = useState<Tab>("overview");
+  const resize = useResizablePanel({
+    side: "right",
+    storageKey: "repolens:right-panel-width",
+    defaultWidth: 400,
+    minWidth: 320,
+    maxWidth: 720,
+  });
 
   useEffect(() => {
     setTab("overview");
@@ -44,7 +52,20 @@ export function DetailDrawer() {
       : ["overview"];
 
   return (
-    <aside className="anim-slide-right absolute right-0 top-0 z-30 flex h-full w-[400px] flex-col border-l border-[var(--color-line)] bg-[var(--color-surface)]/95 backdrop-blur">
+    <aside
+      className="anim-slide-right absolute right-0 top-0 z-30 flex h-full flex-col border-l border-[var(--color-line)] bg-[var(--color-surface)]/95 backdrop-blur"
+      style={{ width: resize.width }}
+    >
+      <ResizablePanelHandle
+        side="right"
+        label="调整右侧边栏宽度"
+        width={resize.width}
+        minWidth={resize.minWidth}
+        maxWidth={resize.maxWidth}
+        onPointerDown={resize.onPointerDown}
+        onKeyDown={resize.onKeyDown}
+        onReset={resize.reset}
+      />
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--color-line)] pl-3 pr-2">
         {availableTabs.map((key) => (
           <button

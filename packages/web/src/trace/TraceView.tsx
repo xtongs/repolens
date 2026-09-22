@@ -53,7 +53,6 @@ export function TraceView({ traceId }: { traceId: string }) {
               <span className="rounded border border-[var(--color-accent)]/40 px-1.5 py-0.5 text-[9px] uppercase text-[var(--color-accent)]">
                 {trace.entry.framework ?? trace.entry.kind}
               </span>
-              <EvidenceBadge confidence={trace.confidence} />
             </div>
             <h1 className="text-[17px] font-medium text-[var(--color-ink)]">{trace.label}</h1>
             <p className="mono mt-1 text-[10.5px] text-[var(--color-ink-faint)]">
@@ -69,12 +68,12 @@ export function TraceView({ traceId }: { traceId: string }) {
         {error && <div className="mb-4 rounded border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/8 px-3 py-2 text-[11px] text-[var(--color-warn)]">{error}</div>}
         {trace.narrative && <Narrative value={trace.narrative} />}
 
-        <div className="grid grid-cols-3 gap-4 border-b border-[var(--color-line)] pb-2 text-center text-[10px] uppercase tracking-wider text-[var(--color-ink-faint)]">
+        <div className="grid grid-cols-[24px_repeat(3,minmax(0,1fr))] gap-x-4 border-b border-[var(--color-line)] pb-2 text-center text-[10px] uppercase tracking-wider text-[var(--color-ink-faint)]">
+          <span aria-hidden="true" />
           <span>入口</span><span>内部调用</span><span>I/O 边界</span>
         </div>
 
         <div className="relative py-3">
-          <div className="absolute bottom-0 left-1/2 top-0 w-px bg-[var(--color-line)]" />
           {trace.orderedSteps.map((step, index) => (
             <StepRow key={`${step.ordinal}:${step.label}`} step={step} last={index === trace.orderedSteps.length - 1}
               narrative={narrativeByStep.get(step.ordinal)} onOpen={() => step.symbolId && void reveal(step.symbolId)} />
@@ -95,20 +94,37 @@ function StepRow({ step, last, narrative, onOpen }: {
   step: TraceStepDto; last: boolean; narrative?: TraceNarrativeDto["steps"][number]; onOpen: () => void;
 }) {
   const column = step.kind === "entry" ? 1 : step.kind === "boundary" ? 3 : 2;
+  const color = step.source === "deterministic" ? "var(--color-success)" : "var(--color-warn)";
   return (
-    <div className="relative grid min-h-[126px] grid-cols-3 gap-4">
-      {!last && <span className="absolute left-1/2 top-[62px] h-[126px] border-l border-dashed border-[var(--color-line-strong)]" />}
+    <div className="relative grid min-h-[126px] grid-cols-[24px_repeat(3,minmax(0,1fr))] gap-x-4">
+      {!last && (
+        <span className="col-start-1 row-start-1 mx-auto mt-[25px] h-full border-l border-dashed border-[var(--color-line-strong)]" />
+      )}
       <span
-        className="absolute left-1/2 top-[54px] z-10 h-4 w-4 -translate-x-1/2 rounded-full border-2 bg-[var(--color-canvas)]"
-        style={{ borderColor: step.source === "deterministic" ? "var(--color-success)" : "var(--color-warn)" }}
+        aria-hidden="true"
+        className="col-start-1 row-start-1 mr-[-16px] mt-[25px] border-t border-[var(--color-line-strong)]"
+        style={{ gridColumnEnd: column + 1 }}
       />
-      <div className="min-w-0" style={{ gridColumn: column }}>
-        <button type="button" onClick={onOpen} disabled={!step.symbolId}
-          className={`w-full rounded-lg border bg-[var(--color-surface)] p-3 text-left transition-colors disabled:cursor-default ${step.source === "deterministic" ? "border-[var(--color-line)] hover:border-[var(--color-success)]/40" : "border-dashed border-[var(--color-warn)]/60 hover:border-[var(--color-warn)]"}`}>
+      <span
+        aria-hidden="true"
+        className="z-10 col-start-1 row-start-1 mx-auto mt-5 h-2.5 w-2.5 rounded-full border-2 bg-[var(--color-canvas)]"
+        style={{ borderColor: color }}
+      />
+      <div className="z-10 min-w-0 row-start-1" style={{ gridColumn: column + 1 }}>
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={!step.symbolId}
+          className={`w-full rounded-lg border border-l-2 bg-[var(--color-surface)] p-3 text-left transition-colors disabled:cursor-default ${
+            step.source === "deterministic"
+              ? "border-[var(--color-line)] hover:border-[var(--color-success)]/40"
+              : "border-dashed border-[var(--color-warn)]/60 hover:border-[var(--color-warn)]"
+          }`}
+          style={{ borderLeftColor: color }}
+        >
           <div className="flex items-center gap-2">
             <span className="rounded bg-[var(--color-surface-3)] px-1.5 py-0.5 text-[9px] text-[var(--color-ink-faint)]">{step.ordinal + 1}</span>
             <span className="truncate text-[12px] font-medium">{step.label}</span>
-            <EvidenceBadge confidence={step.confidence} />
           </div>
           <div className="mono mt-1.5 truncate text-[9.5px] text-[var(--color-ink-faint)]">
             定义 {step.filePath}:{step.line}
@@ -134,12 +150,6 @@ function StepRow({ step, last, narrative, onOpen }: {
       </div>
     </div>
   );
-}
-
-function EvidenceBadge({ confidence }: { confidence: "exact" | "likely" }) {
-  return <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[8.5px] ${confidence === "exact" ? "bg-[var(--color-success)]/10 text-[var(--color-success)]" : "bg-[var(--color-warn)]/10 text-[var(--color-warn)]"}`}>
-    {confidence === "exact" ? "确定" : "推断"}
-  </span>;
 }
 
 function Narrative({ value }: { value: TraceNarrativeDto }) {

@@ -15,6 +15,7 @@ export function App() {
   const escape = useAppStore((s) => s.escape);
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
   const traceId = useAppStore((s) => s.traceId);
+  const repoRevision = useAppStore((s) => s.repoRevision);
 
   useEffect(() => {
     void boot();
@@ -47,7 +48,11 @@ export function App() {
         ) : overview === null ? (
           <BootSkeleton />
         ) : (
-          traceId ? <TraceView traceId={traceId} /> : <GraphCanvas />
+          traceId ? (
+            <TraceView key={`trace:${repoRevision}`} traceId={traceId} />
+          ) : (
+            <GraphCanvas key={`graph:${repoRevision}`} />
+          )
         )}
         <TreePanel />
         <DetailDrawer />

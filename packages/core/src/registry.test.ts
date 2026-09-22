@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { INDEX_DIR, INDEX_FILE } from "./db/database.js";
-import { forgetRepo, listRepos, readRegistry, registryPath, rememberRepo, repoId } from "./registry.js";
+import { forgetRepo, gitBranch, listRepos, readRegistry, registryPath, rememberRepo, repoId } from "./registry.js";
 
 // registryPath() 走 os.homedir()，在 POSIX 上它直接读 $HOME，
 // 所以改环境变量就能把整套读写引到临时目录，不必给模块加注入口子。
@@ -159,5 +159,37 @@ describe("listRepos 的状态探测", () => {
 
     rmSync(join(root, INDEX_DIR), { recursive: true, force: true });
     expect(listRepos()[0]?.status).toBe("index-missing");
+  });
+});
+
+describe("gitBranch", () => {
+  it("读取普通仓库分支与 detached HEAD", () => {
+    const root = join(home, "branch-repo");
+    mkdirSync(join(root, ".git"), { recursive: true });
+    writeFileSync(join(root, ".git/HEAD"), "ref: refs/heads/feature/repo-list\n");
+    expect(gitBranch(root)).toBe("feature/repo-list");
+
+    writeFileSync(join(root, ".git/HEAD"), "0123456789abcdef0123456789abcdef01234567\n");
+    expect(gitBranch(root)).toBe("detached@0123456");
+  });
+
+  it("支持 .git 文件指向的 worktree，并对非 Git 仓库返回 null", () => {
+    const root = join(home, "worktree");
+    const gitDir = join(home, "main/.git/worktrees/feature");
+    mkdirSync(root, { recursive: true });
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(root, ".git"), `gitdir: ${gitDir}\n`);
+    writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/worktree-branch\n");
+    expect(gitBranch(root)).toBe("worktree-branch");
+    expect(gitBranch(join(home, "not-a-repo"))).toBeNull();
+  });
+
+  it("扫描 Git 仓库的子目录时仍能显示所在分支", () => {
+    const root = join(home, "monorepo");
+    const packageRoot = join(root, "packages/web");
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(join(root, ".git/HEAD"), "ref: refs/heads/main\n");
+    expect(gitBranch(packageRoot)).toBe("main");
   });
 });

@@ -534,6 +534,8 @@ export interface RegisteredRepo {
 
 export interface RepoEntry extends RegisteredRepo {
   status: RepoStatus;
+  /** 当前 Git 分支；detached HEAD 显示为 detached@短提交，非 Git 仓库为 null。 */
+  branch: string | null;
 }
 
 export interface ReposDto {
@@ -732,6 +734,7 @@ export interface EntryPointDto {
   symbolId?: string | null;
   fileId: string;
   filePath: string;
+  fileRole: FileRole;
   line: number;
   label: string;
   method?: string | null;

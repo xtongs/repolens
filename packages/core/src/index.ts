@@ -48,6 +48,7 @@ export {
   HOME_DIR,
   REGISTRY_FILE,
   forgetRepo,
+  gitBranch,
   listRepos,
   probe,
   readRegistry,

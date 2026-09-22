@@ -1,5 +1,6 @@
 import {
   indexPath,
+  gitBranch,
   listRepos,
   openDb,
   probe,
@@ -78,9 +79,15 @@ export class RepoPool {
         name: basename(this.defaultRoot) || this.defaultRoot,
         lastOpenedAt: new Date().toISOString(),
         status: probe(this.defaultRoot),
+        branch: gitBranch(this.defaultRoot),
       });
     }
     return entries;
+  }
+
+  /** 只允许把启动仓库或清单里的仓库 id 还原成路径，供安全的重扫入口使用。 */
+  root(id: string): string {
+    return this.rootOf(id);
   }
 
   /** 解析仓库标识；缺省时给启动时那个。打不开就抛 RepoUnavailableError。 */

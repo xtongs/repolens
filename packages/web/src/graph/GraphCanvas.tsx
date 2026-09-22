@@ -319,9 +319,9 @@ function EdgeDotMarkers() {
           orient="auto"
           refX="0"
           refY="0"
-          viewBox="-9 -6.5 13 13"
+          viewBox="-6.5 -6.5 13 13"
         >
-          <circle cx="-4.5" cy="0" r="4" fill="var(--color-line-strong)" />
+          <circle cx="-1" cy="0" r="4" fill="var(--color-line-strong)" />
         </marker>
         <marker
           id={ACTIVE_EDGE_DOT_MARKER}
@@ -331,9 +331,9 @@ function EdgeDotMarkers() {
           orient="auto"
           refX="0"
           refY="0"
-          viewBox="-9 -6.5 13 13"
+          viewBox="-6.5 -6.5 13 13"
         >
-          <circle cx="-4.5" cy="0" r="4" fill="var(--color-accent)" />
+          <circle cx="-1" cy="0" r="4" fill="var(--color-accent)" />
         </marker>
       </defs>
     </svg>

@@ -49,8 +49,9 @@ describe("M4 trace analysis", () => {
       const route = getEntryPoints(db).find((entry) => entry.kind === "http");
       expect(route).toMatchObject({
         label: "GET /users/:id", method: "GET", route: "/users/:id",
-        confidence: "exact", framework: "Express-compatible", traceCount: 1,
+        confidence: "exact", framework: "Express-compatible", fileRole: "source", traceCount: 1,
       });
+      expect(getEntryPoints(db)[0]?.kind).toBe("http");
       expect(route?.symbolId).toMatch(/^sym:/);
 
       const summaries = getTraceSummaries(db, Number(route?.id.split(":")[1]));
@@ -170,7 +171,9 @@ describe("M4 trace analysis", () => {
     const root = mkdtempSync(join(tmpdir(), "repolens-trace-collision-"));
     roots.push(root);
     mkdirSync(join(root, "src"));
-    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "trace-collision" }));
+    writeFileSync(join(root, "package.json"), JSON.stringify({
+      name: "trace-collision", exports: "./src/store.ts",
+    }));
     writeFileSync(join(root, ".repolens.json"), JSON.stringify({ llm: { enabled: false } }));
     writeFileSync(join(root, "src/store.ts"), `
       const db = { query(sql: string): string { return sql; } };
@@ -187,6 +190,36 @@ describe("M4 trace analysis", () => {
         getTrace(db, Number(summary.id.split(":")[1]))?.orderedSteps.at(-1)?.arguments[0],
       );
       expect(args.sort()).toEqual(["\"left\"", "\"right\""]);
+    } finally { db.close(); }
+  });
+
+  it("只把包入口导出视为公共 API，并要求 command 有 CLI 接收者证据", async () => {
+    const root = mkdtempSync(join(tmpdir(), "repolens-trace-entry-scope-"));
+    roots.push(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "package.json"), JSON.stringify({
+      name: "trace-entry-scope", exports: "./src/index.ts",
+    }));
+    writeFileSync(join(root, ".repolens.json"), JSON.stringify({ llm: { enabled: false } }));
+    writeFileSync(join(root, "src/index.ts"), `
+      export function publicTask(): string { return "ok"; }
+      const lane = { command(name: string, handler: unknown): void {} };
+      const program = { command(name: string, handler: unknown): void {} };
+      lane.command("not-a-cli", publicTask);
+      program.command("serve", publicTask);
+    `);
+    writeFileSync(join(root, "src/internal.ts"), `
+      export function internalHelper(): string { return "internal"; }
+    `);
+
+    await scanRepo({ root, fresh: true });
+    const db = openDb(indexPath(root), { readonly: true });
+    try {
+      const entries = getEntryPoints(db);
+      expect(entries.filter((entry) => entry.kind === "public-api").map((entry) => entry.label))
+        .toEqual(["publicTask"]);
+      expect(entries.filter((entry) => entry.kind === "cli").map((entry) => entry.label))
+        .toEqual(["CLI serve"]);
     } finally { db.close(); }
   });
 });

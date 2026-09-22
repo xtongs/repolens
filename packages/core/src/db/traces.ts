@@ -7,7 +7,7 @@ import type { Db } from "./database.js";
 
 interface EntryRow {
   id: number; kind: EntryPointDto["kind"]; framework: string | null; symbolId: number | null; fileId: number;
-  filePath: string; line: number; label: string; method: string | null; route: string | null;
+  filePath: string; fileRole: EntryPointDto["fileRole"]; line: number; label: string; method: string | null; route: string | null;
   confidence: "exact" | "likely"; evidence: string; traceCount: number;
 }
 
@@ -19,11 +19,14 @@ interface BoundaryRow {
 export function getEntryPoints(db: Db): EntryPointDto[] {
   return (db.prepare(
     `SELECT e.id, e.kind, e.framework, e.symbol_id AS symbolId, e.file_id AS fileId, f.path AS filePath,
+            f.role AS fileRole,
             e.line, e.label, e.method, e.route, e.confidence, e.evidence,
             (SELECT COUNT(*) FROM traces t WHERE t.entry_id = e.id) AS traceCount
      FROM entry_points e JOIN files f ON f.id = e.file_id
-     ORDER BY CASE e.kind WHEN 'http' THEN 0 WHEN 'cli' THEN 1 WHEN 'main' THEN 2 WHEN 'test' THEN 3 ELSE 4 END,
-              e.label, f.path, e.line`,
+     ORDER BY CASE WHEN traceCount > 0 THEN 0 ELSE 1 END,
+              CASE e.kind WHEN 'http' THEN 0 WHEN 'cli' THEN 1 WHEN 'main' THEN 2
+                   WHEN 'public-api' THEN 3 WHEN 'test' THEN 4 ELSE 5 END,
+              traceCount DESC, e.label, f.path, e.line`,
   ).all() as EntryRow[]).map(entryDto);
 }
 
@@ -60,6 +63,7 @@ export function getTrace(db: Db, traceId: number): TraceDto | null {
 
   const entry = db.prepare(
     `SELECT e.id, e.kind, e.framework, e.symbol_id AS symbolId, e.file_id AS fileId, f.path AS filePath,
+            f.role AS fileRole,
             e.line, e.label, e.method, e.route, e.confidence, e.evidence,
             (SELECT COUNT(*) FROM traces x WHERE x.entry_id = e.id) AS traceCount
      FROM entry_points e JOIN files f ON f.id = e.file_id WHERE e.id = ?`,
@@ -105,7 +109,7 @@ export function getTrace(db: Db, traceId: number): TraceDto | null {
 function entryDto(row: EntryRow): EntryPointDto {
   return { id: `entry:${row.id}`, kind: row.kind, framework: row.framework,
     symbolId: row.symbolId === null ? null : `sym:${row.symbolId}`, fileId: `file:${row.fileId}`,
-    filePath: row.filePath, line: row.line, label: row.label, method: row.method, route: row.route,
+    filePath: row.filePath, fileRole: row.fileRole, line: row.line, label: row.label, method: row.method, route: row.route,
     confidence: row.confidence, evidence: row.evidence, traceCount: row.traceCount };
 }
 

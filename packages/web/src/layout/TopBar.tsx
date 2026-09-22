@@ -479,6 +479,7 @@ function FindingsPill() {
   const [summary, setSummary] = useState<FindingSummaryDto | null>(null);
   const store = useAppStore();
   const repoId = store.repoId;
+  const repoRevision = store.repoRevision;
 
   // 跟着仓库重取。否则换完仓库这里还挂着上一个仓库的问题数，
   // 而角标是会被当成事实去点的。
@@ -496,7 +497,7 @@ function FindingsPill() {
     return () => {
       stale = true;
     };
-  }, [repoId]);
+  }, [repoId, repoRevision]);
 
   if (!summary || summary.total === 0) return null;
 

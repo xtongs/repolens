@@ -4,7 +4,7 @@
 /*
  * 设计令牌。
  *
- * 颜色只编码一个维度（语言或架构层），见 docs/INTERACTION.md「按仓库自己的语言分组」。
+ * 圆点与节点色条只编码编程语言，见 docs/INTERACTION.md「按仓库自己的语言分组」。
  * 中性色刻意压得很平，让为数不多的强调色能真正跳出来。
  */
 @theme {
@@ -34,12 +34,6 @@
   --lang-go: #56c7d6;
   --lang-rust: #e08758;
   --lang-other: #8b95a5;
-  --layer-blue: #5eb0ff;
-  --layer-green: #5ecb9e;
-  --layer-purple: #c58af9;
-  --layer-yellow: #e0a458;
-  --layer-orange: #e08758;
-  --layer-cyan: #56c7d6;
 }
 
 :root {
@@ -93,13 +87,6 @@
   --lang-go: #187988;
   --lang-rust: #ae5028;
   --lang-other: #667386;
-  --layer-blue: #1672b8;
-  --layer-green: #247d5f;
-  --layer-purple: #7b4cac;
-  --layer-yellow: #8b6500;
-  --layer-orange: #ae5028;
-  --layer-cyan: #187988;
-
   --node-hover-shadow: 0 8px 24px rgb(31 41 55 / 16%);
 }
 

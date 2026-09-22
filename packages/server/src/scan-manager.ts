@@ -1,7 +1,9 @@
 import {
   indexPath,
   isIndexCurrent,
+  gitBranch,
   rememberRepo,
+  type RegisteredRepo,
   type RepoEntry,
   type RepoScanTaskDto,
   type ScanPhase,
@@ -38,7 +40,7 @@ export class ScanManager {
   private activeId: string | null = null;
   private activeWorker: Worker | null = null;
 
-  start(selectedRoot: string): RepoScanTaskDto {
+  start(selectedRoot: string, options: { scanExisting?: boolean } = {}): RepoScanTaskDto {
     if (this.activeId !== null) {
       const active = this.tasks.get(this.activeId);
       if (active?.status === "running") {
@@ -67,7 +69,7 @@ export class ScanManager {
     this.trim();
 
     // 已有可用索引时只需把仓库登记进清单，不做一次没有意义的重扫。
-    if (isIndexCurrent(indexPath(root))) {
+    if (!options.scanExisting && isIndexCurrent(indexPath(root))) {
       try {
         task.repo = asEntry(rememberRepo(root));
         task.status = "completed";
@@ -208,8 +210,8 @@ function phaseProgress(phase: ScanPhase, done: number, total: number): number {
   return Math.min(0.99, before + weight * fraction);
 }
 
-function asEntry(repo: Omit<RepoEntry, "status">): RepoEntry {
-  return { ...repo, status: "ok" };
+function asEntry(repo: RegisteredRepo): RepoEntry {
+  return { ...repo, status: "ok", branch: gitBranch(repo.root) };
 }
 
 function fail(task: RepoScanTaskDto, err: unknown): void {

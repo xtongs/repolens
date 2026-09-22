@@ -85,6 +85,22 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     return task ? c.json(task) : c.json({ error: "扫描任务不存在或服务已经重启" }, 404);
   });
 
+  app.post("/api/repos/:id/scan", (c) => {
+    if (c.req.header("x-repolens-intent") !== "scan-repository") {
+      return c.json({ error: "缺少仓库扫描确认标记" }, 403);
+    }
+    try {
+      // 浏览器只提交清单中的短 id，不接受绝对路径，避免把重扫接口变成
+      // 任意目录读取入口。已有索引也必须真正执行一次增量扫描。
+      return c.json(scans.start(pool.root(c.req.param("id")), { scanExisting: true }));
+    } catch (err) {
+      if (err instanceof ScanBusyError) return c.json({ error: err.message }, 409);
+      if (err instanceof InvalidScanRootError) return c.json({ error: err.message }, 400);
+      if (err instanceof RepoUnavailableError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+  });
+
   // 只从清单里移除，不动仓库和索引。仓库被删或移走后清单里会留下死条目，
   // 没有这个端点就只能手改 ~/.repolens/repos.json。
   app.delete("/api/repos/:id", (c) => {

@@ -29,6 +29,7 @@ const PHASE_LABELS: Record<ScanPhase, string> = {
 const TOOLTIP_WIDTH = 420;
 const TOOLTIP_GAP = 8;
 const VIEWPORT_MARGIN = 12;
+const COMPLETED_SCAN_DISMISS_MS = 3_000;
 
 /** 下拉菜单关闭后仍保留已经读到的概览；重扫会改变 lastOpenedAt，从而自然失效。 */
 const overviewCache = new Map<string, OverviewDto>();
@@ -50,8 +51,10 @@ export function RepoPicker() {
   const switchRepo = useAppStore((s) => s.switchRepo);
   const [scanTask, setScanTask] = useState<RepoScanTaskDto | null>(null);
   const [picking, setPicking] = useState(false);
+  const [startingRepoId, setStartingRepoId] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const completedRef = useRef<string | null>(null);
+  const scanKindRef = useRef<"add" | "rescan" | null>(null);
 
   const boxRef = useRef<HTMLDivElement>(null);
 
@@ -59,27 +62,43 @@ export function RepoPicker() {
   // React Flow 会先把事件吃掉，下拉就关不上了。
   useEffect(() => {
     if (!open) return;
+    // 分支可能刚在终端中切换；每次展开都重新读取清单，避免一直显示首屏缓存。
+    void refreshRepos().catch(() => {
+      // 已有清单仍可使用，刷新失败不应阻止仓库切换。
+    });
     const onDown = (event: MouseEvent) => {
       if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", onDown, true);
     return () => document.removeEventListener("mousedown", onDown, true);
-  }, [open, setOpen]);
+  }, [open, refreshRepos, setOpen]);
 
   const finishScan = useCallback(
     async (task: RepoScanTaskDto) => {
       if (!task.repo || completedRef.current === task.id) return;
       completedRef.current = task.id;
       try {
+        const wasKnown = repos.some((repo) => repo.id === task.repo?.id || repo.root === task.root);
+        const rescan = scanKindRef.current === "rescan" || (scanKindRef.current === null && wasKnown);
         await refreshRepos();
-        setOpen(false);
-        await switchRepo(task.repo.id);
+        if (rescan) {
+          // 当前仓库的索引内容已变化，需要清空图数据并重新读取；后台重扫
+          // 其他仓库则保持当前视图，不突然把用户切走。
+          if (task.repo.id === repoId) {
+            setOpen(false);
+            await switchRepo(task.repo.id, true);
+          }
+        } else {
+          setOpen(false);
+          await switchRepo(task.repo.id);
+        }
+        scanKindRef.current = null;
       } catch (err) {
         completedRef.current = null;
         setScanError(`仓库已扫描，但打开失败：${(err as Error).message}`);
       }
     },
-    [refreshRepos, setOpen, switchRepo],
+    [refreshRepos, repoId, repos, setOpen, switchRepo],
   );
 
   // 页面刷新或菜单关闭后任务仍在服务端继续。重新挂载时恢复尚未完成的任务，
@@ -89,14 +108,19 @@ export function RepoPicker() {
     void api.repoScans().then(({ tasks }) => {
       if (disposed) return;
       const running = tasks.find((task) => task.status === "running");
-      if (running) setScanTask(running);
+      if (running) {
+        scanKindRef.current = repos.length === 0
+          ? null
+          : repos.some((repo) => repo.root === running.root) ? "rescan" : "add";
+        setScanTask(running);
+      }
     }).catch(() => {
       // 恢复状态是增强能力，不影响正常浏览。
     });
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [repos]);
 
   useEffect(() => {
     if (scanTask?.status !== "running") return;
@@ -124,6 +148,17 @@ export function RepoPicker() {
     };
   }, [finishScan, scanTask?.id, scanTask?.status]);
 
+  // 成功状态留出三秒让用户确认结果，随后自动收起。按任务 id 判断，
+  // 避免用户在这三秒内启动了新任务，却被上一个任务的定时器清掉。
+  useEffect(() => {
+    if (scanTask?.status !== "completed") return;
+    const completedId = scanTask.id;
+    const timer = window.setTimeout(() => {
+      setScanTask((current) => current?.id === completedId ? null : current);
+    }, COMPLETED_SCAN_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [scanTask?.id, scanTask?.status]);
+
   const addRepository = async () => {
     setPicking(true);
     setScanError(null);
@@ -131,6 +166,7 @@ export function RepoPicker() {
       const result = await api.pickAndScanRepo();
       if (result.cancelled || !result.task) return;
       completedRef.current = null;
+      scanKindRef.current = "add";
       setScanTask(result.task);
       if (result.task.status === "completed") await finishScan(result.task);
       if (result.task.status === "failed") setScanError(result.task.error ?? "扫描失败");
@@ -138,6 +174,24 @@ export function RepoPicker() {
       setScanError((err as Error).message);
     } finally {
       setPicking(false);
+    }
+  };
+
+  const rescanRepository = async (repo: RepoEntry) => {
+    setScanError(null);
+    setStartingRepoId(repo.id);
+    try {
+      completedRef.current = null;
+      scanKindRef.current = "rescan";
+      const task = await api.rescanRepo(repo.id);
+      setScanTask(task);
+      if (task.status === "completed") await finishScan(task);
+      if (task.status === "failed") setScanError(task.error ?? "扫描失败");
+    } catch (err) {
+      scanKindRef.current = null;
+      setScanError((err as Error).message);
+    } finally {
+      setStartingRepoId(null);
     }
   };
 
@@ -166,6 +220,10 @@ export function RepoPicker() {
                 repo={repo}
                 active={repo.id === repoId}
                 activeOverview={repo.id === repoId ? overview : null}
+                scanning={scanTask?.status === "running" || startingRepoId !== null}
+                scanningThisRepo={scanTask?.status === "running" && scanTask.root === repo.root}
+                starting={startingRepoId === repo.id}
+                onRescan={() => void rescanRepository(repo)}
               />
             ))}
           </div>
@@ -256,10 +314,18 @@ function RepoRow({
   repo,
   active,
   activeOverview,
+  scanning,
+  scanningThisRepo,
+  starting,
+  onRescan,
 }: {
   repo: RepoEntry;
   active: boolean;
   activeOverview: OverviewDto | null;
+  scanning: boolean;
+  scanningThisRepo: boolean;
+  starting: boolean;
+  onRescan: () => void;
 }) {
   const switchRepo = useAppStore((s) => s.switchRepo);
   const forget = useAppStore((s) => s.forgetRepo);
@@ -310,7 +376,15 @@ function RepoRow({
                   : "var(--color-danger)",
             }}
           />
-          <span className="truncate text-[12px] font-medium">{repo.name}</span>
+          <span className="min-w-0 truncate text-[12px] font-medium">{repo.name}</span>
+          {repo.branch && (
+            <span
+              className="mono max-w-[120px] shrink-0 truncate rounded bg-[var(--color-surface-3)] px-1 py-px text-[9.5px] font-normal text-[var(--color-accent)]"
+              title={`当前分支：${repo.branch}`}
+            >
+              {repo.branch}
+            </span>
+          )}
           {!usable && (
             <span className="shrink-0 text-[10px] text-[var(--color-danger)]">
               {STATUS_HINT[repo.status as Exclude<RepoStatus, "ok">]}
@@ -320,6 +394,22 @@ function RepoRow({
         <span className="mono w-full truncate pl-3 text-[10px] text-[var(--color-ink-faint)]">
           {shorten(repo.root)}
         </span>
+      </button>
+
+      <button
+        type="button"
+        disabled={scanning || repo.status === "root-missing"}
+        onClick={(event) => {
+          event.stopPropagation();
+          setError(null);
+          onRescan();
+        }}
+        className={`shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--color-ink-faint)] transition-[color,background-color,opacity] hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)] disabled:cursor-not-allowed ${
+          hovered ? "visible opacity-100" : "invisible opacity-0"
+        }`}
+        title={repo.status === "root-missing" ? "仓库目录不存在，无法扫描" : "增量重新扫描仓库"}
+      >
+        {starting ? "启动中…" : scanningThisRepo ? "扫描中…" : "重新扫描"}
       </button>
 
       {/*
@@ -334,7 +424,9 @@ function RepoRow({
             setError(null);
             void forget(repo.id).catch((err: Error) => setError(err.message));
           }}
-          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-[var(--color-ink-faint)] opacity-0 transition-opacity hover:text-[var(--color-danger)] group-hover:opacity-100"
+          className={`shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--color-ink-faint)] transition-opacity hover:text-[var(--color-danger)] ${
+            hovered ? "visible opacity-100" : "invisible opacity-0"
+          }`}
           title="从清单移除（不删除仓库和索引）"
         >
           移除

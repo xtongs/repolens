@@ -39,6 +39,7 @@ export function HoverCard() {
   const metric = useAppStore((s) => s.metric);
   const subgraphs = useAppStore((s) => s.subgraphs);
   const repoId = useAppStore((s) => s.repoId);
+  const repoRevision = useAppStore((s) => s.repoRevision);
   const [visible, setVisible] = useState(false);
   const [semantic, setSemantic] = useState<SemanticState | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -58,7 +59,7 @@ export function HoverCard() {
 
   const node = hovered === null ? null : findNode(subgraphs, hovered);
   const semanticKey = node && (node.kind === "file" || node.kind === "symbol")
-    ? `${repoId ?? "default"}:${node.id}`
+    ? `${repoId ?? "default"}:${repoRevision}:${node.id}`
     : null;
 
   // Tooltip 真正出现后才触发，掠过节点不会产生模型请求。文件和符号都在

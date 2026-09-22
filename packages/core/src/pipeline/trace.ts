@@ -42,7 +42,7 @@ export function analyzeTraces(db: Db): TraceAnalysisStats {
   const byId = new Map(symbols.map((symbol) => [symbol.id, symbol]));
   const calls = loadCalls(db);
   const entries = dedupeEntries([
-    ...symbolEntries(symbols),
+    ...symbolEntries(db, symbols),
     ...hintEntries(db, symbols),
     ...registrationEntries(calls, symbols),
     ...testCallEntries(calls, symbols),
@@ -183,13 +183,17 @@ function loadCalls(db: Db): CallRow[] {
   ).all() as CallRow[];
 }
 
-function symbolEntries(symbols: readonly SymbolRow[]): EntryCandidate[] {
+function symbolEntries(db: Db, symbols: readonly SymbolRow[]): EntryCandidate[] {
   const out: EntryCandidate[] = [];
+  const publicApiFiles = publicApiFileIds(db);
   for (const symbol of symbols) {
     if (symbol.name === "main") {
       out.push(entryFromSymbol(symbol, "main", "main", "语言约定的 main 函数", "exact"));
     }
-    if (symbol.exported === 1 && symbol.container === null) {
+    if (
+      symbol.fileRole === "source" && symbol.name !== "main" &&
+      symbol.exported === 1 && symbol.container === null && publicApiFiles.has(symbol.fileId)
+    ) {
       out.push(entryFromSymbol(symbol, "public-api", qualifiedName(symbol), "导出的顶层函数", "exact"));
     }
     if (symbol.fileRole === "test" && /^(test|it|should|spec)|^Test[A-Z_]/.test(symbol.name)) {
@@ -197,6 +201,87 @@ function symbolEntries(symbols: readonly SymbolRow[]): EntryCandidate[] {
     }
   }
   return out;
+}
+
+/**
+ * 找真正面向包外的源码入口。`export function` 只说明它可从当前模块导出，
+ * 不能说明这个模块就是包的公共表面；把所有模块导出都当入口会让工具函数
+ * 淹没链路列表。Node 包按 package.json 入口映射到源码，其他语言按自身的
+ * 包入口约定处理。Go 的导出是包级语义，因此保留包内所有导出函数。
+ */
+function publicApiFileIds(db: Db): Set<number> {
+  const packages = db.prepare(
+    "SELECT id, dir, entry_points AS entryPoints FROM packages",
+  ).all() as Array<{ id: number; dir: string; entryPoints: string }>;
+  const files = db.prepare(
+    "SELECT id, path, language, package_id AS packageId FROM files",
+  ).all() as Array<{ id: number; path: string; language: string; packageId: number | null }>;
+  const entryMatchers = new Map<number, RegExp[]>();
+  for (const pkg of packages) {
+    const entries = parseArray(pkg.entryPoints)
+      .filter((entry) => entry !== "package.json")
+      .flatMap(sourceEntryCandidates);
+    entryMatchers.set(pkg.id, [...new Set(entries)].map(pathPattern));
+  }
+
+  const out = new Set<number>();
+  for (const file of files) {
+    if (file.language === "go") {
+      out.add(file.id);
+      continue;
+    }
+    const relative = packageRelativePath(file.path, file.packageId, packages);
+    const conventional = /^(?:src\/)?(?:index\.(?:[cm]?[jt]sx?|py)|__init__\.py|lib\.rs|mod\.rs)$/.test(relative);
+    const configured = file.packageId !== null &&
+      (entryMatchers.get(file.packageId) ?? []).some((matcher) => matcher.test(relative));
+    if (conventional || configured) out.add(file.id);
+  }
+
+  // barrel 文件通常没有自己的函数，只用 `export * from "./foo"` 暴露实现。
+  // 沿解析成功的 re-export 递归扩展，否则真实公共函数仍会全部漏掉。
+  const reexports = db.prepare(
+    `SELECT file_id AS sourceId, target_file_id AS targetId FROM imports
+     WHERE kind = 're-export' AND target_file_id IS NOT NULL`,
+  ).all() as Array<{ sourceId: number; targetId: number }>;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of reexports) {
+      if (!out.has(edge.sourceId) || out.has(edge.targetId)) continue;
+      out.add(edge.targetId);
+      changed = true;
+    }
+  }
+  return out;
+}
+
+function packageRelativePath(
+  filePath: string,
+  packageId: number | null,
+  packages: readonly { id: number; dir: string }[],
+): string {
+  const dir = packages.find((pkg) => pkg.id === packageId)?.dir;
+  if (!dir || dir === ".") return filePath;
+  return filePath.startsWith(`${dir}/`) ? filePath.slice(dir.length + 1) : filePath;
+}
+
+/** dist/foo.js、dist/foo.d.ts 等发布入口都映射回 src/foo 的源码族。 */
+function sourceEntryCandidates(entry: string): string[] {
+  const clean = entry.startsWith("./") ? entry.slice(2) : entry;
+  const source = clean.startsWith("dist/") || clean.startsWith("build/")
+    ? `src/${clean.slice(clean.indexOf("/") + 1)}`
+    : clean;
+  const stem = source.replace(/(?:\.d)?\.(?:[cm]?js|tsx?|jsx|py|rs|go)$/, "");
+  return [
+    source,
+    `${stem}.ts`, `${stem}.tsx`, `${stem}.js`, `${stem}.jsx`,
+    `${stem}.py`, `${stem}.rs`, `${stem}.go`,
+  ];
+}
+
+function pathPattern(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+  return new RegExp(`^${escaped}$`);
 }
 
 function hintEntries(db: Db, symbols: readonly SymbolRow[]): EntryCandidate[] {
@@ -219,7 +304,7 @@ function registrationEntries(calls: readonly CallRow[], symbols: readonly Symbol
     const method = call.callee.toLowerCase();
     const args = parseArray(call.arguments);
 
-    if (/^(command|addcommand|add_command|subcommand|action|handler)$/.test(method)) {
+    if (isCliRegistration(call)) {
       const handler = resolveHandler(symbols, call.fileId, handlerIdentifier(args.at(-1) ?? ""));
       const command = unquote(args[0]) ?? handler?.symbol.name ?? call.callee;
       out.push({
@@ -247,6 +332,17 @@ function registrationEntries(calls: readonly CallRow[], symbols: readonly Symbol
     });
   }
   return out;
+}
+
+/** 通用的 command/action/handler 名称本身不构成 CLI 证据。 */
+function isCliRegistration(call: CallRow): boolean {
+  const method = call.callee.toLowerCase();
+  const receiver = (call.receiver ?? "").toLowerCase();
+  if (/^(addcommand|add_command|subcommand)$/.test(method)) return receiver.length > 0;
+  if (method === "command") return /(?:^|[.(_])(program|commander|yargs|cli|cmd)(?:$|[.)_])/.test(receiver);
+  if (method === "action") return /program|commander|command|yargs|cli|cmd/.test(receiver);
+  if (method === "handler") return /command|yargs|cli/.test(receiver);
+  return false;
 }
 
 function cliFramework(callee: string, receiver: string | null): string {
