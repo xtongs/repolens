@@ -27,6 +27,44 @@ function tempDir(prefix: string): string {
 }
 
 describe("generateFileSummary", () => {
+  it.each([
+    ["零字节", ""],
+    ["仅空白", "  \n\t\n"],
+  ])("%s文件不调用 LLM", async (_label, content) => {
+    const repo = tempDir("repolens-empty-file-repo-");
+    const configHome = tempDir("repolens-empty-file-config-");
+    mkdirSync(join(repo, "src"));
+    writeFileSync(join(repo, "src/empty.ts"), content);
+    mkdirSync(join(configHome, "repolens"));
+    writeFileSync(join(configHome, "repolens/config.json"), JSON.stringify({
+      llm: {
+        model: "should-not-run",
+        apiKeyEnv: "REPOLENS_MISSING_EMPTY_FILE_KEY",
+      },
+    }));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    vi.stubEnv("REPOLENS_MISSING_EMPTY_FILE_KEY", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    db = openDb(join(repo, "index.db"));
+    const inserted = db.prepare(
+      `INSERT INTO files (path, dir_path, name, language, role, loc, bytes, hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "src/empty.ts", "src", "empty.ts", "typescript", "source",
+      content === "" ? 0 : content.split("\n").length, Buffer.byteLength(content), "empty-hash",
+    );
+
+    await expect(generateFileSummary(db, repo, Number(inserted.lastInsertRowid), { force: true }))
+      .resolves.toMatchObject({
+        summary: null, shortSummary: null, pseudocode: null,
+        skipReason: "empty-file", generated: false, cacheHit: false,
+        usage: { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("生成详细/单句摘要和文件伪代码，并补齐只有摘要的旧缓存", async () => {
     const repo = tempDir("repolens-summary-repo-");
     const configHome = tempDir("repolens-summary-config-");

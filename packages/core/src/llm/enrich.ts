@@ -434,10 +434,22 @@ async function generateFileSummaryInner(
   db: Db, root: string, fileId: number, force: boolean,
 ): Promise<SemanticResultDto> {
   const config = loadConfig(root).llm;
-  const row = db.prepare("SELECT path, language, hash FROM files WHERE id = ?").get(fileId) as
-    | { path: string; language: string; hash: string }
+  const row = db.prepare("SELECT path, language, hash, bytes FROM files WHERE id = ?").get(fileId) as
+    | { path: string; language: string; hash: string; bytes: number }
     | undefined;
   if (!row) throw new Error("文件不存在");
+
+  // 空文件没有可供模型归纳的语义。必须在创建客户端之前短路，否则即使
+  // 没有任何内容，也会先校验 API Key，随后发出一次注定无意义的请求。
+  // bytes 处理真正的零字节文件；读取后的 trim 同时覆盖只有换行/空格的文件。
+  const fileContent = row.bytes === 0 ? "" : readFileForSemantics(root, row.path);
+  if (fileContent.trim() === "") {
+    return {
+      summary: null, shortSummary: null, pseudocode: null, skipReason: "empty-file",
+      generated: false, cacheHit: false, model: interactiveConfig(config).model, usage: emptyUsage(),
+    };
+  }
+
   const summary = getCachedSemantic(
     db, "file", row.path, "summary-v2", config.outputLanguage, row.hash,
     interactiveConfig(config).model,
@@ -477,7 +489,7 @@ async function generateFileSummaryInner(
      WHERE e.type = 'calls' AND caller.file_id = ? AND callee.file_id = ?
      ORDER BY e.line LIMIT 160`,
   ).all(fileId, fileId);
-  const source = readFileCapped(root, row.path, 24_000);
+  const source = fileContent.slice(0, 24_000);
   const result = await client.completeJson<FileSemanticResponse>(
     fileSystem(config.outputLanguage),
     JSON.stringify({ file: { path: row.path, language: row.language, symbols, imports, calls, source } }),
@@ -614,11 +626,12 @@ function readSymbolSource(root: string, path: string, startByte: number, endByte
   }
 }
 
-function readFileCapped(root: string, path: string, maxChars: number): string {
+function readFileForSemantics(root: string, path: string): string {
   try {
-    return readFileSync(join(root, path), "utf8").slice(0, maxChars);
-  } catch {
-    return "";
+    return readFileSync(join(root, path), "utf8");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`无法读取文件 ${path}：${detail}`);
   }
 }
 

@@ -120,13 +120,12 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
             key={layer}
             className="absolute inset-0 rounded-[10px] border"
             style={{
-              transform: active
-                ? `translate(${layer * 7}px, ${layer * 7}px) rotate(${layer * 0.6}deg)`
-                : `translate(${layer * 3}px, ${layer * 3}px)`,
+              // 外层节点 hover 时已经整体放大；层间再扩散会叠加成很大的
+              // 空隙。保持紧凑偏移，让整组卡片作为一个整体一起放大。
+              transform: `translate(${layer * 3}px, ${layer * 3}px)`,
               borderColor: "var(--color-line)",
               background: "var(--color-surface)",
               opacity: 0.55 - layer * 0.12,
-              transition: "transform 160ms cubic-bezier(0.22,0.61,0.36,1)",
               zIndex: -layer,
             }}
           />

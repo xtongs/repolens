@@ -19,6 +19,7 @@ type SemanticState =
 interface HoverSemantic {
   shortSummary: string | null;
   pseudocode: string | null;
+  skipReason: "empty-file" | null;
   incoming: number;
   outgoing: number;
 }
@@ -183,6 +184,12 @@ export function HoverCard() {
         </div>
       )}
 
+      {activeSemantic?.value?.skipReason === "empty-file" && (
+        <div className="mt-2 text-[10.5px] text-[var(--color-ink-faint)]">
+          空文件，没有可生成的内容
+        </div>
+      )}
+
       {activeSemantic?.status === "error" && (
         <div className="mt-2 text-[10.5px] text-[var(--color-warn)]">AI 内容生成失败，稍后再次悬停可重试</div>
       )}
@@ -222,13 +229,13 @@ export function HoverCard() {
 
 function semanticFromNode(node: GraphNodeDto): HoverSemantic {
   return {
-    shortSummary: conciseSummary(node.summary), pseudocode: null,
+    shortSummary: conciseSummary(node.summary), pseudocode: null, skipReason: null,
     incoming: node.metrics.inDegree, outgoing: node.metrics.outDegree,
   };
 }
 
 function completeSemantic(value: HoverSemantic | null | undefined): value is HoverSemantic {
-  return Boolean(value?.shortSummary && value.pseudocode);
+  return Boolean(value?.skipReason === "empty-file" || (value?.shortSummary && value.pseudocode));
 }
 
 async function loadSemantic(node: GraphNodeDto): Promise<HoverSemantic> {
@@ -242,6 +249,9 @@ async function loadSemantic(node: GraphNodeDto): Promise<HoverSemantic> {
     detailShortSummary = detail.shortSummary;
     detailPseudocode = detail.pseudocode;
     counts = { incoming: detail.importedBy.length, outgoing: detail.imports.length };
+    if (detail.bytes === 0) {
+      return { shortSummary: null, pseudocode: null, skipReason: "empty-file", ...counts };
+    }
   } else {
     const detail = await api.symbol(node.id);
     detailSummary = detail.summary;
@@ -252,6 +262,7 @@ async function loadSemantic(node: GraphNodeDto): Promise<HoverSemantic> {
   const cached = {
     shortSummary: detailShortSummary ?? conciseSummary(detailSummary),
     pseudocode: detailPseudocode ?? null,
+    skipReason: null,
     ...counts,
   };
   if (completeSemantic(cached)) return cached;
@@ -261,6 +272,7 @@ async function loadSemantic(node: GraphNodeDto): Promise<HoverSemantic> {
   const value = {
     shortSummary: generated.shortSummary ?? conciseSummary(generated.summary),
     pseudocode: generated.pseudocode ?? null,
+    skipReason: generated.skipReason ?? null,
     ...counts,
   };
   if (!completeSemantic(value)) throw new Error("语义结果不完整");

@@ -688,6 +688,8 @@ export interface SemanticResultDto {
   summary: string | null;
   shortSummary?: string | null;
   pseudocode?: string | null;
+  /** 没有可供模型理解的内容时直接跳过，不发起 LLM 请求。 */
+  skipReason?: "empty-file" | null;
   generated: boolean;
   cacheHit: boolean;
   model: string;

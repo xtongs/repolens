@@ -8,12 +8,11 @@ import { api } from "../api/client";
 import { formatCount, languageColor, symbolGlyph } from "../lib/visual";
 import { useAppStore } from "../store/useAppStore";
 
-type Tab = "overview" | "params" | "pseudocode" | "source" | "relations";
+type Tab = "overview" | "params" | "source" | "relations";
 
 const TAB_LABELS: Record<Tab, string> = {
   overview: "概览",
   params: "传参",
-  pseudocode: "伪代码",
   source: "源码",
   relations: "关系",
 };
@@ -39,9 +38,9 @@ export function DetailDrawer() {
   const isSymbol = selected.startsWith("sym:");
   const isFile = selected.startsWith("file:");
   const availableTabs: Tab[] = isSymbol
-    ? ["overview", "params", "pseudocode", "source", "relations"]
+    ? ["overview", "params", "source", "relations"]
     : isFile
-      ? ["overview", "pseudocode", "source", "relations"]
+      ? ["overview", "source", "relations"]
       : ["overview"];
 
   return (
@@ -124,9 +123,13 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
       .finally(() => setSemanticLoading(false));
   };
 
-  // 严格按需：只有用户真的切到伪代码标签才发模型请求。
+  // 摘要与伪代码已经合并在概览中：第一次打开概览时一起补齐，之后读缓存。
   useEffect(() => {
-    if (tab !== "pseudocode" || detail === null || detail.pseudocode || semanticLoading || semanticError) return;
+    if (
+      tab !== "overview" || detail === null ||
+      (detail.summary && detail.shortSummary && detail.pseudocode) ||
+      semanticLoading || semanticError
+    ) return;
     generateSemantics();
   }, [tab, detail, semanticLoading, semanticError]);
 
@@ -174,32 +177,6 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
               {detail.returnType}
             </div>
           </div>
-        )}
-      </div>
-    );
-  }
-
-  if (tab === "pseudocode") {
-    return (
-      <div className="p-3">
-        <div className="mb-2 text-[9.5px] uppercase tracking-wider text-[var(--color-accent)]">
-          AI 生成 · 可能不准确
-        </div>
-        {detail.pseudocode ? (
-          <pre className="mono whitespace-pre-wrap rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
-            {detail.pseudocode}
-          </pre>
-        ) : semanticLoading ? (
-          <SemanticLoading label="正在理解这个符号并生成伪代码…" />
-        ) : semanticError ? (
-          <div>
-            <Empty>{semanticError}</Empty>
-            <RetryButton onClick={generateSemantics}>重新生成</RetryButton>
-          </div>
-        ) : (
-          <Empty>
-            当前索引里还没有这个符号的伪代码。
-          </Empty>
         )}
       </div>
     );
@@ -287,9 +264,13 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
-          {semanticError && (
-            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
-          )}
+          <PseudocodeSection
+            value={detail.pseudocode ?? null}
+            loading={semanticLoading}
+            error={semanticError}
+            onRetry={generateSemantics}
+            loadingLabel="正在理解这个符号并生成伪代码…"
+          />
         </div>
       ) : semanticLoading ? (
         <SemanticLoading label="正在生成函数摘要与伪代码…" />
@@ -434,6 +415,7 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
   const [error, setError] = useState<string | null>(null);
   const [semanticLoading, setSemanticLoading] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
+  const [semanticSkipReason, setSemanticSkipReason] = useState<"empty-file" | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -441,6 +423,7 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
     setError(null);
     setSemanticLoading(false);
     setSemanticError(null);
+    setSemanticSkipReason(null);
     void api
       .file(id)
       .then((d) => !cancelled && setDetail(d))
@@ -456,14 +439,15 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
     setSemanticError(null);
     void api
       .generateFileSummary(id, refresh)
-      .then((result) =>
+      .then((result) => {
+        setSemanticSkipReason(result.skipReason ?? null);
         setDetail((current) => (current?.id === id
           ? {
               ...current, summary: result.summary, shortSummary: result.shortSummary ?? null,
               pseudocode: result.pseudocode ?? null,
             }
-          : current)),
-      )
+          : current));
+      })
       .catch((e: Error) => setSemanticError(e.message))
       .finally(() => setSemanticLoading(false));
   };
@@ -472,38 +456,15 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
   useEffect(() => {
     if (
       detail === null ||
+      detail.bytes === 0 || semanticSkipReason === "empty-file" ||
       (detail.summary && detail.shortSummary && detail.pseudocode) ||
       semanticLoading || semanticError
     ) return;
     generateSummary();
-  }, [detail, semanticLoading, semanticError]);
+  }, [detail, semanticLoading, semanticError, semanticSkipReason]);
 
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
-
-  if (tab === "pseudocode") {
-    return (
-      <div className="p-3">
-        <div className="mb-2 text-[9.5px] uppercase tracking-wider text-[var(--color-accent)]">
-          AI 生成 · 文件整体逻辑 · 可能不准确
-        </div>
-        {detail.pseudocode ? (
-          <pre className="mono whitespace-pre-wrap rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
-            {detail.pseudocode}
-          </pre>
-        ) : semanticLoading ? (
-          <SemanticLoading label="正在分析文件内函数与整体逻辑…" />
-        ) : semanticError ? (
-          <div>
-            <Empty>{semanticError}</Empty>
-            <RetryButton onClick={generateSummary}>重新生成</RetryButton>
-          </div>
-        ) : (
-          <Empty>当前索引里还没有这个文件的伪代码。</Empty>
-        )}
-      </div>
-    );
-  }
 
   if (tab === "source") return <SourceView fileId={detail.id} />;
 
@@ -569,7 +530,11 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
         </div>
       )}
 
-      {detail.summary ? (
+      {detail.bytes === 0 || semanticSkipReason === "empty-file" ? (
+        <div className="mt-2.5 rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11.5px] text-[var(--color-ink-faint)]">
+          空文件，没有可生成的内容
+        </div>
+      ) : detail.summary ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
           <div className="flex items-center justify-between gap-2">
             <Label ai>AI 摘要</Label>
@@ -578,9 +543,13 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
-          {semanticError && (
-            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
-          )}
+          <PseudocodeSection
+            value={detail.pseudocode ?? null}
+            loading={semanticLoading}
+            error={semanticError}
+            onRetry={generateSummary}
+            loadingLabel="正在分析文件内函数与整体逻辑…"
+          />
         </div>
       ) : semanticLoading || !semanticError ? (
         <SemanticLoading label="正在生成文件摘要与伪代码…" />
@@ -778,6 +747,46 @@ function SemanticLoading({ label }: { label: string }) {
     <div className="mt-2 flex items-center gap-2 rounded border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/5 px-2.5 py-2 text-[11px] text-[var(--color-ink-muted)]">
       <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]" />
       {label}
+    </div>
+  );
+}
+
+/** AI 摘要和伪代码属于同一次生成结果，在概览中上下连续展示。 */
+function PseudocodeSection({
+  value,
+  loading,
+  error,
+  onRetry,
+  loadingLabel,
+}: {
+  value: string | null;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+  loadingLabel: string;
+}) {
+  return (
+    <div className="mt-3 border-t border-[var(--color-accent)]/20 pt-2.5">
+      <Label ai>伪代码</Label>
+      {value ? (
+        <>
+          <pre className="mono mt-1.5 whitespace-pre-wrap rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+            {value}
+          </pre>
+          {error && (
+            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{error}</div>
+          )}
+        </>
+      ) : loading ? (
+        <SemanticLoading label={loadingLabel} />
+      ) : error ? (
+        <div>
+          <div className="mt-2 text-[11px] text-[var(--color-warn)]">{error}</div>
+          <RetryButton onClick={onRetry}>重试</RetryButton>
+        </div>
+      ) : (
+        <div className="mt-1.5 text-[11px] text-[var(--color-ink-faint)]">尚未生成伪代码</div>
+      )}
     </div>
   );
 }
