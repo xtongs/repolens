@@ -9,6 +9,17 @@ const LANGUAGE_COLORS: Record<string, string> = {
   python: "var(--lang-python)",
   go: "var(--lang-go)",
   rust: "var(--lang-rust)",
+  vue: "var(--lang-vue)",
+  svelte: "var(--lang-svelte)",
+  astro: "var(--lang-astro)",
+  java: "var(--lang-java)",
+  c: "var(--lang-cpp)",
+  cpp: "var(--lang-cpp)",
+  csharp: "var(--lang-csharp)",
+  php: "var(--lang-php)",
+  ruby: "var(--lang-ruby)",
+  shell: "var(--lang-shell)",
+  powershell: "var(--lang-shell)",
 };
 
 const NEUTRAL = "var(--lang-other)";

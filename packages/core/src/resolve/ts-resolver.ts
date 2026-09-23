@@ -12,6 +12,9 @@ const SOURCE_EXTENSIONS = [
   ".jsx",
   ".mjs",
   ".cjs",
+  ".vue",
+  ".svelte",
+  ".astro",
   ".d.ts",
 ] as const;
 
@@ -31,7 +34,7 @@ export function createTsResolver(): ModuleResolver {
   const tsconfigCache = new Map<string, TsPathMapping | null>();
 
   return {
-    languages: ["typescript", "tsx", "javascript", "jsx"],
+    languages: ["typescript", "tsx", "javascript", "jsx", "vue", "svelte", "astro"],
 
     resolve(specifier: string, ctx: ResolveContext): ResolveOutcome {
       if (specifier.length === 0) {

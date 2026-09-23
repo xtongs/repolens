@@ -10,14 +10,48 @@
 // 基础枚举
 // ---------------------------------------------------------------------------
 
-export type Language =
+export type BuiltinLanguage =
   | "typescript"
   | "tsx"
   | "javascript"
   | "jsx"
+  | "vue"
+  | "svelte"
+  | "astro"
   | "python"
   | "go"
   | "rust"
+  | "java"
+  | "kotlin"
+  | "c"
+  | "cpp"
+  | "csharp"
+  | "php"
+  | "ruby"
+  | "powershell"
+  | "swift"
+  | "dart"
+  | "lua"
+  | "scala"
+  | "elixir"
+  | "erlang"
+  | "haskell"
+  | "clojure"
+  | "objective-c"
+  | "groovy"
+  | "perl"
+  | "r"
+  | "zig"
+  | "nim"
+  | "solidity"
+  | "sql"
+  | "html"
+  | "css"
+  | "scss"
+  | "less"
+  | "graphql"
+  | "protobuf"
+  | "terraform"
   | "json"
   | "yaml"
   | "toml"
@@ -25,8 +59,31 @@ export type Language =
   | "shell"
   | "other";
 
-/** 参与图谱构建的语言（有抽取器） */
-export type AnalyzableLanguage = "typescript" | "tsx" | "javascript" | "jsx" | "python" | "go" | "rust";
+/** 第三方注册语言使用命名空间，避免与后续内置语言重名。 */
+export type Language = BuiltinLanguage | `custom:${string}`;
+
+/** 参与 AST 图谱构建的语言（有 grammar 与抽取器，或可提取内嵌脚本）。 */
+export type AnalyzableLanguage =
+  | "typescript"
+  | "tsx"
+  | "javascript"
+  | "jsx"
+  | "vue"
+  | "svelte"
+  | "astro"
+  | "python"
+  | "go"
+  | "rust"
+  | "java"
+  | "c"
+  | "cpp"
+  | "csharp"
+  | "php"
+  | "ruby"
+  | "powershell"
+  | "shell"
+  | "css"
+  | `custom:${string}`;
 
 /**
  * 文件角色。除 `source` 外全部默认从图和统计中折叠，

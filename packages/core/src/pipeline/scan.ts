@@ -7,6 +7,7 @@ import { isAnalyzable } from "../discovery/language.js";
 import { hashContent, walkRepo } from "../discovery/walk.js";
 import { discoverPackages } from "../discovery/workspace.js";
 import { attachShapes } from "../parse/ast-utils.js";
+import { prepareSource } from "../parse/embedded.js";
 import { extractorFor } from "../parse/extractors/registry.js";
 import { ParserPool } from "../parse/parser-pool.js";
 import { ancestorDirs, baseName, dirOf } from "../resolve/path-utils.js";
@@ -17,6 +18,7 @@ import type {
   DiscoveredFile,
   DiscoveredPackage,
   ParsedFile,
+  AnalyzableLanguage,
   ResolveContext,
   ScanPhase,
   ScanStats,
@@ -126,7 +128,13 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
     if (!isAnalyzable(file.language)) return false;
     if (file.role === "asset" || file.role === "vendor") return false;
     const prev = previous.get(file.path);
-    return !(prev && prev.hash === file.hash && prev.parsed === 1);
+    return !(
+      prev
+      && prev.hash === file.hash
+      && prev.role === file.role
+      && prev.language === file.language
+      && prev.parsed === 1
+    );
   });
 
   stats.filesReused = walked.files.length - toParse.length;
@@ -229,18 +237,26 @@ async function parseFile(
   file: DiscoveredFile,
   source: string,
 ): Promise<ParsedFile | null> {
-  if (!isAnalyzable(file.language)) return null;
-  const parser = await pool.parserFor(file.language);
+  const embedded = prepareSource(file.language, source);
+  const parserLanguage: AnalyzableLanguage | null = embedded
+    ? embedded.parserLanguage
+    : isAnalyzable(file.language)
+      ? file.language
+      : null;
+  if (parserLanguage === null) return null;
+
+  const parseSource = embedded?.source ?? source;
+  const parser = await pool.parserFor(parserLanguage);
   if (!parser) return null;
 
-  const tree = parser.parse(source);
+  const tree = parser.parse(parseSource);
   if (!tree) return null;
 
   try {
-    const parsed = extractorFor(file.language).extract({
+    const parsed = extractorFor(parserLanguage).extract({
       root: tree.rootNode,
-      source,
-      language: file.language,
+      source: parseSource,
+      language: parserLanguage,
       path: file.path,
     });
     // 形状指纹在这里统一算，而不是散到四个抽取器里去——它只依赖 AST，
@@ -274,8 +290,9 @@ function persistParsed(
   parsed: ParsedFile,
   stats: ScanStats,
 ): void {
+  const sourceBytes = Buffer.from(source, "utf8");
   const symbolHashes = parsed.symbols.map((sym) =>
-    hashContent(source.slice(sym.startByte, sym.endByte)),
+    hashContent(sourceBytes.subarray(sym.startByte, sym.endByte)),
   );
   const symbolIds = writer.insertSymbols(fileId, parsed.symbols, symbolHashes);
 

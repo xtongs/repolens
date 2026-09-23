@@ -33,6 +33,15 @@
   --lang-python: #5ecb9e;
   --lang-go: #56c7d6;
   --lang-rust: #e08758;
+  --lang-vue: #42b883;
+  --lang-svelte: #ff5a3c;
+  --lang-astro: #b48cff;
+  --lang-java: #ed8b32;
+  --lang-cpp: #659ad2;
+  --lang-csharp: #9b72cf;
+  --lang-php: #8993be;
+  --lang-ruby: #d35f5f;
+  --lang-shell: #89c47c;
   --lang-other: #8b95a5;
 }
 
@@ -86,6 +95,15 @@
   --lang-python: #247d5f;
   --lang-go: #187988;
   --lang-rust: #ae5028;
+  --lang-vue: #198754;
+  --lang-svelte: #c43d24;
+  --lang-astro: #7048ad;
+  --lang-java: #a65310;
+  --lang-cpp: #2f6f9f;
+  --lang-csharp: #7040a1;
+  --lang-php: #555b91;
+  --lang-ruby: #a02d36;
+  --lang-shell: #3f7b36;
   --lang-other: #667386;
   --node-hover-shadow: 0 8px 24px rgb(31 41 55 / 16%);
 }

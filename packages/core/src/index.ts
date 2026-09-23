@@ -67,12 +67,24 @@ export {
 export { LlmResponseError, LlmUnavailableError, OpenAiCompatibleClient } from "./llm/client.js";
 export { countLoc } from "./pipeline/metrics.js";
 
-export { detectLanguage, isAnalyzable } from "./discovery/language.js";
+export {
+  detectLanguage,
+  isAnalyzable,
+  languageDefinition,
+  languageDefinitions,
+  registerLanguage,
+  type EmbeddedSourceKind,
+  type ExtractorFamily,
+  type LanguageDefinition,
+  type ResolverFamily,
+} from "./discovery/language.js";
 export { classifyRole, createRoleClassifier, type RoleClassifier } from "./discovery/roles.js";
 export { discoverPackages } from "./discovery/workspace.js";
 export { walkRepo } from "./discovery/walk.js";
 
 export { ParserPool } from "./parse/parser-pool.js";
-export { extractorFor } from "./parse/extractors/registry.js";
-export { createResolvers } from "./resolve/registry.js";
+export { extractorFor, registerExtractorFor } from "./parse/extractors/registry.js";
+export type { ExtractInput, LanguageExtractor } from "./parse/extractors/types.js";
+export { createResolvers, registerResolverFor } from "./resolve/registry.js";
+export { registerLanguagePlugin, type LanguagePlugin } from "./language-plugin.js";
 export * from "./resolve/path-utils.js";

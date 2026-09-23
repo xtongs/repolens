@@ -2,7 +2,8 @@
 
 四个里程碑，每个里程碑结束时都是一个**可用**的工具，而不是半成品。
 
-目标语言：TypeScript / JavaScript、Python、Go、Rust
+核心语言：TypeScript / JavaScript、Python、Go、Rust；并按“组件脚本 → 通用文本
+源码 → 更多 grammar → 语言插件”的顺序持续扩展语言覆盖。
 目标规模：1400 文件 / 40 万行量级的 monorepo（参照 [earendil-works/pi](https://github.com/earendil-works/pi)）
 
 ---
@@ -208,6 +209,19 @@ AI 写出来的架构，更是**判断它合不合理**。而判断的第一步�
 
 ---
 
+## 语言覆盖扩展
+
+按“复合组件 → 文本源码兜底 → 更多 grammar → 插件机制”的顺序实施：
+
+- [x] Vue SFC：等长提取 `<script>` / `<script setup>`，保留原文件行号和字节位置
+- [x] 未知文本源码兜底：可见、可统计、可做文件级 AI 理解；二进制资源仍隐藏
+- [x] Svelte `<script>` 与 Astro frontmatter 分析
+- [x] Java / C / C++ / C# / PHP / Ruby / Shell / PowerShell 通用结构抽取
+- [x] 统一语言注册表与 `custom:*` 第三方 grammar / extractor / resolver 插件 API
+- [ ] 为通用抽取语言逐步增加专用 extractor 与模块 resolver，提高依赖解析精度
+
+---
+
 ## M5+ · 候选项（未承诺）
 
 按用户明确要求暂缓，等基础功能扎实后再评估：
@@ -219,4 +233,3 @@ AI 写出来的架构，更是**判断它合不合理**。而判断的第一步�
 - watch 模式增量刷新
 - 版本对比：两个 commit 的架构差异
 - 远程仓库 URL 直接分析
-- 更多语言：Java / Kotlin / C++ / C#

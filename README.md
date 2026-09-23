@@ -6,7 +6,10 @@
 面向的场景是**读别人的（或 AI 写的）大仓库**：40 万行量级的 monorepo 全量扫描约 8 秒，
 之后按内容指纹增量更新。
 
-支持 TypeScript / JavaScript、Python、Go、Rust 四种语言。
+TypeScript / JavaScript、Python、Go、Rust 提供专用结构与模块分析；Vue、Svelte、
+Astro 会分析组件中的 JS/TS 脚本并保持原文件行号；Java、C/C++、C#、PHP、Ruby、
+Shell、PowerShell 提供通用结构分析。其他常见编程语言及未知文本源码仍会显示、
+统计并支持文件级 AI 理解，但不会伪造尚不可靠的符号依赖和调用关系。
 
 ## 环境要求
 

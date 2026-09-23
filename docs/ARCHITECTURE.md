@@ -70,7 +70,7 @@ core/src/
 │   └── queries.ts        读查询（server 消费）
 ├── discovery/
 │   ├── ignore.ts         .gitignore + 默认忽略规则
-│   ├── language.ts       扩展名 → 语言
+│   ├── language.ts       语言注册表：扩展名 / grammar / extractor / resolver
 │   ├── roles.ts          source / test / config / generated / types / docs 分类
 │   ├── workspace.ts      monorepo 包检测（pnpm / npm / go.mod / Cargo / pyproject）
 │   └── walk.ts           目录遍历
@@ -99,6 +99,21 @@ core/src/
 ```
 
 第 3-5 步是纯函数式的，输入相同必然输出相同，这是增量更新和结果可复现的基础。
+
+### 语言能力分层
+
+- **专用分析**：TypeScript / JavaScript、Python、Go、Rust，有语言专属 extractor 和 resolver。
+- **复合组件**：Vue、Svelte 的 `<script>` 与 Astro frontmatter 会转成等字节、等换行的虚拟
+  JS/TS 源码，因此符号、调用和错误行号仍可直接映射回原文件。
+- **通用结构分析**：Java、C/C++、C#、PHP、Ruby、Shell、PowerShell 复用已分发的
+  tree-sitter grammar，保守提取声明、调用和 import；没有证据时不猜模块目标。
+- **文本源码兜底**：其余已知语言和未知文本仍进入文件图、LOC 统计与文件级 AI 理解；
+  只有检测到 NUL 或异常控制字符比例时才按二进制资源隐藏。
+
+`discovery/language.ts` 是唯一语言能力注册表。外部扩展可在扫描前调用
+`registerLanguagePlugin({ definition, extractor, resolver })` 一次注册 grammar、专用抽取器和
+模块解析器；只需通用抽取时也可调用较低层的 `registerLanguage(...)`。插件 ID 必须使用
+`custom:*` 命名空间，且不能覆盖内置 ID 或扩展名。
 
 ## 存储
 

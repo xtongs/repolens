@@ -13,7 +13,7 @@ export interface ExtractInput {
 }
 
 export interface LanguageExtractor {
-  family: "ts" | "python" | "go" | "rust";
+  family: "ts" | "python" | "go" | "rust" | "generic";
   extract: (input: ExtractInput) => ParsedFile;
 }
 

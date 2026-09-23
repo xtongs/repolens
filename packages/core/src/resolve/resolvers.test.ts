@@ -4,6 +4,7 @@ import { ancestorDirs } from "./path-utils.js";
 import { createGoResolver } from "./go-resolver.js";
 import { createPythonResolver } from "./python-resolver.js";
 import { createRustResolver } from "./rust-resolver.js";
+import { createTsResolver } from "./ts-resolver.js";
 
 function pkg(name: string, dir: string, manager: PackageManager): DiscoveredPackage {
   return { name, dir, manager, entryPoints: [] };
@@ -28,6 +29,20 @@ function context(
     packages,
   };
 }
+
+describe("createTsResolver", () => {
+  const resolver = createTsResolver();
+  const files = ["src/main.ts", "src/App.vue", "src/Widget.svelte", "src/Page.astro"];
+  const ctx = context("src/main.ts", files);
+
+  it.each([
+    ["./App.vue", "src/App.vue"],
+    ["./Widget", "src/Widget.svelte"],
+    ["./Page", "src/Page.astro"],
+  ])("解析复合组件 import %s", (specifier, target) => {
+    expect(resolver.resolve(specifier, ctx)).toEqual({ status: "internal", target });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Python

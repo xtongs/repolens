@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { Language as TsLanguage, Parser } from "web-tree-sitter";
 import type { AnalyzableLanguage } from "../types.js";
-import { grammarFor } from "../discovery/language.js";
+import { grammarFor, grammarPathFor } from "../discovery/language.js";
 
 const require = createRequire(import.meta.url);
 
@@ -26,26 +26,27 @@ export class ParserPool {
 
   async parserFor(language: AnalyzableLanguage): Promise<Parser | null> {
     const grammar = grammarFor(language);
-    if (this.failed.has(grammar)) return null;
+    const source = grammarPathFor(language) ?? wasmPath(grammar);
+    if (this.failed.has(source)) return null;
 
-    const cached = this.parsers.get(grammar);
+    const cached = this.parsers.get(source);
     if (cached) return cached;
 
     await this.init();
 
     try {
-      let lang = this.languages.get(grammar);
+      let lang = this.languages.get(source);
       if (!lang) {
-        lang = await TsLanguage.load(wasmPath(grammar));
-        this.languages.set(grammar, lang);
+        lang = await TsLanguage.load(source);
+        this.languages.set(source, lang);
       }
       const parser = new Parser();
       parser.setLanguage(lang);
-      this.parsers.set(grammar, parser);
+      this.parsers.set(source, parser);
       return parser;
     } catch (err) {
       // 单个语法加载失败不该让整次扫描挂掉，记下来跳过该语言
-      this.failed.add(grammar);
+      this.failed.add(source);
       process.emitWarning(
         `tree-sitter 语法 ${grammar} 加载失败，该语言将被跳过：${(err as Error).message}`,
       );
