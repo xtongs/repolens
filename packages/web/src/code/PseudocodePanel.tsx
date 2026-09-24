@@ -6,8 +6,12 @@ import { useSource, type LoadedSource } from "./useSource";
 
 /** 悬停超过这个时长才浮出源码，扫过列表时不闪 */
 const HOVER_DELAY_MS = 180;
-const PREVIEW_MAX_LINES = 40;
+/** 首次渲染的行数上限，够高分屏铺满；实际显示多少由可用高度量出来 */
+const PREVIEW_MAX_LINES = 120;
 const PREVIEW_MIN_WIDTH = 280;
+/** 预览不压住顶栏，也不贴着窗口底边 */
+const PREVIEW_TOP = 56;
+const PREVIEW_BOTTOM_MARGIN = 12;
 
 export interface StepQuote {
   text: string;
@@ -163,7 +167,9 @@ export function PseudocodePanel({
         </p>
       )}
 
-      {hover && source && <SourcePreview source={source} hover={hover} />}
+      {hover && source && (
+        <SourcePreview key={`${hover.range[0]}-${hover.range[1]}`} source={source} hover={hover} />
+      )}
     </div>
   );
 }
@@ -251,18 +257,29 @@ function StepRow({
  */
 function SourcePreview({ source, hover }: { source: LoadedSource; hover: HoverState }) {
   const ref = useRef<HTMLDivElement>(null);
+  const total = hover.range[1] - hover.range[0] + 1;
+  const [shown, setShown] = useState(() => Math.min(total, PREVIEW_MAX_LINES));
   const [top, setTop] = useState(hover.rect.top);
   const gap = 10;
   const available = hover.drawerLeft - gap - 12;
-  const part = source.range(hover.range[0], Math.min(hover.range[1], hover.range[0] + PREVIEW_MAX_LINES - 1));
-  const hidden = hover.range[1] - hover.range[0] + 1 - part.lines.length;
+  const part = source.range(hover.range[0], hover.range[0] + shown - 1);
+  const hidden = total - part.lines.length;
 
+  // 行高随字号档位变化，只能量：超出可用高度就按实测行高裁掉多出的行再量
+  // 一次（出现「还有 N 行」后会再高一点）。都发生在绘制前，看不到中间态。
   useLayoutEffect(() => {
-    const height = ref.current?.offsetHeight ?? 0;
-    const minTop = 56;
-    const maxTop = Math.max(minTop, window.innerHeight - height - 12);
-    setTop(Math.min(Math.max(hover.rect.top - 6, minTop), maxTop));
-  }, [hover]);
+    const el = ref.current;
+    if (!el) return;
+    const maxHeight = window.innerHeight - PREVIEW_TOP - PREVIEW_BOTTOM_MARGIN;
+    const overflow = el.offsetHeight - maxHeight;
+    if (overflow > 0 && shown > 1) {
+      const lineHeight = el.querySelector<HTMLElement>("[data-line]")?.offsetHeight || 18;
+      setShown(Math.max(1, shown - Math.ceil(overflow / lineHeight)));
+      return;
+    }
+    const maxTop = Math.max(PREVIEW_TOP, window.innerHeight - el.offsetHeight - PREVIEW_BOTTOM_MARGIN);
+    setTop(Math.min(Math.max(hover.rect.top - 6, PREVIEW_TOP), maxTop));
+  }, [hover, shown]);
 
   if (available < PREVIEW_MIN_WIDTH) return null;
 
@@ -283,7 +300,7 @@ function SourcePreview({ source, hover }: { source: LoadedSource; hover: HoverSt
           L{hover.range[0]}–{hover.range[1]}
         </span>
       </div>
-      <div className="max-h-[60vh] overflow-hidden">
+      <div className="overflow-hidden">
         <CodeBlock lines={part.lines} tokens={part.tokens} firstLine={part.first} />
       </div>
       {hidden > 0 && (
