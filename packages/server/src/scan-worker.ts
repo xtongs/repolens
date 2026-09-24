@@ -15,17 +15,22 @@ if (port === null) throw new Error("扫描 worker 缺少父线程");
 
 const { root } = workerData as WorkerInput;
 
-try {
-  await scanRepo({
-    root,
-    onProgress: (phase, done, total) => {
-      port.postMessage({ type: "progress", phase, done, total } satisfies WorkerMessage);
-    },
-  });
-  port.postMessage({ type: "completed" } satisfies WorkerMessage);
-} catch (err) {
-  port.postMessage({
-    type: "failed",
-    error: err instanceof Error ? err.message : String(err),
-  } satisfies WorkerMessage);
-}
+// 不用顶层 await：桌面端会把这个文件打成 CommonJS
+const run = async (): Promise<void> => {
+  try {
+    await scanRepo({
+      root,
+      onProgress: (phase, done, total) => {
+        port.postMessage({ type: "progress", phase, done, total } satisfies WorkerMessage);
+      },
+    });
+    port.postMessage({ type: "completed" } satisfies WorkerMessage);
+  } catch (err) {
+    port.postMessage({
+      type: "failed",
+      error: err instanceof Error ? err.message : String(err),
+    } satisfies WorkerMessage);
+  }
+};
+
+void run();

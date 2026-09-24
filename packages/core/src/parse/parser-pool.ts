@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { Language as TsLanguage, Parser } from "web-tree-sitter";
 import type { AnalyzableLanguage } from "../types.js";
 import { grammarFor, grammarPathFor } from "../discovery/language.js";
@@ -64,6 +65,5 @@ export class ParserPool {
 function wasmPath(grammar: string): string {
   // 以 package.json 为锚点解析，避免依赖 @vscode/tree-sitter-wasm 的内部导出映射
   const anchor = require.resolve("@vscode/tree-sitter-wasm/package.json");
-  const pkgDir = anchor.slice(0, anchor.lastIndexOf("/"));
-  return `${pkgDir}/wasm/tree-sitter-${grammar}.wasm`;
+  return join(dirname(anchor), "wasm", `tree-sitter-${grammar}.wasm`);
 }

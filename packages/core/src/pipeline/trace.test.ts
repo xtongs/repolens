@@ -129,11 +129,14 @@ describe("M4 trace analysis", () => {
       app.get("/items/:id", handler);
     `);
     await scanRepo({ root, fresh: true });
+    // 服务地址和 key 变量名只认用户级配置
+    const globalDir = join(process.env["XDG_CONFIG_HOME"]!, "repolens");
+    mkdirSync(globalDir, { recursive: true });
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({
+      llm: { baseUrl: "http://llm.invalid/v1", apiKeyEnv: "" },
+    }));
     writeFileSync(configPath, JSON.stringify({
-      llm: {
-        enabled: true, baseUrl: "http://llm.invalid/v1", model: "trace-test",
-        apiKeyEnv: "", outputLanguage: "zh", maxRetries: 0,
-      },
+      llm: { enabled: true, model: "trace-test", outputLanguage: "zh", maxRetries: 0 },
     }));
 
     let requests = 0;

@@ -48,13 +48,29 @@ export function globalConfigPath(): string {
  * 仓库的 LLM。凭据始终只由 apiKeyEnv 指向环境变量，不在这里读取明文 key。
  */
 export function loadConfig(repoRoot: string): RepolensConfig {
-  let config = structuredClone(DEFAULT_CONFIG);
-  const globalPath = globalConfigPath();
-  if (existsSync(globalPath)) config = mergeConfig(config, readConfig(globalPath));
-
+  let config = loadGlobalConfig();
   const repoPath = join(repoRoot, CONFIG_FILENAME);
-  if (existsSync(repoPath)) config = mergeConfig(config, readConfig(repoPath));
+  if (existsSync(repoPath)) config = mergeConfig(config, withoutCredentialRouting(readConfig(repoPath)));
   return config;
+}
+
+/**
+ * 仓库级配置随代码一起被克隆下来，不可信。允许它改服务地址或 key 的变量名，
+ * 打开一个陌生仓库就可能把本机任意环境变量当成 key 发到任意地址，所以这两项只认用户级配置。
+ */
+function withoutCredentialRouting(patch: unknown): unknown {
+  if (typeof patch !== "object" || patch === null) return patch;
+  const llm = (patch as { llm?: unknown }).llm;
+  if (typeof llm !== "object" || llm === null) return patch;
+  const { baseUrl: _baseUrl, apiKeyEnv: _apiKeyEnv, ...rest } = llm as Record<string, unknown>;
+  return { ...patch, llm: rest };
+}
+
+/** 内置默认值叠加用户级共享配置，不含任何仓库的覆盖。桌面端的 AI 设置读写的就是这一层。 */
+export function loadGlobalConfig(): RepolensConfig {
+  const config = structuredClone(DEFAULT_CONFIG);
+  const globalPath = globalConfigPath();
+  return existsSync(globalPath) ? mergeConfig(config, readConfig(globalPath)) : config;
 }
 
 function readConfig(path: string): unknown {

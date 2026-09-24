@@ -10,6 +10,8 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Chevron } from "../code/Chevron";
+import { desktop } from "../lib/desktop";
+import { modKey } from "../lib/shortcut";
 import { useAppStore } from "../store/useAppStore";
 import {
   autoAttachments,
@@ -51,7 +53,7 @@ export function ChatDock({ detailVisible }: { detailVisible: boolean }) {
         <span className="truncate">
           {messageCount > 0 ? `继续追问（${Math.ceil(messageCount / 2)} 轮对话）` : "追问 AI…"}
         </span>
-        <kbd className="mono ml-auto shrink-0 text-[10px]">⌘I</kbd>
+        <kbd className="mono ml-auto shrink-0 text-[10px]">{modKey("I")}</kbd>
       </button>
     );
   }
@@ -181,6 +183,15 @@ function EmptyThread() {
       {reason && (
         <p className="mt-2 rounded border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/5 px-2 py-1.5 text-[10.5px] text-[var(--color-warn)]">
           AI 可能不可用：{reason}
+          {desktop && (
+            <button
+              type="button"
+              onClick={() => useAppStore.getState().setSettingsOpen(true)}
+              className="ml-1.5 underline underline-offset-2 hover:text-[var(--color-ink)]"
+            >
+              去设置
+            </button>
+          )}
         </p>
       )}
       <div className="mt-2.5 flex flex-col items-start gap-1">

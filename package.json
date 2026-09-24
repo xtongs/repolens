@@ -11,10 +11,12 @@
     "build": "pnpm -r build",
     "build:node": "tsc -b packages/core packages/server packages/cli",
     "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo packages/web/dist",
-    "typecheck": "tsc -b packages/core packages/server packages/cli && pnpm --filter @repolens/web typecheck",
+    "typecheck": "tsc -b packages/core packages/server packages/cli && pnpm --filter @repolens/web typecheck && pnpm --filter @repolens/desktop typecheck",
     "test": "pnpm -r test",
     "lens": "node --enable-source-maps packages/cli/dist/bin.js",
-    "dev:web": "pnpm --filter @repolens/web dev"
+    "dev:web": "pnpm --filter @repolens/web dev",
+    "desktop": "pnpm build && pnpm --filter @repolens/desktop start",
+    "dist:desktop": "pnpm build && pnpm --filter @repolens/desktop dist"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

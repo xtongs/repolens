@@ -51,7 +51,7 @@ export interface LlmClientOptions {
 /**
  * 最小 OpenAI Chat Completions 客户端。
  *
- * 不依赖厂商 SDK：Ollama、traex-bridge 和各类自定义网关只要实现
+ * 不依赖厂商 SDK：Ollama、vLLM 和各类自定义网关只要实现
  * `/chat/completions` 就能直接用，也避免把 Node 专属 SDK带进 web 依赖图。
  */
 export class OpenAiCompatibleClient {
@@ -63,16 +63,10 @@ export class OpenAiCompatibleClient {
     readonly config: LlmConfig,
     options: LlmClientOptions = {},
   ) {
-    if (!config.enabled) throw new LlmUnavailableError("LLM 已在配置中关闭");
+    const reason = llmUnavailableReason(config, options.apiKey);
+    if (reason !== null) throw new LlmUnavailableError(reason);
 
-    const apiKey =
-      options.apiKey ??
-      (config.apiKeyEnv.trim() === "" ? "" : process.env[config.apiKeyEnv]?.trim());
-    if (apiKey === undefined || (apiKey === "" && config.apiKeyEnv.trim() !== "")) {
-      throw new LlmUnavailableError(`未设置环境变量 ${config.apiKeyEnv}`);
-    }
-
-    this.apiKey = apiKey;
+    this.apiKey = options.apiKey ?? envApiKey(config) ?? "";
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     const semaphoreKey = `${config.baseUrl}\0${config.model}\0${config.maxConcurrency}`;
     this.slots = sharedSemaphores.get(semaphoreKey) ?? new Semaphore(config.maxConcurrency);
@@ -488,6 +482,25 @@ class Semaphore {
 }
 
 const sharedSemaphores = new Map<string, Semaphore>();
+
+/**
+ * 按当前配置判断 AI 能不能用，不能用时返回原因。
+ *
+ * 只看开关和凭据，不发请求：概览接口每次打开页面都会调用，探测网络
+ * 既慢又可能产生费用。
+ */
+export function llmUnavailableReason(config: LlmConfig, explicitKey?: string): string | null {
+  if (!config.enabled) return "LLM 已在配置中关闭";
+  const apiKey = explicitKey ?? envApiKey(config);
+  if (apiKey === undefined || (apiKey === "" && config.apiKeyEnv.trim() !== "")) {
+    return `未设置环境变量 ${config.apiKeyEnv}`;
+  }
+  return null;
+}
+
+function envApiKey(config: LlmConfig): string | undefined {
+  return config.apiKeyEnv.trim() === "" ? "" : process.env[config.apiKeyEnv]?.trim();
+}
 
 export function emptyUsage(): LlmUsage {
   return { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };

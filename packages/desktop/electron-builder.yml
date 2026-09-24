@@ -1,0 +1,61 @@
+# 由 scripts/dist.mjs 调用，它会先生成 app/ 目录。直接跑 electron-builder 之前要先 node scripts/build.mjs --stage。
+appId: com.xtongs.repolens
+productName: RepoLens
+copyright: Copyright © 2026 Tong
+directories:
+  app: app
+  output: release
+  buildResources: build
+# 服务进程要起 worker 线程、按路径读 wasm，放进 asar 都得绕路；不打包只是多几百个小文件
+asar: false
+# better-sqlite3 用的是 N-API 预编译二进制，各平台的已经在包里，不需要针对 Electron 重新编译
+npmRebuild: false
+nodeGypRebuild: false
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+publish:
+  provider: github
+  owner: xtongs
+  repo: repolens
+  # 三个平台的任务都往同一个草稿里传，全部完成后手动点发布
+  releaseType: draft
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    # 自动更新检查要读 zip 生成的 latest-mac.yml
+    - target: zip
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  files:
+    - "!node_modules/better-sqlite3/prebuilds/!(darwin-${arch}).node"
+dmg:
+  writeUpdateInfo: false
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  files:
+    - "!node_modules/better-sqlite3/prebuilds/!(win32-${arch}).node"
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-win-${arch}-setup.${ext}
+
+linux:
+  category: Development
+  executableName: repolens
+  synopsis: 本地代码仓库理解工具
+  maintainer: Tong <xtongs@gmail.com>
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+      arch: [x64, arm64]
+  files:
+    - "!node_modules/better-sqlite3/prebuilds/!(linux-${arch}|linuxmusl-${arch}).node"

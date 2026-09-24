@@ -206,6 +206,21 @@ body .text-sm { font-size: calc(14px * var(--font-scale)); }
   text-overflow: ellipsis;
 }
 
+/*
+ * 桌面端 macOS 隐藏了系统标题栏，红绿灯按钮叠在顶栏左侧：给它们让出位置，
+ * 顶栏空白处可以拖动窗口。控件和下拉面板必须排除在拖动区外，否则点不动。
+ * 全屏时红绿灯跟着隐藏，不再留位。
+ */
+:root[data-desktop="darwin"]:not([data-fullscreen]) .app-topbar {
+  padding-left: 84px;
+}
+:root[data-desktop="darwin"] .app-topbar {
+  -webkit-app-region: drag;
+}
+:root[data-desktop="darwin"] .app-topbar :is(button, a, input, kbd, [role="group"], .absolute) {
+  -webkit-app-region: no-drag;
+}
+
 /* React Flow 自带的背景和边框都要盖掉，否则和暗色主题打架 */
 .react-flow {
   --xy-background-color: var(--color-canvas);

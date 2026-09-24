@@ -1,5 +1,7 @@
 node_modules/
 dist/
+packages/desktop/app/
+packages/desktop/release/
 *.tsbuildinfo
 .repolens/
 .repolens.json

@@ -596,8 +596,8 @@ export interface RepoEntry extends RegisteredRepo {
 }
 
 export interface ReposDto {
-  /** 启动时指定的那个仓库，缺省请求都落到它 */
-  current: string;
+  /** 启动时指定的那个仓库，缺省请求都落到它；桌面端不指定时为 null */
+  current: string | null;
   repos: RepoEntry[];
 }
 

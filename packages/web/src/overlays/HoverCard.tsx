@@ -2,6 +2,7 @@ import type { GraphNodeDto, SemanticResultDto } from "@repolens/core/types";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { findNode } from "../graph/model";
+import { ALT_KEY } from "../lib/shortcut";
 import { formatCount, kindLabel, nodeAccent } from "../lib/visual";
 import { useAppStore } from "../store/useAppStore";
 
@@ -221,7 +222,7 @@ export function HoverCard() {
 
       {node.expandable && (
         <div className="mt-2.5 border-t border-[var(--color-line)] pt-2 text-[10.5px] text-[var(--color-ink-faint)]">
-          双击展开 {node.childCount} 项 · ⌥双击 只看它的邻居
+          双击展开 {node.childCount} 项 · {ALT_KEY}双击 只看它的邻居
         </div>
       )}
     </div>

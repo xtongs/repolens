@@ -1,5 +1,6 @@
 import type { GraphNodeDto } from "@repolens/core/types";
 import { useEffect, useRef } from "react";
+import { ALT_KEY } from "../lib/shortcut";
 import { useAppStore } from "../store/useAppStore";
 import { canAttachNode, nodeAttachment, useChatStore } from "../store/useChatStore";
 
@@ -54,7 +55,7 @@ export function NodeContextMenu({ state, onClose }: { state: ContextMenuState; o
     },
     {
       label: isFocused ? "退出聚焦" : "以此为中心聚焦",
-      hint: "⌥双击",
+      hint: `${ALT_KEY}双击`,
       run: () => store.setFocus(isFocused ? null : node.id),
     },
     {

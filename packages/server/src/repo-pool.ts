@@ -44,23 +44,25 @@ interface PooledRepo {
  */
 export class RepoPool {
   private readonly open = new Map<string, PooledRepo>();
-  private readonly defaultId: string;
-  private readonly defaultRoot: string;
+  private readonly defaultId: string | null;
+  private readonly defaultRoot: string | null;
 
   /**
+   * @param defaultRoot 启动时指定的仓库，缺省请求都落到它；null 表示只按
+   *   清单提供仓库，请求必须带上仓库 id。
    * @param maxOpen 同时保持打开的连接数上限。每个连接都占文件描述符和
    *   WAL 映射，一路点过二十个仓库不该攒下二十个句柄；超出后按最久未用
    *   关闭。启动时指定的那个仓库固定驻留，不参与淘汰。
    */
   constructor(
-    defaultRoot: string,
+    defaultRoot: string | null,
     private readonly maxOpen = 4,
   ) {
-    this.defaultRoot = resolve(defaultRoot);
-    this.defaultId = repoId(this.defaultRoot);
+    this.defaultRoot = defaultRoot === null ? null : resolve(defaultRoot);
+    this.defaultId = this.defaultRoot === null ? null : repoId(this.defaultRoot);
   }
 
-  get currentId(): string {
+  get currentId(): string | null {
     return this.defaultId;
   }
 
@@ -72,14 +74,15 @@ export class RepoPool {
    */
   list(): RepoEntry[] {
     const entries = listRepos();
-    if (!entries.some((e) => e.id === this.defaultId)) {
+    const { defaultId, defaultRoot } = this;
+    if (defaultId !== null && defaultRoot !== null && !entries.some((e) => e.id === defaultId)) {
       entries.unshift({
-        id: this.defaultId,
-        root: this.defaultRoot,
-        name: basename(this.defaultRoot) || this.defaultRoot,
+        id: defaultId,
+        root: defaultRoot,
+        name: basename(defaultRoot) || defaultRoot,
         lastOpenedAt: new Date().toISOString(),
-        status: probe(this.defaultRoot),
-        branch: gitBranch(this.defaultRoot),
+        status: probe(defaultRoot),
+        branch: gitBranch(defaultRoot),
       });
     }
     return entries;
@@ -93,6 +96,7 @@ export class RepoPool {
   /** 解析仓库标识；缺省时给启动时那个。打不开就抛 RepoUnavailableError。 */
   resolve(id: string | undefined): PooledRepo {
     const target = id === undefined || id === "" ? this.defaultId : id;
+    if (target === null) throw new RepoUnavailableError("还没有打开任何仓库", 404);
 
     const cached = this.open.get(target);
     if (cached) {
@@ -128,7 +132,7 @@ export class RepoPool {
   }
 
   private rootOf(id: string): string {
-    if (id === this.defaultId) return this.defaultRoot;
+    if (id === this.defaultId && this.defaultRoot !== null) return this.defaultRoot;
     const found = listRepos().find((r) => r.id === id);
     if (!found) throw new RepoUnavailableError(`未知的仓库标识：${id}`, 400);
     return found.root;

@@ -2,14 +2,18 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { forgetRepo, indexPath, isIndexCurrent } from "@repolens/core";
 import { existsSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { createRequire } from "node:module";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Hono } from "hono";
+import { getCookie } from "hono/cookie";
+import { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_HEADER, sameToken } from "./auth.js";
 import { DirectoryPickerUnavailableError, pickDirectory } from "./directory-picker.js";
 import { RepoPool, RepoUnavailableError } from "./repo-pool.js";
 import { InvalidScanRootError, ScanBusyError, ScanManager } from "./scan-manager.js";
 
 export { createApi, type ApiDeps } from "./api.js";
+export { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_HEADER } from "./auth.js";
 export { RepoPool, RepoUnavailableError } from "./repo-pool.js";
 
 /**
@@ -21,31 +25,45 @@ export { RepoPool, RepoUnavailableError } from "./repo-pool.js";
 export const DEFAULT_PORT = 7173;
 
 export interface ServeOptions {
-  repoRoot: string;
+  /** 缺省请求落到的仓库。null 表示只按清单提供仓库，桌面端首次启动时清单可能是空的 */
+  repoRoot: string | null;
+  /** 传 0 由系统分配空闲端口，实际端口见返回值 */
   port: number;
   host?: string;
   /** 前端构建产物目录；缺省时自动定位 @repolens/web 的 dist */
   webRoot?: string;
+  /** 替换内置的系统目录选择器，桌面端用它弹原生对话框 */
+  pickDirectory?: () => Promise<string | null>;
+  /**
+   * 设置后，每个 /api 请求都必须通过 cookie 或请求头带上这个令牌。
+   *
+   * 127.0.0.1 对同机的所有程序、以及浏览器里打开的任意网页都是可达的；
+   * 命令行用户自己在终端里起服务可以接受这一点，常驻后台的桌面应用不行。
+   */
+  accessToken?: string;
 }
 
 export interface RunningServer {
   url: string;
+  port: number;
   close: () => Promise<void>;
 }
 
 export async function startServer(options: ServeOptions): Promise<RunningServer> {
-  const repoRoot = resolve(options.repoRoot);
-  const dbPath = indexPath(repoRoot);
-
-  if (!existsSync(dbPath)) {
-    throw new Error(`索引不存在：${dbPath}\n先运行 \`repolens scan ${options.repoRoot}\``);
-  }
-  if (!isIndexCurrent(dbPath)) {
-    throw new Error(`索引版本过期：${dbPath}\n运行 \`repolens scan ${options.repoRoot} --fresh\` 重建索引`);
+  const repoRoot = options.repoRoot === null ? null : resolve(options.repoRoot);
+  if (repoRoot !== null) {
+    const dbPath = indexPath(repoRoot);
+    if (!existsSync(dbPath)) {
+      throw new Error(`索引不存在：${dbPath}\n先运行 \`repolens scan ${options.repoRoot}\``);
+    }
+    if (!isIndexCurrent(dbPath)) {
+      throw new Error(`索引版本过期：${dbPath}\n运行 \`repolens scan ${options.repoRoot} --fresh\` 重建索引`);
+    }
   }
 
   const pool = new RepoPool(repoRoot);
   const scans = new ScanManager();
+  const pick = options.pickDirectory ?? pickDirectory;
   const app = new Hono();
 
   // Hono 默认把异常吞成一句 "Internal Server Error"。这是个本地工具，
@@ -54,6 +72,17 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     console.error(`[repolens] ${c.req.method} ${c.req.path} 失败：`, err);
     return c.json({ error: err.message }, 500);
   });
+
+  const accessToken = options.accessToken;
+  if (accessToken !== undefined) {
+    app.use("/api/*", async (c, next) => {
+      const provided = c.req.header(ACCESS_TOKEN_HEADER) ?? getCookie(c, ACCESS_TOKEN_COOKIE);
+      if (provided === undefined || !sameToken(provided, accessToken)) {
+        return c.json({ error: "缺少访问令牌" }, 401);
+      }
+      await next();
+    });
+  }
 
   // 仓库清单本身不属于任何一个仓库，所以不走下面的按仓库分发。
   // 必须注册在分发之前，否则会被 /api/* 抢走然后在子应用里 404。
@@ -67,7 +96,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     }
 
     try {
-      const selected = await pickDirectory();
+      const selected = await pick();
       if (selected === null) return c.json({ cancelled: true });
       return c.json({ cancelled: false, task: scans.start(selected) });
     } catch (err) {
@@ -129,11 +158,10 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
 
   const webRoot = options.webRoot ?? locateWebRoot();
   if (webRoot !== null) {
-    // serveStatic 的 root 必须是相对 cwd 的路径
-    const rel = toPosix(relative(process.cwd(), webRoot)) || ".";
-    app.use("/*", serveStatic({ root: rel }));
+    const root = resolve(webRoot);
+    app.use("/*", serveStatic({ root }));
     // SPA 兜底：非 /api 的未命中路径一律回 index.html
-    app.get("*", serveStatic({ path: `${rel}/index.html` }));
+    app.get("*", serveStatic({ path: join(root, "index.html") }));
   } else {
     app.get("/", (c) =>
       c.text("前端尚未构建。运行 `pnpm --filter @repolens/web build` 后重启，或用 `pnpm dev:web` 起开发服务器。"),
@@ -141,10 +169,11 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
   }
 
   const host = options.host ?? "127.0.0.1";
-  const server = serve({ fetch: app.fetch, port: options.port, hostname: host });
+  const { server, port } = await listen(app, options.port, host);
 
   return {
-    url: `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${options.port}`,
+    url: `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`,
+    port,
     close: () =>
       new Promise<void>((done) => {
         server.close(() => {
@@ -153,6 +182,9 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
             done();
           });
         });
+        // close() 只停止接受新连接。浏览器的长连接、还在输出的追问流都会让它
+        // 一直等下去，退出时直接断开。
+        if ("closeAllConnections" in server) server.closeAllConnections();
       }),
   };
 }
@@ -168,6 +200,12 @@ function locateWebRoot(): string | null {
   }
 }
 
-function toPosix(p: string): string {
-  return p.split("\\").join("/");
+function listen(app: Hono, port: number, hostname: string) {
+  return new Promise<{ server: ReturnType<typeof serve>; port: number }>((done, fail) => {
+    const server = serve({ fetch: app.fetch, port, hostname }, (info: AddressInfo) => {
+      server.off("error", fail);
+      done({ server, port: info.port });
+    });
+    server.once("error", fail);
+  });
 }

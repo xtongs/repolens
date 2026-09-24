@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { LlmConfig } from "../types.js";
-import { LlmUnavailableError, OpenAiCompatibleClient, parseJsonResponse } from "./client.js";
+import {
+  LlmUnavailableError,
+  OpenAiCompatibleClient,
+  llmUnavailableReason,
+  parseJsonResponse,
+} from "./client.js";
 
 const config: LlmConfig = {
   baseUrl: "http://127.0.0.1:8317/v1",
@@ -18,6 +23,15 @@ const config: LlmConfig = {
   outputLanguage: "zh",
   enabled: true,
 };
+
+describe("llmUnavailableReason", () => {
+  it("区分关闭、缺 key 与无需鉴权", () => {
+    expect(llmUnavailableReason({ ...config, enabled: false })).toBe("LLM 已在配置中关闭");
+    expect(llmUnavailableReason(config)).toBe(`未设置环境变量 ${config.apiKeyEnv}`);
+    expect(llmUnavailableReason(config, "explicit")).toBeNull();
+    expect(llmUnavailableReason({ ...config, apiKeyEnv: "" })).toBeNull();
+  });
+});
 
 describe("OpenAiCompatibleClient", () => {
   it("在需要 key 但环境变量缺失时优雅拒绝", () => {

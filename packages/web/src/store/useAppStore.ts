@@ -52,6 +52,13 @@ export interface AppState {
   repos: RepoEntry[];
   /** 当前浏览的仓库 id；null 表示还没取到清单 */
   repoId: string | null;
+  /** 清单里没有一个能打开的仓库，也没有启动仓库。桌面端首次启动就是这样 */
+  noRepo: boolean;
+  /** 每次请求「添加仓库」时递增；仓库选择器据此弹出目录选择 */
+  addRepoRequest: number;
+  requestAddRepo: () => void;
+  /** 只重取概览，不动图。改完 AI 设置后用它刷新顶栏状态 */
+  refreshOverview: () => Promise<void>;
   /** 切换仓库或重扫当前仓库时递增，用来使本地视图和异步请求失效。 */
   repoRevision: number;
   refreshRepos: () => Promise<void>;
@@ -82,6 +89,8 @@ export interface AppState {
   paletteOpen: boolean;
   helpOpen: boolean;
   repoPickerOpen: boolean;
+  /** 桌面端的 AI 设置弹窗 */
+  settingsOpen: boolean;
 
   showNoise: boolean;
   showExternal: boolean;
@@ -128,6 +137,7 @@ export interface AppState {
   setPaletteOpen: (open: boolean) => void;
   setHelpOpen: (open: boolean) => void;
   setRepoPickerOpen: (open: boolean) => void;
+  setSettingsOpen: (open: boolean) => void;
 
   setShowNoise: (value: boolean) => void;
   setShowExternal: (value: boolean) => void;
@@ -147,6 +157,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   repos: [],
   // 模块加载时就从 URL 恢复，确保首个 /overview 请求不会先读到启动仓库。
   repoId: getActiveRepo() ?? null,
+  noRepo: false,
+  addRepoRequest: 0,
   repoRevision: 0,
 
   rootScope: "dir:.",
@@ -171,6 +183,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   paletteOpen: false,
   helpOpen: false,
   repoPickerOpen: false,
+  settingsOpen: false,
 
   showNoise: false,
   showExternal: false,
@@ -193,9 +206,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const requested = get().repoId;
       const selected = requested && repos.some((repo) => repo.id === requested && repo.status === "ok")
         ? requested
-        : current;
+        : current ?? repos.find((repo) => repo.status === "ok")?.id ?? null;
+      if (selected === null) {
+        setActiveRepo(undefined);
+        set({ repos, repoId: null, noRepo: true, bootError: null });
+        return;
+      }
       setActiveRepo(selected);
-      set({ repos, repoId: selected });
+      set({ repos, repoId: selected, noRepo: false });
     } catch {
       // 清单不可用时仍尝试当前 URL/服务缺省仓库，保持原有降级能力。
     }
@@ -221,6 +239,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       repoId: id,
       repoRevision,
+      noRepo: false,
       overview: null,
       bootError: null,
       subgraphs: {},
@@ -244,6 +263,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   async refreshRepos() {
     const { current, repos } = await api.repos();
     set({ repos, repoId: get().repoId ?? current });
+  },
+
+  requestAddRepo() {
+    set((state) => ({ addRepoRequest: state.addRepoRequest + 1 }));
+  },
+
+  async refreshOverview() {
+    if (get().overview === null) return;
+    const revision = get().repoRevision;
+    const overview = await api.overview();
+    if (revision === get().repoRevision) set({ overview });
   },
 
   async forgetRepo(id) {
@@ -468,6 +498,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRepoPickerOpen(open) {
     set({ repoPickerOpen: open });
   },
+  setSettingsOpen(open) {
+    set({ settingsOpen: open });
+  },
 
   setShowNoise(value) {
     set({ showNoise: value, subgraphs: {}, scopeLimits: {} });
@@ -487,6 +520,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   escape() {
     const state = get();
+    if (state.settingsOpen) return set({ settingsOpen: false });
     if (state.paletteOpen) return set({ paletteOpen: false });
     if (state.helpOpen) return set({ helpOpen: false });
     if (state.repoPickerOpen) return set({ repoPickerOpen: false });

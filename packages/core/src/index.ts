@@ -6,6 +6,7 @@ export {
   GLOBAL_CONFIG_FILENAME,
   globalConfigPath,
   loadConfig,
+  loadGlobalConfig,
 } from "./config.js";
 
 export {
@@ -64,7 +65,13 @@ export {
   generateSymbolSemantics,
   generateTraceNarrative,
 } from "./llm/enrich.js";
-export { LlmResponseError, LlmUnavailableError, OpenAiCompatibleClient } from "./llm/client.js";
+export {
+  LlmResponseError,
+  LlmUnavailableError,
+  OpenAiCompatibleClient,
+  llmUnavailableReason,
+} from "./llm/client.js";
+export { currentLlmStatus } from "./llm/cache.js";
 export {
   buildChatContext,
   parseChatRequest,

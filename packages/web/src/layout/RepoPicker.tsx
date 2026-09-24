@@ -177,6 +177,20 @@ export function RepoPicker() {
     }
   };
 
+  // 欢迎页和原生菜单都通过 store 发起「添加仓库」：展开下拉以便看到扫描进度，
+  // 再弹出目录选择。正在选择或扫描时只展开，不重复发起。
+  const addRepoRequest = useAppStore((s) => s.addRepoRequest);
+  const handleAddRequest = useRef<() => void>(() => {});
+  useEffect(() => {
+    handleAddRequest.current = () => {
+      setOpen(true);
+      if (!picking && scanTask?.status !== "running") void addRepository();
+    };
+  });
+  useEffect(() => {
+    if (addRepoRequest > 0) handleAddRequest.current();
+  }, [addRepoRequest]);
+
   const rescanRepository = async (repo: RepoEntry) => {
     setScanError(null);
     setStartingRepoId(repo.id);

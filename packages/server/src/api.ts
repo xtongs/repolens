@@ -1,4 +1,5 @@
 import {
+  currentLlmStatus,
   getCallGraph,
   getEntryPoints,
   getFileDetail,
@@ -45,7 +46,10 @@ export function createApi(deps: ApiDeps): Hono {
   const { db } = deps;
   const repoRoot = getMeta(db, "repo_root") ?? deps.repoRoot;
 
-  app.get("/overview", (c) => c.json(getOverview(db)));
+  app.get("/overview", (c) => {
+    const overview = getOverview(db);
+    return c.json({ ...overview, llm: currentLlmStatus(db, repoRoot) ?? overview.llm });
+  });
 
   app.get("/tree", (c) => {
     const path = c.req.query("path") ?? ".";

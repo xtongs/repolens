@@ -37,6 +37,15 @@ pnpm lens open /path/to/some-repo
 它会在被扫描的仓库下生成 `.repolens/index.db`，然后在
 <http://127.0.0.1:7173> 打开界面。
 
+## 桌面客户端
+
+不想装 Node 和命令行的话，到 [GitHub Releases](https://github.com/xtongs/repolens/releases)
+下载对应平台的安装包：macOS（Apple 芯片 / Intel）、Windows、Linux（AppImage / deb）。
+打开后点“添加本地仓库”选一个目录即可；AI 功能在顶栏的 AI 状态或菜单“设置…”里配置。
+
+安装包暂未签名，首次打开会有系统安全提示，放行方法、开发与发布流程见
+[docs/desktop.md](docs/desktop.md)。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -108,22 +117,27 @@ RepoLens 的结构图和调用关系始终由解析器生成；LLM 只补充明�
 ```json
 {
   "llm": {
-    "baseUrl": "http://127.0.0.1:8317/v1",
-    "model": "GPT-5.4",
-    "interactiveModel": "GPT-5.2",
-    "apiKeyEnv": "TRAEX_BRIDGE_API_KEY",
+    "baseUrl": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
     "outputLanguage": "zh",
     "enabled": true
   }
 }
 ```
 
+任何兼容 OpenAI Chat Completions 接口的服务都可以，改 `baseUrl` 和 `model` 即可；
+`apiKeyEnv` 是存放 Key 的环境变量名，可以随意取。不写配置文件时默认使用
+`https://api.openai.com/v1`、`gpt-4o-mini` 和 `OPENAI_API_KEY`。
+
 Key 只通过环境变量读取，不要写进 JSON：
 
 ```bash
-export TRAEX_BRIDGE_API_KEY="$(cat ~/.traex-bridge/api-key)"
+export DEEPSEEK_API_KEY="sk-..."
 pnpm lens scan /path/to/some-repo
 ```
+
+桌面客户端可以直接在“设置…”里填写，Key 由系统钥匙串加密保存。
 
 配置按以下顺序合并，后者覆盖前者：
 
@@ -134,6 +148,8 @@ pnpm lens scan /path/to/some-repo
 多数情况下只需配置一次全局文件。仓库内 `.repolens.json` 是可选覆盖层，适合设置
 `exclude` / `include`、文件角色覆盖，或对敏感仓库单独设置 `"llm": { "enabled": false }`；若使用，
 建议将它加入该仓库的 `.gitignore`。两个配置文件都只保存环境变量名，不保存 API Key。
+仓库级配置不能修改 `llm.baseUrl` 和 `llm.apiKeyEnv`：它随代码一起被克隆下来，
+允许修改的话，打开一个陌生仓库就可能把本机的环境变量发到别人的地址。
 
 噪音分类默认参考常见生态约定和 GitHub Linguist：测试、配置、生成代码、文档、
 第三方依赖默认不进入主干图。遇到仓库自己的特殊约定时，用 `roleOverrides` 做最终裁决：
@@ -199,7 +215,8 @@ glob 后写的规则优先。可用角色为 `source`、`test`、`config`、`gen
 
 ```bash
 pnpm test        # 全部单测
-pnpm typecheck   # 四个包的类型检查
+pnpm typecheck   # 全部包的类型检查
+pnpm desktop     # 构建并启动桌面端（首次需先装 Electron，见 docs/desktop.md）
 pnpm build       # 全量构建
 pnpm clean       # 清掉所有构建产物
 ```
@@ -220,14 +237,16 @@ packages/
 ├── core/     @repolens/core     类型、解析、模块解析器、扫描管线、SQLite 持久层
 ├── server/   @repolens/server   本地 HTTP API（读 SQLite，按需拉子图）
 ├── cli/      @repolens/cli      repolens 命令入口
-└── web/      @repolens/web      React + React Flow 前端
+├── web/      @repolens/web      React + React Flow 前端
+└── desktop/  @repolens/desktop  Electron 桌面客户端，内嵌 server 与 web
 ```
 
-依赖方向严格单向：`web → server → core`，`cli → server + core`。
+依赖方向严格单向：`web → server → core`，`cli → server + core`，`desktop → server + web`。
 `web` 只以 `import type` 从 `@repolens/core/types` 取类型，不引入任何运行时代码。
 
 ## 文档
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构设计、置信度模型、各语言模块解析器要点
 - [docs/INTERACTION.md](docs/INTERACTION.md) —— 交互规范
+- [docs/desktop.md](docs/desktop.md) —— 桌面客户端：结构、打包、发布、签名
 - [docs/ROADMAP.md](docs/ROADMAP.md) —— 里程碑与进展

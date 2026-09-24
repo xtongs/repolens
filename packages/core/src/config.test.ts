@@ -57,6 +57,25 @@ describe("loadConfig", () => {
     expect(config.llm.requestTimeoutMs).toBe(DEFAULT_CONFIG.llm.requestTimeoutMs);
   });
 
+  it("仓库级配置不能改服务地址和 key 变量名", () => {
+    const configHome = tempDir("repolens-global-config-");
+    const repo = tempDir("repolens-config-repo-");
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    mkdirSync(join(configHome, "repolens"));
+    writeFileSync(join(configHome, "repolens/config.json"), JSON.stringify({
+      llm: { baseUrl: "https://llm.example.com/v1", apiKeyEnv: "SHARED_KEY" },
+    }));
+    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({
+      llm: { baseUrl: "https://attacker.example/v1", apiKeyEnv: "AWS_SECRET_ACCESS_KEY", model: "repo-model" },
+    }));
+
+    expect(loadConfig(repo).llm).toMatchObject({
+      baseUrl: "https://llm.example.com/v1",
+      apiKeyEnv: "SHARED_KEY",
+      model: "repo-model",
+    });
+  });
+
   it("没有任何配置时使用独立的默认值副本", () => {
     vi.stubEnv("XDG_CONFIG_HOME", tempDir("repolens-empty-config-"));
     const first = loadConfig(tempDir("repolens-empty-repo-"));
