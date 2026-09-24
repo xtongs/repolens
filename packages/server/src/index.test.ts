@@ -7,7 +7,7 @@ import { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_HEADER, startServer, type RunningServ
 let home: string;
 let server: RunningServer | null = null;
 
-// 仓库清单在 ~/.repolens/repos.json，os.homedir() 在 POSIX 上读 $HOME
+// 仓库清单在 ~/.repolens/repos.json，os.homedir() 在 POSIX 上读 $HOME，Windows 上读 %USERPROFILE%
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "repolens-server-home-"));
   vi.stubEnv("HOME", home);

@@ -1,24 +1,22 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INDEX_DIR, INDEX_FILE } from "./db/database.js";
 import { forgetRepo, gitBranch, listRepos, readRegistry, registryPath, rememberRepo, repoId } from "./registry.js";
 
-// registryPath() 走 os.homedir()，在 POSIX 上它直接读 $HOME，
-// 所以改环境变量就能把整套读写引到临时目录，不必给模块加注入口子。
+// registryPath() 走 os.homedir()：POSIX 上读 $HOME，Windows 上读 %USERPROFILE%。
+// 改环境变量就能把整套读写引到临时目录，不必给模块加注入口子。
 let home: string;
-let originalHome: string | undefined;
 
 beforeEach(() => {
-  originalHome = process.env.HOME;
   home = mkdtempSync(join(tmpdir(), "repolens-registry-"));
-  process.env.HOME = home;
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home);
 });
 
 afterEach(() => {
-  if (originalHome === undefined) delete process.env.HOME;
-  else process.env.HOME = originalHome;
+  vi.unstubAllEnvs();
   rmSync(home, { recursive: true, force: true });
 });
 
