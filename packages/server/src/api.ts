@@ -18,12 +18,16 @@ import {
   generateTraceNarrative,
   indexPath,
   openDb,
+  parseChatRequest,
+  recordChatUsage,
   search,
+  streamRepositoryChat,
   type Confidence,
   type Db,
   type FileRole,
 } from "@repolens/core";
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 
 export interface ApiDeps {
   db: Db;
@@ -31,7 +35,7 @@ export interface ApiDeps {
 }
 
 /**
- * HTTP API。除带本地意图标记的 semantic POST 外均为只读。
+ * HTTP API。除带本地意图标记的 semantic / chat POST 外均为只读。
  *
  * 所有端点都是「按需拉一层」的形状，没有任何返回全图的端点——
  * 这是 docs/INTERACTION.md「转移」策略的硬约束：前端不持有全图。
@@ -180,6 +184,46 @@ export function createApi(deps: ApiDeps): Hono {
         const message = (err as Error).message;
         const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
         return c.json({ error: message }, status);
+      }
+    });
+  });
+
+  // 追问 AI。请求里只有问题文本和节点 id，源码由服务端按 id 现读；回答
+  // 以 SSE 流回，事件依次是 context（实际放进提示词的上下文）、若干 delta、
+  // 最后 done 或 error。读上下文用只读连接，写连接只在记账时短暂打开。
+  app.post("/chat", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "chat") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体不是 JSON" }, 400);
+    }
+    const request = parseChatRequest(body);
+    if (request === null) return c.json({ error: "对话格式不正确，最后一条必须是用户消息" }, 400);
+
+    return streamSSE(c, async (stream) => {
+      const controller = new AbortController();
+      stream.onAbort(() => controller.abort());
+      // delta 按到达顺序串行写出，避免并发 write 打乱顺序
+      let writes = Promise.resolve();
+      const send = (event: string, data: unknown) => {
+        writes = writes.then(() => stream.writeSSE({ event, data: JSON.stringify(data) }));
+        return writes;
+      };
+      try {
+        const done = await streamRepositoryChat(db, repoRoot, request, {
+          signal: controller.signal,
+          onContext: (items) => void send("context", { items }),
+          onDelta: (text) => void send("delta", { text }),
+        });
+        await send("done", done);
+        await withWritableDb(repoRoot, async (writeDb) => recordChatUsage(writeDb, repoRoot, done.usage));
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        await send("error", { message: (err as Error).message.slice(0, 500) });
       }
     });
   });

@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../db/database.js";
-import { getFileDetail } from "../db/queries.js";
+import { getFileDetail, getSymbolDetail } from "../db/queries.js";
 import { getCachedSemantic, putCachedSemantic } from "./cache.js";
-import { generateFileSummary } from "./enrich.js";
+import { generateFileSummary, generateSymbolSemantics } from "./enrich.js";
 
 let db: Db | null = null;
 const temporaryDirectories: string[] = [];
@@ -171,6 +171,73 @@ describe("generateFileSummary", () => {
     expect(calls).toHaveLength(2);
     expect(getFileDetail(db, fileId)).toMatchObject({
       summary: refreshed.summary, shortSummary: refreshed.shortSummary, pseudocode: refreshed.pseudocode,
+    });
+  });
+});
+
+describe("generateSymbolSemantics", () => {
+  it("把带绝对行号的源码交给模型，并缓存校验过的步骤行号", async () => {
+    const repo = tempDir("repolens-symbol-repo-");
+    const configHome = tempDir("repolens-symbol-config-");
+    mkdirSync(join(repo, "src"));
+    // 中文让 tree-sitter 的字符串下标与 UTF-8 字节错开，按字节切片会取错源码
+    const source = "// 头部注释\n\nexport function run(input) {\n  if (!input) return null;\n  return input.trim();\n}\n";
+    writeFileSync(join(repo, "src/run.ts"), source);
+    mkdirSync(join(configHome, "repolens"));
+    writeFileSync(join(configHome, "repolens/config.json"), JSON.stringify({
+      llm: { baseUrl: "http://llm.test/v1", model: "test-model", apiKeyEnv: "REPOLENS_SYMBOL_TEST_KEY", maxRetries: 0 },
+    }));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    vi.stubEnv("REPOLENS_SYMBOL_TEST_KEY", "test-secret");
+
+    db = openDb(join(repo, "index.db"));
+    const fileId = Number(db.prepare(
+      `INSERT INTO files (path, dir_path, name, language, role, loc, bytes, hash)
+       VALUES ('src/run.ts', 'src', 'run.ts', 'typescript', 'source', 6, ?, 'file-hash')`,
+    ).run(Buffer.byteLength(source)).lastInsertRowid);
+    const startByte = source.indexOf("export");
+    const symbolId = Number(db.prepare(
+      `INSERT INTO symbols (file_id, name, kind, exported, start_line, end_line, start_byte, end_byte, hash)
+       VALUES (?, 'run', 'function', 1, 3, 6, ?, ?, 'sym-hash')`,
+    ).run(fileId, startByte, source.lastIndexOf("}") + 1).lastInsertRowid);
+
+    let sentSource = "";
+    vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      sentSource = (JSON.parse(body.messages.find((m) => m.role === "user")?.content ?? "{}") as {
+        symbol: { source: string };
+      }).symbol.source;
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: { purpose: "清理输入。", keyConcepts: [], workflow: [], notes: [] },
+              shortSummary: "清理输入字符串。",
+              pseudocode: [
+                { step: "输入为空时返回 null", lines: [4, 4] },
+                { step: "返回去掉首尾空白的输入", lines: [5, 99], details: [{ text: "越界行", lines: [40, 41] }] },
+              ],
+            }),
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const result = await generateSymbolSemantics(db, repo, symbolId);
+    expect(sentSource.split("\n")[0]).toBe("3| export function run(input) {");
+    expect(sentSource.split("\n").at(-1)).toBe("6| }");
+    const expectedSteps = [
+      { text: "输入为空时返回 null", lines: [4, 4], children: [] },
+      { text: "返回去掉首尾空白的输入", lines: [5, 6], children: [{ text: "越界行", lines: null, children: [] }] },
+    ];
+    expect(result).toMatchObject({
+      generated: true,
+      pseudocode: "1. 输入为空时返回 null\n2. 返回去掉首尾空白的输入\n  - 越界行",
+      pseudocodeSteps: expectedSteps,
+    });
+    expect(getSymbolDetail(db, symbolId)?.pseudocodeSteps).toEqual(expectedSteps);
+    await expect(generateSymbolSemantics(db, repo, symbolId)).resolves.toMatchObject({
+      cacheHit: true, pseudocodeSteps: expectedSteps,
     });
   });
 });

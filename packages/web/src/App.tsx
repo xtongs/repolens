@@ -7,6 +7,16 @@ import { TreePanel } from "./layout/TreePanel";
 import { CommandPalette } from "./overlays/CommandPalette";
 import { HelpSheet } from "./overlays/HelpSheet";
 import { useAppStore } from "./store/useAppStore";
+import { useChatStore } from "./store/useChatStore";
+
+/** ⌘I：对话没开就打开并聚焦；开着但焦点不在输入框就拉回焦点；已在输入框里则收起 */
+function toggleChat(): void {
+  const { chatOpen, setChatOpen } = useAppStore.getState();
+  const typing = document.activeElement instanceof HTMLTextAreaElement &&
+    document.activeElement.closest("aside") !== null;
+  if (chatOpen && typing) setChatOpen(false);
+  else useChatStore.getState().open();
+}
 
 export function App() {
   const boot = useAppStore((s) => s.boot);
@@ -23,6 +33,8 @@ export function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // 输入法组字时的 Esc 是取消候选词，不是退出
+      if (event.isComposing) return;
       if (event.key === "Escape") {
         escape();
         return;
@@ -30,6 +42,10 @@ export function App() {
       if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         setPaletteOpen(true);
+      }
+      if (event.key.toLowerCase() === "i" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        toggleChat();
       }
     };
     window.addEventListener("keydown", onKey);

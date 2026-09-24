@@ -21,6 +21,7 @@ import type {
   NodeMetrics,
   OverviewDto,
   ParamDto,
+  PseudocodeStepDto,
   RelationDto,
   ScanStats,
   SearchHitDto,
@@ -33,7 +34,12 @@ import type {
 } from "../types.js";
 import { getMeta, getMetaJson, type Db } from "./database.js";
 import { readLlmStatus, semanticLanguage } from "../llm/cache.js";
-import { normalizeSemanticContent, type SemanticTextFlavor } from "../llm/format.js";
+import {
+  normalizeSemanticContent,
+  parsePseudocodeSteps,
+  parsePseudocodeText,
+  type SemanticTextFlavor,
+} from "../llm/format.js";
 
 export const EXTERNAL_NODE_ID = "external";
 
@@ -1260,7 +1266,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
     ).map((row) => ({ id: `file:${row.id}`, path: row.path })),
     summary: readSummary(db, "file", file.path, "summary-v2", file.hash),
     shortSummary: readSummary(db, "file", file.path, "tooltip-summary", file.hash),
-    pseudocode: readSummary(db, "file", file.path, "pseudocode", file.hash),
+    ...readPseudocode(db, "file", file.path, file.hash),
   };
 }
 
@@ -1389,7 +1395,7 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
     })),
     summary: readSummary(db, "symbol", summaryKey, "summary-v2", row["hash"] as string),
     shortSummary: readSummary(db, "symbol", summaryKey, "tooltip-summary", row["hash"] as string),
-    pseudocode: readSummary(db, "symbol", summaryKey, "pseudocode", row["hash"] as string),
+    ...readPseudocode(db, "symbol", summaryKey, row["hash"] as string),
   };
 }
 
@@ -1511,6 +1517,30 @@ function readSummary(
   const lang = semanticLanguage(db);
   const content = normalizeSemanticContent(row.content, flavor, lang === "en" ? "en" : "zh");
   return content === "" ? null : content;
+}
+
+/** 旧缓存只有文本，没有行号映射时退化为不带 lines 的步骤。 */
+function readPseudocode(
+  db: Db,
+  targetKind: "file" | "symbol",
+  targetKey: string,
+  sourceHash: string,
+): { pseudocode: string | null; pseudocodeSteps: PseudocodeStepDto[] | null } {
+  const pseudocode = readSummary(db, targetKind, targetKey, "pseudocode", sourceHash);
+  if (pseudocode === null) return { pseudocode: null, pseudocodeSteps: null };
+  const mapped = readSummary(db, targetKind, targetKey, "pseudocode-map", sourceHash);
+  return {
+    pseudocode,
+    pseudocodeSteps: (mapped ? parsePseudocodeSteps(mapped) : null) ?? parsePseudocodeText(pseudocode),
+  };
+}
+
+/** 包、目录或仓库根自身的扫描期摘要；其他节点返回 null。 */
+export function getScopeSummary(db: Db, nodeId: string): string | null {
+  if (nodeId === ROOT_SCOPE) return readSummary(db, "repo", ".");
+  if (nodeId.startsWith("pkg:")) return readSummary(db, "package", nodeId.slice(4));
+  if (nodeId.startsWith("dir:")) return readSummary(db, "directory", nodeId.slice(4));
+  return null;
 }
 
 /** 给图节点挂上扫描期摘要与架构层；结构事实不依赖这些字段。 */

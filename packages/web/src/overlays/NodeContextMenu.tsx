@@ -1,6 +1,7 @@
 import type { GraphNodeDto } from "@repolens/core/types";
 import { useEffect, useRef } from "react";
 import { useAppStore } from "../store/useAppStore";
+import { canAttachNode, nodeAttachment, useChatStore } from "../store/useChatStore";
 
 export interface ContextMenuState {
   node: GraphNodeDto;
@@ -72,6 +73,11 @@ export function NodeContextMenu({ state, onClose }: { state: ContextMenuState; o
       label: "查看详情",
       hint: "单击",
       run: () => store.select(node.id),
+    },
+    {
+      label: "加入 AI 对话",
+      disabled: !canAttachNode(node.id),
+      run: () => useChatStore.getState().attach(nodeAttachment(node.id, node.label)),
     },
     {
       label: "复制路径",

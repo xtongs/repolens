@@ -9,6 +9,7 @@ export type SemanticFlavor =
   | "summary-v2"
   | "tooltip-summary"
   | "pseudocode"
+  | "pseudocode-map"
   | "narrative";
 
 export interface CachedSemantic {

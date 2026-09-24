@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { normalizePseudocode, normalizeSummary } from "./format.js";
+import {
+  normalizePseudocode,
+  normalizePseudocodeSteps,
+  normalizeSummary,
+  numberSourceLines,
+  parsePseudocodeSteps,
+  parsePseudocodeText,
+  pseudocodeStepsToText,
+} from "./format.js";
 
 describe("AI semantic formatting", () => {
   it("把二次转义的换行恢复为真实摘要段落", () => {
@@ -50,5 +58,65 @@ describe("AI semantic formatting", () => {
     ], 8_000)).toBe(
       "1. 读取配置\n  - 文件不存在时使用默认值\n2. 返回结果",
     );
+  });
+});
+
+describe("pseudocode source mapping", () => {
+  const bounds = { from: 10, to: 30 };
+
+  it("校验行号：交换颠倒区间、收进越界部分、丢弃完全越界的范围", () => {
+    expect(normalizePseudocodeSteps([
+      { step: "读取配置", lines: [14, 11], details: [{ text: "缺省时回退", lines: "L12-13" }] },
+      { step: "越界收拢", lines: [28, 99] },
+      { step: "完全越界", lines: [40, 50] },
+      { step: "1. 编号前缀会被去掉", lines: [20] },
+    ], bounds)).toEqual([
+      { text: "读取配置", lines: [11, 14], children: [{ text: "缺省时回退", lines: [12, 13], children: [] }] },
+      { text: "越界收拢", lines: [28, 30], children: [] },
+      { text: "完全越界", lines: null, children: [] },
+      { text: "编号前缀会被去掉", lines: [20, 20], children: [] },
+    ]);
+  });
+
+  it("父步骤缺行号时用子步骤并集补上，字符串子步骤没有行号", () => {
+    const [step] = normalizePseudocodeSteps([
+      { step: "处理请求", details: [{ text: "解析", lines: [12, 14] }, { text: "校验", lines: [18, 21] }, "返回"] },
+    ], bounds) ?? [];
+    expect(step?.lines).toEqual([12, 21]);
+    expect(step?.children.map((child) => child.lines)).toEqual([[12, 14], [18, 21], null]);
+  });
+
+  it("按总行数截断，文本形式与旧格式一致", () => {
+    const steps = normalizePseudocodeSteps([
+      { step: "一", details: ["a", "b"] },
+      { step: "二", details: ["c"] },
+    ], bounds, 4);
+    expect(steps && pseudocodeStepsToText(steps)).toBe("1. 一\n  - a\n  - b\n2. 二");
+  });
+
+  it("模型只返回字符串时退化为没有行号的步骤", () => {
+    expect(normalizePseudocodeSteps("读取\n  解析\n返回", bounds)).toEqual([
+      { text: "读取", lines: null, children: [{ text: "解析", lines: null, children: [] }] },
+      { text: "返回", lines: null, children: [] },
+    ]);
+  });
+
+  it("旧缓存文本与 JSON 映射都能读回", () => {
+    expect(parsePseudocodeText("1. 读取\n  - 解析\n2. 返回")).toEqual([
+      { text: "读取", lines: null, children: [{ text: "解析", lines: null, children: [] }] },
+      { text: "返回", lines: null, children: [] },
+    ]);
+    expect(parsePseudocodeSteps(JSON.stringify([
+      { text: "读取", lines: [3, 5], children: [{ text: "解析", lines: [9, 4] }] },
+      { lines: [1, 2] },
+    ]))).toEqual([
+      { text: "读取", lines: [3, 5], children: [{ text: "解析", lines: null, children: [] }] },
+    ]);
+    expect(parsePseudocodeSteps("not json")).toBeNull();
+  });
+
+  it("给源码加绝对行号并在整行处截断", () => {
+    expect(numberSourceLines("a\nb\nc\n", 41, 1_000)).toBe("41| a\n42| b\n43| c");
+    expect(numberSourceLines("aaaa\nbbbb\ncccc", 1, 16)).toBe("1| aaaa\n2| bbbb");
   });
 });

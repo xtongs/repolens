@@ -1,18 +1,35 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LlmConfig, LlmRunStats, SemanticResultDto, TraceNarrativeDto, TraceNarrativeResultDto } from "../types.js";
+import type {
+  LlmConfig,
+  LlmRunStats,
+  PseudocodeStepDto,
+  SemanticResultDto,
+  TraceNarrativeDto,
+  TraceNarrativeResultDto,
+} from "../types.js";
 import { loadConfig } from "../config.js";
 import { getMeta, setMeta, type Db, transact } from "../db/database.js";
 import { symbolKey } from "../db/queries.js";
 import { getTrace } from "../db/traces.js";
 import { addUsage, emptyUsage, LlmUnavailableError, OpenAiCompatibleClient } from "./client.js";
-import { cleanSingleLine, cleanText, normalizePseudocode, normalizeSummary } from "./format.js";
+import {
+  cleanSingleLine,
+  cleanText,
+  normalizePseudocodeSteps,
+  normalizeSummary,
+  numberSourceLines,
+  parsePseudocodeSteps,
+  parsePseudocodeText,
+  pseudocodeStepsToText,
+} from "./format.js";
 import {
   getCachedSemantic,
   invalidateCachedSemantic,
   mergeLlmStatusUsage,
   putCachedSemantic,
+  type SemanticTargetKind,
 } from "./cache.js";
 
 interface SemanticTarget {
@@ -245,15 +262,15 @@ async function generateSymbolSemanticsInner(
   const config = loadConfig(root).llm;
   const row = db
     .prepare(
-      `SELECT s.name, s.kind, s.container, s.signature, s.doc, s.hash, s.start_byte AS startByte,
-              s.end_byte AS endByte, s.start_line AS startLine, s.end_line AS endLine,
+      `SELECT s.name, s.kind, s.container, s.signature, s.doc, s.hash,
+              s.start_line AS startLine, s.end_line AS endLine,
               f.path AS filePath, f.language
        FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`,
     )
     .get(symbolId) as
     | {
         name: string; kind: string; container: string | null; signature: string | null;
-        doc: string | null; hash: string; startByte: number; endByte: number;
+        doc: string | null; hash: string;
         startLine: number; endLine: number; filePath: string; language: string;
       }
     | undefined;
@@ -276,6 +293,9 @@ async function generateSymbolSemanticsInner(
       summary: summary.content,
       shortSummary: shortSummary.content,
       pseudocode: pseudocode.content,
+      pseudocodeSteps: cachedPseudocodeSteps(
+        db, "symbol", targetKey, lang, row.hash, requestConfig.model, pseudocode.content,
+      ),
       generated: false,
       cacheHit: true,
       model: summary.model,
@@ -284,7 +304,9 @@ async function generateSymbolSemanticsInner(
   }
 
   const client = new OpenAiCompatibleClient(requestConfig);
-  const source = readSymbolSource(root, row.filePath, row.startByte, row.endByte);
+  const source = numberSourceLines(
+    readSymbolSource(root, row.filePath, row.startLine, row.endLine), row.startLine, 48_000,
+  );
   const relations = symbolRelations(db, symbolId);
   const result = await client.completeJson<SymbolSemanticResponse>(
     symbolSystem(config.outputLanguage),
@@ -302,14 +324,17 @@ async function generateSymbolSemanticsInner(
         source,
       },
     }),
-    { maxOutputTokens: 1_000 },
+    { maxOutputTokens: 1_200 },
   );
   const generatedSummary = normalizeSummary(result.data.summary, 2_000, config.outputLanguage);
   const generatedShortSummary = cleanSingleLine(result.data.shortSummary, 240);
-  const generatedPseudocode = normalizePseudocode(result.data.pseudocode, 8_000, 12);
-  if (generatedSummary === null || generatedShortSummary === null || generatedPseudocode === null) {
+  const generatedSteps = normalizePseudocodeSteps(
+    result.data.pseudocode, { from: row.startLine, to: row.endLine }, 12,
+  );
+  if (generatedSummary === null || generatedShortSummary === null || generatedSteps === null) {
     throw new Error("LLM 返回缺少 summary、shortSummary 或 pseudocode");
   }
+  const generatedPseudocode = pseudocodeStepsToText(generatedSteps).slice(0, 8_000);
 
   transact(db, () => {
     invalidateCachedSemantic(db, "symbol", targetKey, row.hash);
@@ -317,6 +342,7 @@ async function generateSymbolSemanticsInner(
       ["summary-v2", generatedSummary],
       ["tooltip-summary", generatedShortSummary],
       ["pseudocode", generatedPseudocode],
+      ["pseudocode-map", JSON.stringify(generatedSteps)],
     ] as const) {
       putCachedSemantic(db, {
         targetKind: "symbol",
@@ -342,6 +368,7 @@ async function generateSymbolSemanticsInner(
     summary: generatedSummary,
     shortSummary: generatedShortSummary,
     pseudocode: generatedPseudocode,
+    pseudocodeSteps: generatedSteps,
     generated: true,
     cacheHit: false,
     model: requestConfig.model,
@@ -465,6 +492,10 @@ async function generateFileSummaryInner(
   if (!force && summary && shortSummary && pseudocode) {
     return {
       summary: summary.content, shortSummary: shortSummary.content, pseudocode: pseudocode.content,
+      pseudocodeSteps: cachedPseudocodeSteps(
+        db, "file", row.path, config.outputLanguage, row.hash,
+        interactiveConfig(config).model, pseudocode.content,
+      ),
       generated: false, cacheHit: true, model: summary.model, usage: emptyUsage(),
     };
   }
@@ -489,7 +520,7 @@ async function generateFileSummaryInner(
      WHERE e.type = 'calls' AND caller.file_id = ? AND callee.file_id = ?
      ORDER BY e.line LIMIT 160`,
   ).all(fileId, fileId);
-  const source = fileContent.slice(0, 24_000);
+  const source = numberSourceLines(fileContent, 1, 28_000);
   const result = await client.completeJson<FileSemanticResponse>(
     fileSystem(config.outputLanguage),
     JSON.stringify({ file: { path: row.path, language: row.language, symbols, imports, calls, source } }),
@@ -497,16 +528,20 @@ async function generateFileSummaryInner(
   );
   const generatedSummary = normalizeSummary(result.data.summary, 2_000, config.outputLanguage);
   const generatedShortSummary = cleanSingleLine(result.data.shortSummary, 240);
-  const generatedPseudocode = normalizePseudocode(result.data.pseudocode, 12_000, 24);
-  if (generatedSummary === null || generatedShortSummary === null || generatedPseudocode === null) {
+  const generatedSteps = normalizePseudocodeSteps(
+    result.data.pseudocode, { from: 1, to: fileContent.split("\n").length }, 24,
+  );
+  if (generatedSummary === null || generatedShortSummary === null || generatedSteps === null) {
     throw new Error("LLM 返回缺少 summary、shortSummary 或 pseudocode");
   }
+  const generatedPseudocode = pseudocodeStepsToText(generatedSteps).slice(0, 12_000);
   transact(db, () => {
     invalidateCachedSemantic(db, "file", row.path, row.hash);
     for (const [flavor, content] of [
       ["summary-v2", generatedSummary],
       ["tooltip-summary", generatedShortSummary],
       ["pseudocode", generatedPseudocode],
+      ["pseudocode-map", JSON.stringify(generatedSteps)],
     ] as const) {
       putCachedSemantic(db, {
         targetKind: "file", targetKey: row.path, flavor, lang: config.outputLanguage,
@@ -520,8 +555,22 @@ async function generateFileSummaryInner(
   });
   return {
     summary: generatedSummary, shortSummary: generatedShortSummary, pseudocode: generatedPseudocode,
+    pseudocodeSteps: generatedSteps,
     generated: true, cacheHit: false, model: requestConfig.model, usage: result.usage,
   };
+}
+
+function cachedPseudocodeSteps(
+  db: Db,
+  targetKind: SemanticTargetKind,
+  targetKey: string,
+  lang: string,
+  sourceHash: string,
+  model: string,
+  text: string,
+): PseudocodeStepDto[] | null {
+  const mapped = getCachedSemantic(db, targetKind, targetKey, "pseudocode-map", lang, sourceHash, model);
+  return (mapped ? parsePseudocodeSteps(mapped.content) : null) ?? parsePseudocodeText(text);
 }
 
 function semanticTargets(db: Db): SemanticTarget[] {
@@ -617,10 +666,14 @@ function symbolRelations(db: Db, symbolId: number): { callers: string[]; callees
   return { callers: query("callers"), callees: query("callees") };
 }
 
-function readSymbolSource(root: string, path: string, startByte: number, endByte: number): string {
+/**
+ * 按行号取整行，而不是按 start_byte 切片：那两列来自 web-tree-sitter 的
+ * startIndex，是解析文本上的 JS 字符串下标，不是 UTF-8 字节；Vue/Svelte
+ * 还是遮罩后的虚拟文本。只有行号在任何文件里都可靠。
+ */
+function readSymbolSource(root: string, path: string, startLine: number, endLine: number): string {
   try {
-    const bytes = readFileSync(join(root, path));
-    return bytes.subarray(startByte, Math.min(endByte, startByte + 40_000)).toString("utf8");
+    return readFileSync(join(root, path), "utf8").split("\n").slice(startLine - 1, endLine).join("\n");
   } catch {
     return "";
   }
@@ -758,7 +811,11 @@ function semanticJsonContract(): string {
     `{"summary":{"purpose":"用途","keyConcepts":["术语（解释）"],` +
     `"workflow":["步骤"],"notes":["提示"]},` +
     `"shortSummary":"一句话用途",` +
-    `"pseudocode":[{"step":"顶层步骤","details":["子步骤"]}]}。` +
+    `"pseudocode":[{"step":"顶层步骤","lines":[起始行,结束行],` +
+    `"details":[{"text":"子步骤","lines":[起始行,结束行]}]}]}。` +
+    `source 每行开头的「行号| 」是该行在文件中的绝对行号，不属于代码本身；` +
+    `lines 用这些行号标出该步骤对应源码的起止行（闭区间），子步骤的范围应落在所属步骤之内；` +
+    `无法对应到具体代码时省略 lines，不要猜测。` +
     `数组顺序必须遵循源码组织或执行顺序；没有内容时返回空数组，不得更换字段名。`;
 }
 

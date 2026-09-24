@@ -1,34 +1,52 @@
 import type {
   FileDetailDto,
-  SourceSliceDto,
+  PseudocodeStepDto,
   SymbolDetailDto,
 } from "@repolens/core/types";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { ChatDock } from "../chat/ChatDock";
+import { SelectionAsk } from "../chat/SelectionAsk";
+import { PseudocodePanel, stepMarkerWidth, type StepQuote } from "../code/PseudocodePanel";
+import { SourcePanel, type SourceFocus } from "../code/SourcePanel";
 import { formatCount, languageColor, symbolGlyph } from "../lib/visual";
 import { useAppStore } from "../store/useAppStore";
+import { useChatStore } from "../store/useChatStore";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 
-type Tab = "overview" | "params" | "source" | "relations";
+type Tab = "overview" | "params" | "pseudocode" | "source" | "relations";
 
 const TAB_LABELS: Record<Tab, string> = {
   overview: "概览",
   params: "传参",
+  pseudocode: "伪代码",
   source: "源码",
   relations: "关系",
 };
 
+/** 标签页之间的跳转：伪代码步骤「在源码中定位」、概览里「查看伪代码」 */
+interface TabNavigation {
+  tab: Tab;
+  setTab: (tab: Tab) => void;
+  sourceFocus: SourceFocus | null;
+  jumpToSource: (lines: [number, number]) => void;
+}
+
 /**
- * 右侧详情抽屉。
+ * 右侧栏：上方是详情，底部停靠追问 AI。
  *
  * 分标签页是「隐藏」策略的直接落地：默认只加载概览，源码和关系
- * 这类重查询等到用户点开对应标签才发请求。
+ * 这类重查询等到用户点开对应标签才发请求。没有选中项但对话开着时，
+ * 对话独占整个侧栏。
  */
 export function DetailDrawer() {
   const open = useAppStore((s) => s.drawerOpen);
   const selected = useAppStore((s) => s.selected);
+  const chatOpen = useAppStore((s) => s.chatOpen);
   const setDrawerOpen = useAppStore((s) => s.setDrawerOpen);
   const [tab, setTab] = useState<Tab>("overview");
+  const [sourceFocus, setSourceFocus] = useState<SourceFocus | null>(null);
+  const [content, setContent] = useState<HTMLDivElement | null>(null);
   const resize = useResizablePanel({
     side: "right",
     storageKey: "repolens:right-panel-width",
@@ -39,17 +57,29 @@ export function DetailDrawer() {
 
   useEffect(() => {
     setTab("overview");
+    setSourceFocus(null);
   }, [selected]);
 
-  if (!open || selected === null) return null;
+  const detailVisible = open && selected !== null;
+  if (!detailVisible && !chatOpen) return null;
 
-  const isSymbol = selected.startsWith("sym:");
-  const isFile = selected.startsWith("file:");
+  const isSymbol = selected?.startsWith("sym:") ?? false;
+  const isFile = selected?.startsWith("file:") ?? false;
   const availableTabs: Tab[] = isSymbol
-    ? ["overview", "params", "source", "relations"]
+    ? ["overview", "params", "pseudocode", "source", "relations"]
     : isFile
-      ? ["overview", "source", "relations"]
+      ? ["overview", "pseudocode", "source", "relations"]
       : ["overview"];
+
+  const navigation: TabNavigation = {
+    tab,
+    setTab,
+    sourceFocus,
+    jumpToSource: (lines) => {
+      setSourceFocus((current) => ({ lines, nonce: (current?.nonce ?? 0) + 1 }));
+      setTab("source");
+    },
+  };
 
   return (
     <aside
@@ -66,44 +96,66 @@ export function DetailDrawer() {
         onKeyDown={resize.onKeyDown}
         onReset={resize.reset}
       />
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--color-line)] pl-3 pr-2">
-        {availableTabs.map((key) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setTab(key)}
-            className={`rounded px-2 py-1 text-[11.5px] transition-colors ${
-              tab === key
-                ? "bg-[var(--color-surface-3)] text-[var(--color-ink)]"
-                : "text-[var(--color-ink-faint)] hover:text-[var(--color-ink-muted)]"
-            }`}
-          >
-            {TAB_LABELS[key]}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={() => setDrawerOpen(false)}
-          className="ml-auto px-1 text-[13px] text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
-        >
-          ×
-        </button>
-      </div>
+      {detailVisible && selected !== null && (
+        <>
+          <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--color-line)] pl-3 pr-2">
+            {availableTabs.map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key)}
+                className={`rounded px-2 py-1 text-[11.5px] transition-colors ${
+                  tab === key
+                    ? "bg-[var(--color-surface-3)] text-[var(--color-ink)]"
+                    : "text-[var(--color-ink-faint)] hover:text-[var(--color-ink-muted)]"
+                }`}
+              >
+                {TAB_LABELS[key]}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(false)}
+              aria-label="关闭详情"
+              className="ml-auto px-1 text-[13px] text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
+            >
+              ×
+            </button>
+          </div>
 
-      <div className="thin-scroll flex-1 overflow-y-auto">
-        {isSymbol && <SymbolBody key={selected} id={selected} tab={tab} />}
-        {isFile && <FileBody key={selected} id={selected} tab={tab} />}
-        {!isSymbol && !isFile && <ScopeBody id={selected} />}
-      </div>
+          <div ref={setContent} className="thin-scroll min-h-0 flex-1 overflow-y-auto">
+            {isSymbol && <SymbolBody key={selected} id={selected} navigation={navigation} />}
+            {isFile && <FileBody key={selected} id={selected} navigation={navigation} />}
+            {!isSymbol && !isFile && <ScopeBody id={selected} />}
+          </div>
+          <SelectionAsk container={content} nodeId={selected} />
+        </>
+      )}
+      <ChatDock detailVisible={detailVisible} />
     </aside>
   );
+}
+
+/** 把一步伪代码作为引用加进对话；带行号时指向源文件，服务端会附上那几行原文 */
+function askAboutStep(quote: StepQuote, fileId: string, nodeId: string): void {
+  const lines = quote.lines;
+  useChatStore.getState().attach({
+    key: `step:${nodeId}:${quote.text}`,
+    kind: "quote",
+    text: quote.text,
+    nodeId: lines ? fileId : nodeId,
+    lines,
+    label: `${lines ? `L${lines[0]}${lines[1] === lines[0] ? "" : `–${lines[1]}`} · ` : ""}${quote.text.replace(/^步骤 /, "#").slice(0, 18)}`,
+  });
 }
 
 // ---------------------------------------------------------------------------
 // 符号
 // ---------------------------------------------------------------------------
 
-function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
+function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation }) {
+  const { tab } = navigation;
+  const rememberLabel = useChatStore((s) => s.rememberLabel);
   const [detail, setDetail] = useState<SymbolDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [semanticLoading, setSemanticLoading] = useState(false);
@@ -117,12 +169,16 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
     setSemanticError(null);
     void api
       .symbol(id)
-      .then((d) => !cancelled && setDetail(d))
+      .then((d) => {
+        if (cancelled) return;
+        setDetail(d);
+        rememberLabel(d.id, d.container ? `${d.container}.${d.name}` : d.name);
+      })
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, rememberLabel]);
 
   const generateSemantics = (refresh = false) => {
     if (semanticLoading) return;
@@ -135,7 +191,7 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
           current?.id === id
             ? {
                 ...current, summary: result.summary, shortSummary: result.shortSummary ?? null,
-                pseudocode: result.pseudocode ?? null,
+                pseudocode: result.pseudocode ?? null, pseudocodeSteps: result.pseudocodeSteps ?? null,
               }
             : current,
         );
@@ -144,10 +200,10 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
       .finally(() => setSemanticLoading(false));
   };
 
-  // 摘要与伪代码已经合并在概览中：第一次打开概览时一起补齐，之后读缓存。
+  // 摘要和伪代码是同一次生成：打开概览或伪代码标签时一起补齐，之后读缓存。
   useEffect(() => {
     if (
-      tab !== "overview" || detail === null ||
+      (tab !== "overview" && tab !== "pseudocode") || detail === null ||
       (detail.summary && detail.shortSummary && detail.pseudocode) ||
       semanticLoading || semanticError
     ) return;
@@ -156,6 +212,23 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
 
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
+
+  if (tab === "pseudocode") {
+    return (
+      <PseudocodePanel
+        steps={detail.pseudocodeSteps ?? null}
+        fileId={detail.fileId}
+        from={detail.startLine}
+        to={detail.endLine}
+        loading={semanticLoading}
+        error={semanticError}
+        loadingLabel="正在理解这个符号并生成伪代码…"
+        onGenerate={generateSemantics}
+        onJumpToSource={navigation.jumpToSource}
+        onAsk={(quote) => askAboutStep(quote, detail.fileId, detail.id)}
+      />
+    );
+  }
 
   if (tab === "params") {
     return (
@@ -204,7 +277,15 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
   }
 
   if (tab === "source") {
-    return <SourceView fileId={detail.fileId} from={detail.startLine} to={detail.endLine} />;
+    return (
+      <SourcePanel
+        fileId={detail.fileId}
+        from={detail.startLine}
+        to={detail.endLine}
+        steps={detail.pseudocodeSteps}
+        focus={navigation.sourceFocus}
+      />
+    );
   }
 
   if (tab === "relations") {
@@ -285,13 +366,10 @@ function SymbolBody({ id, tab }: { id: string; tab: Tab }) {
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
-          <PseudocodeSection
-            value={detail.pseudocode ?? null}
-            loading={semanticLoading}
-            error={semanticError}
-            onRetry={generateSemantics}
-            loadingLabel="正在理解这个符号并生成伪代码…"
-          />
+          {semanticError && (
+            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
+          )}
+          <PseudocodeLink steps={detail.pseudocodeSteps} onOpen={() => navigation.setTab("pseudocode")} />
         </div>
       ) : semanticLoading ? (
         <SemanticLoading label="正在生成函数摘要与伪代码…" />
@@ -430,8 +508,10 @@ function ConfidenceBadge({ value }: { value: string }) {
 // 文件
 // ---------------------------------------------------------------------------
 
-function FileBody({ id, tab }: { id: string; tab: Tab }) {
+function FileBody({ id, navigation }: { id: string; navigation: TabNavigation }) {
+  const { tab } = navigation;
   const select = useAppStore((s) => s.select);
+  const rememberLabel = useChatStore((s) => s.rememberLabel);
   const [detail, setDetail] = useState<FileDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [semanticLoading, setSemanticLoading] = useState(false);
@@ -447,12 +527,16 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
     setSemanticSkipReason(null);
     void api
       .file(id)
-      .then((d) => !cancelled && setDetail(d))
+      .then((d) => {
+        if (cancelled) return;
+        setDetail(d);
+        rememberLabel(d.id, d.path.split("/").at(-1) ?? d.path);
+      })
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, rememberLabel]);
 
   const generateSummary = (refresh = false) => {
     if (semanticLoading) return;
@@ -465,7 +549,7 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
         setDetail((current) => (current?.id === id
           ? {
               ...current, summary: result.summary, shortSummary: result.shortSummary ?? null,
-              pseudocode: result.pseudocode ?? null,
+              pseudocode: result.pseudocode ?? null, pseudocodeSteps: result.pseudocodeSteps ?? null,
             }
           : current));
       })
@@ -487,7 +571,27 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
 
-  if (tab === "source") return <SourceView fileId={detail.id} />;
+  const empty = detail.bytes === 0 || semanticSkipReason === "empty-file";
+
+  if (tab === "pseudocode") {
+    if (empty) return <Empty>空文件，没有可生成的伪代码</Empty>;
+    return (
+      <PseudocodePanel
+        steps={detail.pseudocodeSteps ?? null}
+        fileId={detail.id}
+        loading={semanticLoading}
+        error={semanticError}
+        loadingLabel="正在分析文件内函数与整体逻辑…"
+        onGenerate={generateSummary}
+        onJumpToSource={navigation.jumpToSource}
+        onAsk={(quote) => askAboutStep(quote, detail.id, detail.id)}
+      />
+    );
+  }
+
+  if (tab === "source") {
+    return <SourcePanel fileId={detail.id} steps={detail.pseudocodeSteps} focus={navigation.sourceFocus} />;
+  }
 
   if (tab === "relations") {
     return (
@@ -551,7 +655,7 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
         </div>
       )}
 
-      {detail.bytes === 0 || semanticSkipReason === "empty-file" ? (
+      {empty ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11.5px] text-[var(--color-ink-faint)]">
           空文件，没有可生成的内容
         </div>
@@ -564,13 +668,10 @@ function FileBody({ id, tab }: { id: string; tab: Tab }) {
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
-          <PseudocodeSection
-            value={detail.pseudocode ?? null}
-            loading={semanticLoading}
-            error={semanticError}
-            onRetry={generateSummary}
-            loadingLabel="正在分析文件内函数与整体逻辑…"
-          />
+          {semanticError && (
+            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
+          )}
+          <PseudocodeLink steps={detail.pseudocodeSteps} onOpen={() => navigation.setTab("pseudocode")} />
         </div>
       ) : semanticLoading || !semanticError ? (
         <SemanticLoading label="正在生成文件摘要与伪代码…" />
@@ -677,47 +778,6 @@ function ScopeBody({ id }: { id: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// 源码
-// ---------------------------------------------------------------------------
-
-function SourceView({ fileId, from, to }: { fileId: string; from?: number; to?: number }) {
-  const [slice, setSlice] = useState<SourceSliceDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setSlice(null);
-    void api
-      .source(fileId, from, to)
-      .then((s) => !cancelled && setSlice(s))
-      .catch((e: Error) => !cancelled && setError(e.message));
-    return () => {
-      cancelled = true;
-    };
-  }, [fileId, from, to]);
-
-  if (error) return <Empty>{error}</Empty>;
-  if (!slice) return <Skeleton />;
-
-  const lines = slice.code.split("\n");
-
-  return (
-    <div className="thin-scroll overflow-x-auto p-3">
-      <pre className="mono text-[11px] leading-[1.55]">
-        {lines.map((line, i) => (
-          <div key={i} className="flex">
-            <span className="w-10 shrink-0 select-none pr-2 text-right text-[var(--color-ink-faint)]">
-              {slice.startLine + i}
-            </span>
-            <span className="whitespace-pre text-[var(--color-ink-muted)]">{line || " "}</span>
-          </div>
-        ))}
-      </pre>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // 小组件
 // ---------------------------------------------------------------------------
 
@@ -772,43 +832,33 @@ function SemanticLoading({ label }: { label: string }) {
   );
 }
 
-/** AI 摘要和伪代码属于同一次生成结果，在概览中上下连续展示。 */
-function PseudocodeSection({
-  value,
-  loading,
-  error,
-  onRetry,
-  loadingLabel,
-}: {
-  value: string | null;
-  loading: boolean;
-  error: string | null;
-  onRetry: () => void;
-  loadingLabel: string;
-}) {
+/** 伪代码有了独立标签页，概览里只留一行入口，列出前两步让人知道值不值得点开 */
+/** 概览里只列顶层步骤、每步一行，当作提纲；子步骤和源码对应留给伪代码标签。 */
+function PseudocodeLink({ steps, onOpen }: { steps: PseudocodeStepDto[] | null | undefined; onOpen: () => void }) {
+  if (!steps || steps.length === 0) return null;
+  const markerWidth = stepMarkerWidth(steps.length);
   return (
-    <div className="mt-3 border-t border-[var(--color-accent)]/20 pt-2.5">
-      <Label ai>伪代码</Label>
-      {value ? (
-        <>
-          <pre className="mono mt-1.5 whitespace-pre-wrap rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
-            {value}
-          </pre>
-          {error && (
-            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{error}</div>
-          )}
-        </>
-      ) : loading ? (
-        <SemanticLoading label={loadingLabel} />
-      ) : error ? (
-        <div>
-          <div className="mt-2 text-[11px] text-[var(--color-warn)]">{error}</div>
-          <RetryButton onClick={onRetry}>重试</RetryButton>
-        </div>
-      ) : (
-        <div className="mt-1.5 text-[11px] text-[var(--color-ink-faint)]">尚未生成伪代码</div>
-      )}
-    </div>
+    <button
+      type="button"
+      onClick={onOpen}
+      title="查看完整伪代码"
+      className="group mt-2.5 block w-full border-t border-[var(--color-accent)]/20 pt-2 text-left"
+    >
+      <span className="flex items-baseline">
+        <span className="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">伪代码 {steps.length} 步</span>
+        <span className="ml-auto text-[11px] text-[var(--color-ink-faint)] group-hover:text-[var(--color-accent)]">→</span>
+      </span>
+      <span className="mt-1 block space-y-0.5">
+        {steps.map((step, index) => (
+          <span key={index} className="flex items-baseline gap-1.5">
+            <span className={`mono ${markerWidth} shrink-0 text-[10.5px] tabular-nums text-[var(--color-accent)]`}>
+              {index + 1}
+            </span>
+            <span className="truncate text-[11px] text-[var(--color-ink-muted)]">{step.text}</span>
+          </span>
+        ))}
+      </span>
+    </button>
   );
 }
 

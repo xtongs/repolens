@@ -1,10 +1,13 @@
 /** AI 文本在写入缓存和读取旧缓存时共用的确定性格式化。 */
 
+import type { PseudocodeStepDto } from "../types.js";
+
 export type SemanticTextFlavor =
   | "summary"
   | "summary-v2"
   | "tooltip-summary"
   | "pseudocode"
+  | "pseudocode-map"
   | "narrative";
 
 interface StructuredSummary {
@@ -33,7 +36,8 @@ export function normalizeSemanticContent(
       return cleanSingleLine(value, 240) ?? "";
     case "pseudocode":
       return normalizePseudocode(value, 16_000) ?? "";
-    // narrative 是 JSON 字符串，不能在解析前改写反斜杠。
+    // narrative 与 pseudocode-map 是 JSON 字符串，不能在解析前改写反斜杠。
+    case "pseudocode-map":
     case "narrative":
       return value;
   }
@@ -130,6 +134,169 @@ export function normalizePseudocode(
   });
   const normalized = lines.join("\n");
   return normalized === "" ? null : normalized.slice(0, maxLength);
+}
+
+export interface SourceLineBounds {
+  from: number;
+  to: number;
+}
+
+/**
+ * 把模型返回的伪代码整理成「步骤 → 源码行」结构。
+ *
+ * 行号只做确定性校验：顺序颠倒的交换，部分越界的收进范围，完全落在范围外
+ * 的丢弃；父步骤缺行号时用子步骤的并集补上。模型只给了字符串时退化为
+ * 没有行号的步骤，界面照常展示文字，只是不能预览、定位对应源码。
+ */
+export function normalizePseudocodeSteps(
+  value: unknown,
+  bounds: SourceLineBounds,
+  maxLines = 32,
+): PseudocodeStepDto[] | null {
+  if (!Array.isArray(value)) {
+    const text = normalizePseudocode(value, 16_000, maxLines);
+    return text === null ? null : parsePseudocodeText(text);
+  }
+
+  const steps: PseudocodeStepDto[] = [];
+  let budget = maxLines;
+  for (const raw of value) {
+    if (budget <= 0) break;
+    const record: Record<string, unknown> = isRecord(raw) ? raw : { step: raw };
+    const text = cleanStepText(record["step"] ?? record["text"]);
+    if (text === null) continue;
+    budget--;
+
+    const children: PseudocodeStepDto[] = [];
+    const details = Array.isArray(record["details"]) ? record["details"].slice(0, 8) : [];
+    for (const detail of details) {
+      if (budget <= 0) break;
+      const child: Record<string, unknown> = isRecord(detail) ? detail : { text: detail };
+      const childText = cleanStepText(child["text"] ?? child["step"]);
+      if (childText === null) continue;
+      budget--;
+      children.push({ text: childText, lines: parseLineRange(child["lines"], bounds), children: [] });
+    }
+
+    steps.push({
+      text,
+      lines: parseLineRange(record["lines"], bounds) ?? unionRange(children),
+      children,
+    });
+  }
+  return steps.length === 0 ? null : steps;
+}
+
+/** 与 normalizePseudocode 的输出格式一致，悬停卡片等只读文本的地方继续使用。 */
+export function pseudocodeStepsToText(steps: readonly PseudocodeStepDto[]): string {
+  return steps
+    .flatMap((step, index) => [
+      String(index + 1) + ". " + step.text,
+      ...step.children.map((child) => "  - " + child.text),
+    ])
+    .join("\n");
+}
+
+/** 旧缓存只有规范化后的文本：顶层是「N. 」，子步骤是缩进的「- 」。 */
+export function parsePseudocodeText(text: string): PseudocodeStepDto[] | null {
+  const steps: PseudocodeStepDto[] = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    const content = cleanStepText(line);
+    if (content === null) continue;
+    const parent = steps.at(-1);
+    if (/^\s/.test(line) && parent) parent.children.push({ text: content, lines: null, children: [] });
+    else steps.push({ text: content, lines: null, children: [] });
+  }
+  return steps.length === 0 ? null : steps;
+}
+
+/** 读取 pseudocode-map 缓存；形状不对就当作没有，而不是把半截结构交给界面。 */
+export function parsePseudocodeSteps(raw: string): PseudocodeStepDto[] | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(value)) return null;
+  const read = (item: unknown, depth: number): PseudocodeStepDto | null => {
+    if (!isRecord(item) || typeof item["text"] !== "string") return null;
+    const lines = item["lines"];
+    const validLines = Array.isArray(lines) && lines.length === 2 &&
+      lines.every((n) => Number.isInteger(n)) && (lines[0] as number) <= (lines[1] as number)
+      ? [lines[0], lines[1]] as [number, number]
+      : null;
+    const children = depth === 0 && Array.isArray(item["children"])
+      ? item["children"].map((child) => read(child, 1)).filter((c): c is PseudocodeStepDto => c !== null)
+      : [];
+    return { text: item["text"], lines: validLines, children };
+  };
+  const steps = value.map((item) => read(item, 0)).filter((s): s is PseudocodeStepDto => s !== null);
+  return steps.length === 0 ? null : steps;
+}
+
+/**
+ * 给源码加上「行号| 」前缀再交给模型。模型数不准行，只有把绝对行号
+ * 明文写在每行开头，它标注的范围才可能对得上。超出预算时在整行处截断。
+ */
+export function numberSourceLines(text: string, firstLine: number, maxChars: number): string {
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  const out: string[] = [];
+  let used = 0;
+  for (const [index, line] of lines.entries()) {
+    const numbered = String(firstLine + index) + "| " + line;
+    if (out.length > 0 && used + numbered.length + 1 > maxChars) break;
+    out.push(numbered);
+    used += numbered.length + 1;
+  }
+  return out.join("\n");
+}
+
+function cleanStepText(value: unknown): string | null {
+  const text = cleanText(value, 1_000);
+  if (text === null) return null;
+  const content = collapseLines(text)
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^(?:[-*•]\s+|\d+[.)、]\s*)/, "")
+    .trim();
+  return content === "" ? null : content;
+}
+
+function parseLineRange(value: unknown, bounds: SourceLineBounds): [number, number] | null {
+  let start: number | null = null;
+  let end: number | null = null;
+  if (Array.isArray(value)) {
+    start = lineNumber(value[0]);
+    end = lineNumber(value[1] ?? value[0]);
+  } else if (typeof value === "number") {
+    start = end = lineNumber(value);
+  } else if (typeof value === "string") {
+    const match = /L?(\d+)(?:\s*[-–~,]\s*L?(\d+))?/i.exec(value);
+    if (match) {
+      start = lineNumber(match[1]);
+      end = lineNumber(match[2] ?? match[1]);
+    }
+  } else if (isRecord(value)) {
+    start = lineNumber(value["start"] ?? value["from"]);
+    end = lineNumber(value["end"] ?? value["to"] ?? value["start"] ?? value["from"]);
+  }
+  if (start === null || end === null) return null;
+  if (start > end) [start, end] = [end, start];
+  if (end < bounds.from || start > bounds.to) return null;
+  return [Math.max(start, bounds.from), Math.min(end, bounds.to)];
+}
+
+function lineNumber(value: unknown): number | null {
+  const parsed = typeof value === "string" ? Number(value.trim()) : value;
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function unionRange(steps: readonly PseudocodeStepDto[]): [number, number] | null {
+  const ranges = steps.map((step) => step.lines).filter((r): r is [number, number] => Boolean(r));
+  if (ranges.length === 0) return null;
+  return [Math.min(...ranges.map((r) => r[0])), Math.max(...ranges.map((r) => r[1]))];
 }
 
 function normalizeStructuredSummary(
@@ -304,7 +471,11 @@ function structuredPseudocodeLines(value: unknown[]): string[] {
     const step = cleanText((raw as StructuredPseudocodeStep).step, 1_000);
     if (!step) continue;
     lines.push(step);
-    for (const detail of stringList((raw as StructuredPseudocodeStep).details, 8)) {
+    const details = (raw as StructuredPseudocodeStep).details;
+    const detailTexts = Array.isArray(details)
+      ? details.map((detail) => (isRecord(detail) ? detail["text"] : detail))
+      : details;
+    for (const detail of stringList(detailTexts, 8)) {
       lines.push("  " + detail);
     }
   }

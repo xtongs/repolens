@@ -1,4 +1,7 @@
 import type {
+  ChatContextItemDto,
+  ChatDoneDto,
+  ChatRequestDto,
   FileDetailDto,
   FindingDto,
   FindingSummaryDto,
@@ -210,7 +213,71 @@ export const api = {
 
   search: (q: string, limit = 30, roles?: string) =>
     get<SearchHitDto[]>("/search", { q, limit, roles }),
+
+  chat: streamChat,
 };
+
+export interface ChatStreamHandlers {
+  onContext?: (items: ChatContextItemDto[]) => void;
+  onDelta: (text: string) => void;
+}
+
+/**
+ * 追问 AI。EventSource 只能发 GET，而问题和上下文引用要放在请求体里，
+ * 所以用 fetch 读流、手工切 SSE 事件。
+ */
+async function streamChat(
+  request: ChatRequestDto,
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<ChatDoneDto> {
+  const query = activeRepo !== undefined ? `?repo=${encodeURIComponent(activeRepo)}` : "";
+  const response = await fetch(`${BASE}/chat${query}`, {
+    method: "POST",
+    headers: { "x-repolens-intent": "chat", "content-type": "application/json" },
+    body: JSON.stringify(request),
+    signal,
+  });
+  if (!response.ok) throw await toError(response);
+  if (!response.body) throw new ApiError("浏览器不支持流式响应", 0);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let event = "message";
+  let data: string[] = [];
+  const result: { done: ChatDoneDto | null } = { done: null };
+
+  const dispatch = () => {
+    if (data.length === 0) return;
+    const payload = JSON.parse(data.join("\n")) as Record<string, unknown>;
+    if (event === "delta" && typeof payload["text"] === "string") handlers.onDelta(payload["text"]);
+    else if (event === "context" && Array.isArray(payload["items"])) {
+      handlers.onContext?.(payload["items"] as ChatContextItemDto[]);
+    } else if (event === "done") result.done = payload as unknown as ChatDoneDto;
+    else if (event === "error") throw new ApiError(String(payload["message"] ?? "AI 回答失败"), 502);
+  };
+
+  while (true) {
+    const { value, done: finished } = await reader.read();
+    if (finished) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline: number;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      if (line === "") {
+        dispatch();
+        event = "message";
+        data = [];
+      } else if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    }
+  }
+  dispatch();
+  if (result.done === null) throw new ApiError("回答在中途断开了", 0);
+  return result.done;
+}
 
 function stripPrefix(id: string): string {
   const colon = id.indexOf(":");

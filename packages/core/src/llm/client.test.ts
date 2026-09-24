@@ -59,6 +59,92 @@ describe("OpenAiCompatibleClient", () => {
   });
 });
 
+function eventStream(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+describe("OpenAiCompatibleClient.streamChat", () => {
+  const turns = [{ role: "user" as const, content: "hi" }];
+
+  it("按行解析 SSE，容忍被拆开的 chunk，并读取末尾 usage", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return eventStream([
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\ndata: {"choi',
+        'ces":[{"delta":{"content":"好"}}]}\r\n\r\n',
+        ': keep-alive\n\n',
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+        "data: [DONE]\n\n",
+      ]);
+    };
+    const client = new OpenAiCompatibleClient(config, { apiKey: "k", fetch: fetch as typeof globalThis.fetch });
+    const deltas: string[] = [];
+    const result = await client.streamChat(turns, { onDelta: (text) => deltas.push(text) });
+    expect(deltas).toEqual(["你", "好"]);
+    expect(result).toEqual({ content: "你好", usage: { requests: 1, inputTokens: 5, outputTokens: 2, totalTokens: 7 } });
+    expect(sent[0]).toMatchObject({ stream: true, stream_options: { include_usage: true }, messages: turns });
+  });
+
+  it("网关忽略 stream 参数时退化为一次性 JSON", async () => {
+    const fetch = async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "整段回答" } }] }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    const client = new OpenAiCompatibleClient(config, { apiKey: "k", fetch: fetch as typeof globalThis.fetch });
+    const deltas: string[] = [];
+    await expect(client.streamChat(turns, { onDelta: (text) => deltas.push(text) }))
+      .resolves.toMatchObject({ content: "整段回答" });
+    expect(deltas).toEqual(["整段回答"]);
+  });
+
+  it("不认识 stream_options 的网关去掉该字段重发一次", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      if ("stream_options" in body) {
+        return new Response(JSON.stringify({ error: { message: "Unrecognized argument: stream_options" } }), { status: 400 });
+      }
+      return eventStream(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"]);
+    };
+    const client = new OpenAiCompatibleClient({ ...config, maxRetries: 0 }, { apiKey: "k", fetch: fetch as typeof globalThis.fetch });
+    await expect(client.streamChat(turns, { onDelta: () => {} })).resolves.toMatchObject({ content: "ok" });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).not.toHaveProperty("stream_options");
+  });
+
+  it("调用方取消时中止请求且不重试", async () => {
+    let calls = 0;
+    const fetch = (_input: string | URL | Request, init?: RequestInit) => {
+      calls++;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    };
+    const client = new OpenAiCompatibleClient(config, { apiKey: "k", fetch: fetch as typeof globalThis.fetch });
+    const controller = new AbortController();
+    const pending = client.streamChat(turns, { signal: controller.signal, onDelta: () => {} });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls).toBe(1);
+  });
+});
+
 describe("parseJsonResponse", () => {
   it("兼容代码围栏和前后解释文本", () => {
     expect(parseJsonResponse<{ a: number }>("```json\n{\"a\":1}\n```")).toEqual({ a: 1 });

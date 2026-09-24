@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { METRIC_LABELS } from "../lib/visual";
 import { useAppStore, type MetricKey } from "../store/useAppStore";
+import { useChatStore } from "../store/useChatStore";
 import { RepoPicker } from "./RepoPicker";
 
 const METRICS: MetricKey[] = ["loc", "complexity", "symbols"];
@@ -224,24 +225,28 @@ function MoonIcon() {
 
 function LlmPill() {
   const overview = useAppStore((s) => s.overview);
+  const chatOpen = useAppStore((s) => s.chatOpen);
+  const setChatOpen = useAppStore((s) => s.setChatOpen);
   const llm = overview?.llm;
   if (!llm) return null;
   const ready = llm.enabled && llm.available;
+  const status = ready
+    ? `${llm.model}${llm.interactiveModel ? ` / 交互 ${llm.interactiveModel}` : ""} · 累计 ${llm.usage.totalTokens.toLocaleString()} tokens`
+    : (llm.reason ?? "纯结构模式");
   return (
-    <span
-      className={`rounded-full border px-1.5 py-0.5 text-[9.5px] ${
+    <button
+      type="button"
+      aria-pressed={chatOpen}
+      onClick={() => (chatOpen ? setChatOpen(false) : useChatStore.getState().open())}
+      className={`rounded-full border px-1.5 py-0.5 text-[9.5px] transition-colors ${
         ready
-          ? "border-[var(--color-accent)]/40 text-[var(--color-accent)]"
-          : "border-[var(--color-line)] text-[var(--color-ink-faint)]"
-      }`}
-      title={
-        ready
-          ? `${llm.model}${llm.interactiveModel ? ` / 交互 ${llm.interactiveModel}` : ""} · 累计 ${llm.usage.totalTokens.toLocaleString()} tokens`
-          : (llm.reason ?? "纯结构模式")
-      }
+          ? "border-[var(--color-accent)]/40 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+          : "border-[var(--color-line)] text-[var(--color-ink-faint)] hover:text-[var(--color-ink-muted)]"
+      } ${chatOpen ? "bg-[var(--color-accent)]/10" : ""}`}
+      title={`${status}\n点击追问 AI（⌘I）`}
     >
-      AI {ready ? "已就绪" : "未启用"}
-    </span>
+      AI {ready ? "已就绪" : "未启用"} · 追问
+    </button>
   );
 }
 

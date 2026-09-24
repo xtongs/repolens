@@ -43,6 +43,13 @@ const FIT_MAX_ZOOM = 1;
  */
 const FIT_MIN_ZOOM = 0.5;
 const FIT_DURATION = 320;
+/**
+ * 首屏没有「上一个镜头」可以过渡：从 React Flow 默认视口（原点、1 倍）
+ * 动画过来，看起来就是整张图从左上角被甩进屏幕。所以首屏直接从目标
+ * 视口略缩小一点的位置淡入、落定。
+ */
+const SETTLE_DURATION = 420;
+const SETTLE_FROM_SCALE = 0.95;
 /** 两次点击间隔在这个窗口内算双击，与系统默认值大致一致 */
 const DOUBLE_CLICK_MS = 320;
 
@@ -114,7 +121,7 @@ function CanvasInner() {
   // 更接近注意力所在。展开链的最后一层往往是目标的父作用域，只框住它的话
   // 目标本身可能落在容器边缘，甚至在屏幕外。
   const attention = revealed ?? (callGraph ? `sym:${callGraph.symbolId}` : (slice.expanded.at(-1) ?? null));
-  useAutoViewport(layout.nodes, layout.version, attention);
+  const framed = useAutoViewport(layout.nodes, layout.version, attention);
 
   // 消费掉，否则之后每次布局都会被拽回这个节点
   useEffect(() => {
@@ -267,6 +274,7 @@ function CanvasInner() {
           setMenu(null);
         }}
         onMoveStart={() => setMenu(null)}
+        className={framed ? undefined : "graph-unframed"}
         minZoom={0.15}
         maxZoom={2.2}
         proOptions={{ hideAttribution: true }}
@@ -344,8 +352,8 @@ function EdgeDotMarkers() {
  * 让视口跟上布局变化，但尽量少动镜头。
  *
  * 分两档处理，因为这两件事用户的预期完全不同：
- * - 顶层节点集合变了（首屏、切焦点、换作用域）：整张图都不一样了，
- *   直接居中适配。
+ * - 顶层节点集合变了（切焦点、换作用域）：整张图都不一样了，直接居中
+ *   适配。首屏也属于这一档，但没有旧镜头可过渡，改为淡入落定。
  * - 只是展开了某个节点：用户的注意力钉在那个节点上，把镜头拉走会
  *   丢掉他刚建立的空间记忆。所以只在新内容确实跑到视口外时才动，
  *   而且优先平移、能不缩放就不缩放。
@@ -353,11 +361,13 @@ function EdgeDotMarkers() {
  * 包围盒自己算而不用 fitView：fitView 要等 React Flow 量完每个节点，
  * 那个时机比布局落地晚且不可靠，而 ELK 返回的坐标本来就是权威值。
  */
-function useAutoViewport(nodes: PositionedNode[], version: number, attention: string | null) {
+function useAutoViewport(nodes: PositionedNode[], version: number, attention: string | null): boolean {
   const { setViewport, getViewport } = useReactFlow();
   const paneWidth = useFlowStore((s) => s.width);
   const paneHeight = useFlowStore((s) => s.height);
   const lastFittedKey = useRef<string | null>(null);
+  /** 首个镜头落位之前，节点还摆在默认视口里，不能露出来 */
+  const [framed, setFramed] = useState(false);
 
   const roots = useMemo(() => nodes.filter((n) => n.parentId === null), [nodes]);
   const rootKey = useMemo(() => roots.map((n) => n.dto.id).join("|"), [roots]);
@@ -371,11 +381,21 @@ function useAutoViewport(nodes: PositionedNode[], version: number, attention: st
     const whole = unionBox(roots.map((n) => ({ ...n, x: n.x, y: n.y })));
 
     if (rootKey !== lastFittedKey.current) {
+      const first = lastFittedKey.current === null;
       lastFittedKey.current = rootKey;
       const anchor = attention !== null ? absoluteBox(nodes, attention) : null;
-      void setViewport(clampToContent(frameGraph(whole, anchor, pane), whole, pane), {
-        duration: FIT_DURATION,
-      });
+      const target = clampToContent(frameGraph(whole, anchor, pane), whole, pane);
+      if (!first) {
+        void setViewport(target, { duration: FIT_DURATION });
+        return;
+      }
+      const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+      void setViewport(still ? target : scaleAroundCenter(target, pane, SETTLE_FROM_SCALE), { duration: 0 });
+      setFramed(true);
+      if (!still) {
+        // 线性插值：默认的 smooth 会先缩远再拉近，小幅落定时反而像一次跳动
+        void setViewport(target, { duration: SETTLE_DURATION, ease: easeOutCubic, interpolate: "linear" });
+      }
       return;
     }
 
@@ -397,6 +417,23 @@ function useAutoViewport(nodes: PositionedNode[], version: number, attention: st
     // roots 每次布局都是新数组引用，真正的触发条件是 rootKey + version
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootKey, version, attention, paneWidth, paneHeight, setViewport, getViewport]);
+
+  return framed;
+}
+
+/** 以视口中心为不动点缩放，画面像是从原地轻微拉近，而不是整体平移 */
+function scaleAroundCenter(viewport: Viewport, pane: { width: number; height: number }, factor: number): Viewport {
+  const cx = pane.width / 2;
+  const cy = pane.height / 2;
+  return {
+    x: cx - (cx - viewport.x) * factor,
+    y: cy - (cy - viewport.y) * factor,
+    zoom: viewport.zoom * factor,
+  };
+}
+
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3;
 }
 
 function unionBox(boxes: ReadonlyArray<{ x: number; y: number; width: number; height: number }>): Box {

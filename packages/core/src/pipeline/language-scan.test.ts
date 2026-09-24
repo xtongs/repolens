@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { indexPath, openDb } from "../db/database.js";
+import { hashContent } from "../discovery/walk.js";
 import { scanRepo } from "./scan.js";
 
 const roots: string[] = [];
@@ -56,6 +57,36 @@ describe("多语言扫描", () => {
     db = openDb(indexPath(root));
     try {
       expect(file(db, "src/App.vue")).toMatchObject({ language: "vue", role: "source", parsed: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("中文出现在符号之前时，符号哈希仍然覆盖符号本身", async () => {
+    const root = mkdtempSync(join(tmpdir(), "repolens-language-"));
+    roots.push(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, ".repolens.json"), JSON.stringify({ llm: { enabled: false } }));
+    writeFileSync(join(root, "src/greet.ts"), "// 问候语\nfunction greet() { return 1 }\n");
+    writeFileSync(join(root, "src/Greet.vue"), [
+      "<template><p>你好，世界</p></template>",
+      "<script>",
+      "function greet() { return 1 }",
+      "</script>",
+    ].join("\n"));
+
+    await scanRepo({ root, fresh: true });
+    const db = openDb(indexPath(root));
+    try {
+      const hashes = db.prepare(
+        `SELECT f.path, s.hash FROM symbols s JOIN files f ON f.id = s.file_id
+         WHERE s.name = 'greet' ORDER BY f.path`,
+      ).all();
+      const expected = hashContent("function greet() { return 1 }");
+      expect(hashes).toEqual([
+        { path: "src/Greet.vue", hash: expected },
+        { path: "src/greet.ts", hash: expected },
+      ]);
     } finally {
       db.close();
     }

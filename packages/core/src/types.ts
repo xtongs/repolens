@@ -692,6 +692,18 @@ export interface FileDetailDto {
   summary?: string | null;
   shortSummary?: string | null;
   pseudocode?: string | null;
+  pseudocodeSteps?: PseudocodeStepDto[] | null;
+}
+
+/**
+ * 伪代码中的一步。`lines` 是模型标注的源码闭区间，已按所属符号或文件的
+ * 行范围校验过；它仍是 AI 推断，不是解析器给出的事实。旧缓存没有这份
+ * 对应关系，此时 `lines` 为空。
+ */
+export interface PseudocodeStepDto {
+  text: string;
+  lines?: [number, number] | null;
+  children: PseudocodeStepDto[];
 }
 
 export interface ParamDto {
@@ -740,6 +752,7 @@ export interface SymbolDetailDto {
   summary?: string | null;
   shortSummary?: string | null;
   pseudocode?: string | null;
+  pseudocodeSteps?: PseudocodeStepDto[] | null;
 }
 
 /** 文件/符号按需生成接口的统一返回形状。 */
@@ -747,6 +760,7 @@ export interface SemanticResultDto {
   summary: string | null;
   shortSummary?: string | null;
   pseudocode?: string | null;
+  pseudocodeSteps?: PseudocodeStepDto[] | null;
   /** 没有可供模型理解的内容时直接跳过，不发起 LLM 请求。 */
   skipReason?: "empty-file" | null;
   generated: boolean;
@@ -868,6 +882,55 @@ export interface TraceNarrativeResultDto {
   narrative: TraceNarrativeDto;
   generated: boolean;
   cacheHit: boolean;
+  model: string;
+  usage: LlmUsage;
+}
+
+// ---------------------------------------------------------------------------
+// 追问 AI
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条追问附带的上下文。浏览器只传节点 id 和用户引用的文字，源码、调用
+ * 关系、摘要都由服务端按 id 现查——既不让前端把整段源码塞进请求，也不
+ * 让模型看到一份可能被篡改过的「源码」。
+ */
+export type ChatRefDto =
+  | { kind: "node"; id: string }
+  | {
+      kind: "quote";
+      text: string;
+      /** 引用出自哪个节点；带行号时服务端会附上那几行原文 */
+      nodeId?: string | null;
+      lines?: [number, number] | null;
+    }
+  | {
+      kind: "view";
+      mode: "structure" | "callgraph" | "trace";
+      /** 结构视图的根作用域，或调用图的 `call:<symbolId>` */
+      scope?: string | null;
+      expanded?: string[] | null;
+      traceId?: string | null;
+    };
+
+export interface ChatMessageDto {
+  role: "user" | "assistant";
+  content: string;
+  refs?: ChatRefDto[] | null;
+}
+
+export interface ChatRequestDto {
+  messages: ChatMessageDto[];
+}
+
+/** 服务端实际放进提示词的上下文，回显给界面，让人知道 AI 看到了什么。 */
+export interface ChatContextItemDto {
+  label: string;
+  detail: string;
+  nodeId?: string | null;
+}
+
+export interface ChatDoneDto {
   model: string;
   usage: LlmUsage;
 }

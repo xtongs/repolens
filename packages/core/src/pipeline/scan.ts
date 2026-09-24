@@ -290,9 +290,11 @@ function persistParsed(
   parsed: ParsedFile,
   stats: ScanStats,
 ): void {
-  const sourceBytes = Buffer.from(source, "utf8");
+  // startByte/endByte 是 tree-sitter 在解析文本上的字符串下标（UTF-16），
+  // 不是 UTF-8 字节；复合组件的解析文本是遮罩后的版本，必须在它上面切
+  const parsedText = prepareSource(file.language, source)?.source ?? source;
   const symbolHashes = parsed.symbols.map((sym) =>
-    hashContent(sourceBytes.subarray(sym.startByte, sym.endByte)),
+    hashContent(parsedText.slice(sym.startByte, sym.endByte)),
   );
   const symbolIds = writer.insertSymbols(fileId, parsed.symbols, symbolHashes);
 

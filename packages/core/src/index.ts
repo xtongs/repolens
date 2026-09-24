@@ -65,6 +65,13 @@ export {
   generateTraceNarrative,
 } from "./llm/enrich.js";
 export { LlmResponseError, LlmUnavailableError, OpenAiCompatibleClient } from "./llm/client.js";
+export {
+  buildChatContext,
+  parseChatRequest,
+  recordChatUsage,
+  streamRepositoryChat,
+  type ChatStreamHandlers,
+} from "./llm/chat.js";
 export { countLoc } from "./pipeline/metrics.js";
 
 export {

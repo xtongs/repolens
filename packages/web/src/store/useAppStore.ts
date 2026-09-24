@@ -75,6 +75,8 @@ export interface AppState {
   hoverAnchor: { x: number; y: number } | null;
 
   drawerOpen: boolean;
+  /** 追问 AI 面板。和详情抽屉共用右侧栏：有选中项时停靠在详情下方，没有时独占 */
+  chatOpen: boolean;
   treeOpen: boolean;
   filterOpen: boolean;
   paletteOpen: boolean;
@@ -118,6 +120,7 @@ export interface AppState {
   loadCallGraph: (mode: CallGraphMode) => Promise<void>;
 
   setDrawerOpen: (open: boolean) => void;
+  setChatOpen: (open: boolean) => void;
   panelTab: "tree" | "findings" | "traces";
   setPanelTab: (tab: "tree" | "findings" | "traces") => void;
   setTreeOpen: (open: boolean) => void;
@@ -160,6 +163,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   hoverAnchor: null,
 
   drawerOpen: false,
+  chatOpen: false,
   treeOpen: false,
   panelTab: "tree",
   revealed: null,
@@ -446,6 +450,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDrawerOpen(open) {
     set({ drawerOpen: open });
   },
+  setChatOpen(open) {
+    set({ chatOpen: open });
+  },
   setTreeOpen(open) {
     set({ treeOpen: open });
   },
@@ -484,6 +491,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (state.helpOpen) return set({ helpOpen: false });
     if (state.repoPickerOpen) return set({ repoPickerOpen: false });
     if (state.filterOpen) return set({ filterOpen: false });
+    // 对话叠在详情之上，先收起它；对话记录保留，再打开还在
+    if (state.chatOpen) return set({ chatOpen: false });
     if (state.drawerOpen) return set({ drawerOpen: false });
     if (state.traceId !== null) return set({ traceId: null, traceLabel: null });
     if (state.selected !== null) return set({ selected: null });

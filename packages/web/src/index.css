@@ -49,6 +49,24 @@
   color-scheme: dark;
   --font-scale: 1.15;
   --node-hover-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+
+  /*
+   * 语法高亮只用少数几档颜色，饱和度压得比界面强调色低，避免源码区在
+   * 抽屉里抢走视觉焦点。变量名由 Shiki 的 css-variables 主题约定。
+   */
+  --code-foreground: #c5cdd8;
+  --code-token-keyword: #c3a6f5;
+  --code-token-function: #7fbff5;
+  --code-token-string: #a5d49b;
+  --code-token-string-expression: #a5d49b;
+  --code-token-constant: #eab27e;
+  --code-token-parameter: #e3c98f;
+  --code-token-comment: #6b7583;
+  --code-token-punctuation: #8a94a3;
+  --code-token-link: #5eb0ff;
+  --code-token-inserted: #34d399;
+  --code-token-deleted: #ef7279;
+  --code-token-changed: #e0a458;
 }
 
 :root[data-font-size="small"] {
@@ -106,6 +124,20 @@
   --lang-shell: #3f7b36;
   --lang-other: #667386;
   --node-hover-shadow: 0 8px 24px rgb(31 41 55 / 16%);
+
+  --code-foreground: #1f2937;
+  --code-token-keyword: #7042c9;
+  --code-token-function: #1462a8;
+  --code-token-string: #2d7a36;
+  --code-token-string-expression: #2d7a36;
+  --code-token-constant: #a8540b;
+  --code-token-parameter: #8a6200;
+  --code-token-comment: #7b8594;
+  --code-token-punctuation: #5b6573;
+  --code-token-link: #1672b8;
+  --code-token-inserted: #167553;
+  --code-token-deleted: #c73a43;
+  --code-token-changed: #9b5c08;
 }
 
 html,
@@ -181,6 +213,15 @@ body .text-sm { font-size: calc(14px * var(--font-scale)); }
   --xy-node-border-radius: 10px;
 }
 
+/* 首屏镜头落位前，节点还摆在默认视口里；落位后与镜头落定同时淡入 */
+.react-flow__viewport {
+  transition: opacity 280ms ease-out;
+}
+
+.graph-unframed .react-flow__viewport {
+  opacity: 0;
+}
+
 .react-flow__node {
   cursor: pointer;
   /* 节点自己控制过渡，React Flow 的默认 transform 过渡会和布局动画冲突 */
@@ -238,6 +279,68 @@ body .text-sm { font-size: calc(14px * var(--font-scale)); }
 }
 .thin-scroll::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* AI 回答。侧栏很窄，块间距比文档排版收紧一档 */
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+.chat-markdown p,
+.chat-markdown ul,
+.chat-markdown ol,
+.chat-markdown blockquote,
+.chat-markdown table {
+  margin: 0.45em 0;
+}
+.chat-markdown ul {
+  list-style: disc;
+  padding-left: 1.2em;
+}
+.chat-markdown ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+.chat-markdown li + li {
+  margin-top: 0.15em;
+}
+.chat-markdown li > ul,
+.chat-markdown li > ol {
+  margin: 0.15em 0;
+}
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4 {
+  margin: 0.8em 0 0.3em;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.chat-markdown strong {
+  font-weight: 600;
+}
+.chat-markdown blockquote {
+  border-left: 2px solid var(--color-line-strong);
+  padding-left: 0.7em;
+  color: var(--color-ink-muted);
+}
+.chat-markdown table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid var(--color-line);
+  padding: 0.2em 0.5em;
+  text-align: left;
+}
+.chat-markdown hr {
+  margin: 0.8em 0;
+  border-color: var(--color-line);
 }
 
 @keyframes rl-fade-in {
