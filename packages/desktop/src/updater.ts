@@ -58,7 +58,8 @@ export function setupUpdater(getWindow: () => BrowserWindow | null, log: (line: 
       defaultId: 0,
       cancelId: 1,
     }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall();
+      // 静默安装并自动重启；非静默时 Windows 会重新弹出完整的安装向导
+      if (response === 0) autoUpdater.quitAndInstall(true, true);
     });
   });
 
