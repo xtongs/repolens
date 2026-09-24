@@ -1,6 +1,6 @@
 # 桌面端三平台打包。
 #
-# 推送 v* 标签：打包并上传到同名的 GitHub Release 草稿，三个平台都传完后到 Releases 页面手动发布。
+# 推送 v* 标签：先建同名 Release 草稿并上传三端安装包，三个平台都成功后再自动公开发布。
 # 手动运行（Actions 页面 Run workflow）：只打包，安装包作为本次运行的 artifact 下载，不发布。
 #
 # macOS 签名和公证目前留空，缺省时自动用 ad-hoc 签名。配置方法见 docs/desktop.md。
@@ -84,3 +84,14 @@ jobs:
             packages/desktop/release/*.AppImage
             packages/desktop/release/*.deb
           if-no-files-found: error
+
+  # 等矩阵全部成功，避免只传了一部分就公开成残缺 Release
+  publish:
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/') && success() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 公开发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

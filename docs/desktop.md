@@ -79,8 +79,8 @@ Linux 同理。三个平台一起打交给 GitHub Actions。
 
 3. `.github/workflows/desktop-release.yml` 会先检查标签和版本号一致，再在三个平台上
    构建、测试、打包，上传到同名的 Release **草稿**。
-4. 三个平台都传完后，到 GitHub Releases 页面补充说明并点 **Publish**。
-   自动更新只看已发布的 Release，草稿阶段用户不会收到更新。
+4. 三个平台都成功后，workflow 会自动把这份 Release 改成公开。
+   自动更新只看已发布的 Release，任一平台失败则保持草稿（或不创建公开版）。
 
 在 Actions 页面手动运行这个 workflow 只打包不发布，安装包在本次运行的 Artifacts 里。
 
