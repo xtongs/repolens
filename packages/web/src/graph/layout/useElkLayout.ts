@@ -112,15 +112,10 @@ export function useElkLayout(
     const id = ++requestId.current;
     setPending(true);
 
-    void engine
-      .layout(buildElkGraph(graph, sizeOf, direction))
-      .then((laid) => {
+    void layoutFlatGraph(graph, sizeOf, direction, (elkGraph) => engine.layout(elkGraph))
+      .then((positions) => {
         if (id !== requestId.current) return;
-        // ELK 很擅长决定依赖层级，却会为了少几处交叉而自由挪动每层的横坐标。
-        // 结构图保留它算出的层级，再把同层节点放回稳定列网格：这样上下游仍然
-        // 正确，同时相同行数的层会严格纵向对齐，展开前后位置也更容易预测。
-        if (direction === "DOWN") alignDownwardGrid(laid);
-        setResult((prev) => ({ positions: collectPositions(laid), version: prev.version + 1 }));
+        setResult((prev) => ({ positions, version: prev.version + 1 }));
       })
       .catch(() => {
         if (id !== requestId.current) return;
@@ -152,11 +147,48 @@ export function useElkLayout(
   return { nodes, pending: pending && positions.size === 0, version };
 }
 
+/** 布局本身不依赖 React 和 Worker，单独拿出来才能在 Node 里直接验证 */
+export async function layoutFlatGraph(
+  graph: FlatGraph,
+  sizeOf: (node: FlatNode) => { width: number; height: number },
+  direction: "DOWN" | "RIGHT",
+  layout: (graph: ElkNode) => Promise<ElkNode>,
+): Promise<Map<string, { x: number; y: number; width: number; height: number }>> {
+  const laid = await layout(buildElkGraph(graph, sizeOf, direction));
+  // ELK 很擅长决定依赖层级，却会为了少几处交叉而自由挪动每层的横坐标。
+  // 结构图保留它算出的层级，再把同层节点放回稳定列网格：这样上下游仍然
+  // 正确，同时相同行数的层会严格纵向对齐，展开前后位置也更容易预测。
+  if (direction === "DOWN") alignDownwardGrid(laid);
+  return collectPositions(laid);
+}
+
+/** 结构图专用，根和每个容器都要写，否则容器内部仍按默认策略排 */
+const DOWNWARD_OPTIONS: Record<string, string> = {
+  // 没人依赖的节点排在最上层，往下每一行就是离这些入口多远。默认的
+  // 策略追求连线最短，会把只依赖底层的入口挤到下面去，看起来像被依赖方。
+  "elk.layered.layering.strategy": "LONGEST_PATH_SOURCE",
+  // 同层顺序和横坐标会被 alignDownwardGrid 重排，连线由 React Flow 按节点
+  // 位置重画，ELK 在这几步上的优化用不上，却占了大图布局的绝大部分时间。
+  // 交叉最小化只在没有展开容器时才能整个关掉；有容器时关掉它 ELK 会排乱
+  // 容器内部甚至抛异常，只能把迭代降到最低。
+  "elk.layered.thoroughness": "1",
+  "elk.layered.nodePlacement.strategy": "SIMPLE",
+  // 正交走线会按线的数量撑大层间距，容器因此平白变高
+  "elk.edgeRouting": "POLYLINE",
+};
+
 function buildElkGraph(
   graph: FlatGraph,
   sizeOf: (node: FlatNode) => { width: number; height: number },
   direction: "DOWN" | "RIGHT",
 ): ElkNode {
+  const flat = graph.nodes.every((node) => !node.isContainer);
+  const directional =
+    direction !== "DOWN"
+      ? {}
+      : flat
+        ? { ...DOWNWARD_OPTIONS, "elk.layered.crossingMinimization.strategy": "NONE" }
+        : DOWNWARD_OPTIONS;
   const byParent = new Map<string | null, FlatNode[]>();
   for (const node of graph.nodes) {
     const bucket = byParent.get(node.parentId) ?? [];
@@ -178,6 +210,7 @@ function buildElkGraph(
           "elk.padding": LAYOUT_OPTIONS["elk.padding"] as string,
           "elk.spacing.nodeNode": "20",
           "elk.layered.spacing.nodeNodeBetweenLayers": "44",
+          ...directional,
         },
       };
     });
@@ -197,6 +230,7 @@ function buildElkGraph(
     layoutOptions: {
       ...LAYOUT_OPTIONS,
       "elk.direction": direction,
+      ...directional,
       // 左右顺序由服务端稳定提供：包/目录/文件按路径，符号按源码行。
       // 不允许为了少一条交叉线把节点换位，否则同一张图刷新后很难找回目标。
       "elk.layered.crossingMinimization.forceNodeModelOrder": "true",
@@ -285,8 +319,9 @@ function alignDownwardGrid(parent: ElkNode, root = true): void {
   const xShift = sidePadding - minEdge + (width - requiredWidth) / 2;
   for (const child of children) child.x = (child.x ?? 0) + xShift;
 
-  parent.width = width;
-  parent.height = Math.max(parent.height ?? 0, y - betweenLayers + bottomPadding);
+  // ELK 的尺寸可能带小数，取整免得下面的节点落在半像素上、边框发虚
+  parent.width = Math.ceil(width);
+  parent.height = Math.ceil(Math.max(parent.height ?? 0, y - betweenLayers + bottomPadding));
 }
 
 /** 按 ELK 给出的纵向中心点恢复层级；同层保留原始模型顺序。 */
