@@ -6,7 +6,8 @@
  */
 export type DesktopPlatform = "darwin" | "win32" | "linux";
 
-export type DesktopCommand = "add-repository" | "open-settings";
+/** refresh-status：服务进程的环境变了（例如 shell 配置读完了），顶栏的 AI 状态要重取 */
+export type DesktopCommand = "add-repository" | "open-settings" | "refresh-status";
 
 export interface LlmSettings {
   baseUrl: string;

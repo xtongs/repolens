@@ -40,6 +40,7 @@ export function App() {
       const store = useAppStore.getState();
       if (command === "add-repository") store.requestAddRepo();
       if (command === "open-settings") store.setSettingsOpen(true);
+      if (command === "refresh-status") void store.refreshOverview().catch(() => {});
     });
     const offFullScreen = desktop.onFullScreenChange((fullScreen) => {
       document.documentElement.toggleAttribute("data-fullscreen", fullScreen);

@@ -14,7 +14,7 @@ const SKIP = new Set(["_", "PWD", "OLDPWD", "SHLVL", "TERM", "TERM_PROGRAM", "TE
  *
  * Windows 的环境变量来自注册表，由系统直接给到应用，不需要这一步。
  */
-export function readShellEnv(timeoutMs = 10_000): Promise<Record<string, string> | null> {
+export function readShellEnv(timeoutMs = 60_000): Promise<Record<string, string> | null> {
   if (process.platform === "win32") return Promise.resolve(null);
   const shell = process.env["SHELL"] || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");
   const mark = randomUUID();

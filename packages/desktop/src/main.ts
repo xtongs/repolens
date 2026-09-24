@@ -265,8 +265,8 @@ if (!app.requestSingleInstanceLock()) {
     }));
 
     // 从终端启动时环境已经齐全；从 Dock / 桌面菜单启动才需要补读 shell 配置。
-    // 读 shell 可能要一两秒，和服务启动并行，页面加载前再补给服务进程。
-    const shellEnv = process.platform !== "win32" && !process.env["TERM"] ? readShellEnv() : Promise.resolve(null);
+    const readsShell = process.platform !== "win32" && !process.env["TERM"];
+    const shellEnv = readsShell ? readShellEnv() : Promise.resolve(null);
 
     try {
       await connect();
@@ -277,15 +277,27 @@ if (!app.requestSingleInstanceLock()) {
       return;
     }
 
-    const imported = await shellEnv;
-    if (imported) {
+    // 读 shell 通常一两秒，稍等一下可以避免页面先显示「AI 未配置」再变过来。
+    // 刚安装后第一次启动、zsh 插件多时可能要十几秒，不能让窗口一直等着，
+    // 先打开，读到后再补给服务进程并让页面刷新状态。
+    const applyShellEnv = shellEnv.then(async (imported) => {
+      if (!imported) {
+        if (readsShell) log("未能读取登录 shell 的环境变量");
+        return false;
+      }
       Object.assign(process.env, imported);
       // 在设置里保存的 key 优先于 shell 里 export 的
       await server.setEnv({ ...imported, ...keyEnvUpdate(null).values });
-    } else if (process.platform !== "win32" && !process.env["TERM"]) {
-      log("未能读取登录 shell 的环境变量");
-    }
+      return true;
+    });
+    const appliedBeforeWindow = await Promise.race([
+      applyShellEnv,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]);
     mainWindow = createWindow();
     updater.checkInBackground();
+    if (appliedBeforeWindow === null && await applyShellEnv) {
+      mainWindow?.webContents.send(IPC.command, "refresh-status" satisfies DesktopCommand);
+    }
   });
 }
