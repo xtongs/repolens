@@ -24,6 +24,8 @@ interface DesktopState {
   /** 界面上次用的语言，下次启动时先按它建菜单 */
   locale?: Locale;
   window?: WindowState;
+  /** 页面的偏好（主题、字号、侧栏宽度……），键和值与页面的 localStorage 相同 */
+  prefs?: Record<string, string>;
 }
 
 function statePath(): string {

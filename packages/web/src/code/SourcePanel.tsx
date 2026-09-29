@@ -1,6 +1,7 @@
 import type { NoteDto, PseudocodeStepDto } from "@repolens/core/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../i18n";
+import { readPref, writePref } from "../lib/prefs";
 import { NoteCard } from "../notes/NoteCard";
 import { formatLines } from "../store/useNotesStore";
 import { Chevron } from "./Chevron";
@@ -403,17 +404,9 @@ function useElementWidth(element: HTMLElement | null): number {
 }
 
 function readAnnotationPreference(): boolean {
-  try {
-    return window.localStorage.getItem(ANNOTATION_STORAGE_KEY) !== "off";
-  } catch {
-    return true;
-  }
+  return readPref(ANNOTATION_STORAGE_KEY) !== "off";
 }
 
 function writeAnnotationPreference(value: boolean): void {
-  try {
-    window.localStorage.setItem(ANNOTATION_STORAGE_KEY, value ? "on" : "off");
-  } catch {
-    // 存储不可用时本次切换仍然有效
-  }
+  writePref(ANNOTATION_STORAGE_KEY, value ? "on" : "off");
 }

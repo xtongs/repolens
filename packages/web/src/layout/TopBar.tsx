@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { api } from "../api/client";
 import { msg, translateMessage, useLocale, useLocaleStore, useT } from "../i18n";
 import { desktop } from "../lib/desktop";
+import { writePref } from "../lib/prefs";
 import { modKey } from "../lib/shortcut";
 import { METRIC_LABELS } from "../lib/visual";
 import { useAppStore, type MetricKey } from "../store/useAppStore";
@@ -251,11 +252,7 @@ function FontSizeControl() {
     const next = FONT_SIZES[nextIndex];
     if (!next) return;
     document.documentElement.dataset.fontSize = next.key;
-    try {
-      localStorage.setItem(FONT_SIZE_STORAGE_KEY, next.key);
-    } catch {
-      // 浏览器禁用存储时，本次调节仍然有效。
-    }
+    writePref(FONT_SIZE_STORAGE_KEY, next.key);
     setFontSize(next.key);
   };
 
@@ -313,11 +310,7 @@ function ThemeToggle() {
       "content",
       next === "light" ? "#f3f5f8" : "#0b0d10",
     );
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, next);
-    } catch {
-      // 浏览器禁用存储时，本次切换仍然有效。
-    }
+    writePref(THEME_STORAGE_KEY, next);
     setTheme(next);
   };
 

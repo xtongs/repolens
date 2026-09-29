@@ -17,6 +17,29 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   return () => ipcRenderer.off(channel, handler);
 }
 
+/**
+ * 本地服务每次启动端口都不同，页面换了来源，localStorage 就是一份空的。页面脚本
+ * 运行前把主进程存下的偏好灌回去，页面照常只读 localStorage。偏好里已经没有的旧键
+ * 也清掉：端口碰巧和很久以前某次一样时，那份 localStorage 里还留着过期的值。
+ */
+function restorePrefs(): void {
+  try {
+    const prefs = ipcRenderer.sendSync(IPC.loadPrefs) as Record<string, string>;
+    // 这个包的类型不带 DOM，只声明用到的两个方法
+    const storage = (globalThis as unknown as {
+      localStorage: { setItem(key: string, value: string): void; removeItem(key: string): void };
+    }).localStorage;
+    for (const key of Object.keys(storage)) {
+      if (key.startsWith("repolens") && !(key in prefs)) storage.removeItem(key);
+    }
+    for (const [key, value] of Object.entries(prefs)) storage.setItem(key, value);
+  } catch {
+    // 读不到就用默认设置
+  }
+}
+
+restorePrefs();
+
 const bridge: DesktopBridge = {
   platform: process.platform as DesktopBridge["platform"],
   getLlmSettings: () => invoke(IPC.getLlmSettings),
@@ -24,6 +47,7 @@ const bridge: DesktopBridge = {
   onCommand: (listener) => subscribe<DesktopCommand>(IPC.command, listener),
   onFullScreenChange: (listener) => subscribe<boolean>(IPC.fullScreen, listener),
   setLocale: (locale) => ipcRenderer.send(IPC.setLocale, locale),
+  savePref: (key, value) => ipcRenderer.send(IPC.savePref, key, value),
 };
 
 contextBridge.exposeInMainWorld("repolensDesktop", bridge);

@@ -252,6 +252,32 @@ if (!app.requestSingleInstanceLock()) {
     applyMenu();
   });
 
+  // 拖侧栏时一帧报一次，先记在内存里，攒一会儿再写盘，退出前补写
+  let prefs: Record<string, string> | null = null;
+  let prefsTimer: NodeJS.Timeout | null = null;
+  const currentPrefs = () => (prefs ??= readState().prefs ?? {});
+  function flushPrefs(): void {
+    if (prefsTimer === null) return;
+    clearTimeout(prefsTimer);
+    prefsTimer = null;
+    writeState({ prefs: currentPrefs() });
+  }
+
+  // preload 同步等着这个返回值，拒绝时也得给一个
+  ipcMain.on(IPC.loadPrefs, (event) => {
+    event.returnValue = fromApp(event) ? currentPrefs() : {};
+  });
+
+  ipcMain.on(IPC.savePref, (event, key: unknown, value: unknown) => {
+    if (!fromApp(event) || typeof key !== "string" || !/^repolens[\w:-]{1,80}$/.test(key)) return;
+    if (value !== null && (typeof value !== "string" || value.length > 1_000)) return;
+    const next = { ...currentPrefs() };
+    if (value === null) delete next[key];
+    else next[key] = value;
+    prefs = next;
+    prefsTimer ??= setTimeout(flushPrefs, 500);
+  });
+
   app.on("second-instance", () => {
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -267,6 +293,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("before-quit", () => server.stop());
+  app.on("will-quit", flushPrefs);
 
   let updater: ReturnType<typeof setupUpdater> | null = null;
 

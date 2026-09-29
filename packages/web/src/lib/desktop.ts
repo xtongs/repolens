@@ -46,6 +46,8 @@ export interface DesktopBridge {
   onFullScreenChange: (listener: (fullScreen: boolean) => void) => () => void;
   /** 原生菜单和对话框跟随界面语言 */
   setLocale: (locale: "zh" | "en") => void;
+  /** 界面偏好另存一份到主进程，见 lib/prefs.ts；null 表示删除 */
+  savePref: (key: string, value: string | null) => void;
 }
 
 export const desktop: DesktopBridge | null =

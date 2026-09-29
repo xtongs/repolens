@@ -12,6 +12,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Chevron } from "../code/Chevron";
 import { t, translateMessage, useT } from "../i18n";
 import { desktop } from "../lib/desktop";
+import { readPref, writePref } from "../lib/prefs";
 import { modKey } from "../lib/shortcut";
 import { draftFor, hasNoteTarget, noteTextFromAnswer, SaveNotePopover, SelectionNote, type NoteDraft } from "../notes/SaveNote";
 import { useAppStore } from "../store/useAppStore";
@@ -537,18 +538,10 @@ function useSplitHeight(active: boolean) {
 }
 
 function readHeight(): number {
-  try {
-    const value = Number(window.localStorage.getItem(HEIGHT_STORAGE_KEY));
-    return Number.isFinite(value) && value >= MIN_HEIGHT ? value : DEFAULT_HEIGHT;
-  } catch {
-    return DEFAULT_HEIGHT;
-  }
+  const value = Number(readPref(HEIGHT_STORAGE_KEY));
+  return Number.isFinite(value) && value >= MIN_HEIGHT ? value : DEFAULT_HEIGHT;
 }
 
 function writeHeight(value: number): void {
-  try {
-    window.localStorage.setItem(HEIGHT_STORAGE_KEY, String(value));
-  } catch {
-    // 存储不可用时只影响下次打开的默认高度
-  }
+  writePref(HEIGHT_STORAGE_KEY, String(value));
 }

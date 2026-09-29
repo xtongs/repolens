@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { readPref, writePref } from "../lib/prefs";
 import { EN, EN_PATTERNS } from "./en";
 
 export type Locale = "zh" | "en";
@@ -21,11 +22,7 @@ interface LocaleState {
 export const useLocaleStore = create<LocaleState>((set) => ({
   locale: initialLocale(),
   setLocale(locale) {
-    try {
-      localStorage.setItem(STORAGE_KEY, locale);
-    } catch {
-      // 浏览器禁用存储时，本次切换仍然有效
-    }
+    writePref(STORAGE_KEY, locale);
     applyDocumentLocale(locale);
     set({ locale });
   },
@@ -90,12 +87,8 @@ function interpolate(template: string, params: MessageParams | undefined): strin
 }
 
 function initialLocale(): Locale {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "zh" || stored === "en") return stored;
-  } catch {
-    // 读不到偏好就按系统语言
-  }
+  const stored = readPref(STORAGE_KEY);
+  if (stored === "zh" || stored === "en") return stored;
   const language = typeof navigator === "undefined" ? "zh" : navigator.language.toLowerCase();
   return language.startsWith("zh") ? "zh" : "en";
 }

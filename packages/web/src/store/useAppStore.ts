@@ -10,8 +10,31 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { GraphSlice } from "../graph/model";
 import { api, getActiveRepo, setActiveRepo } from "../api/client";
+import { readPref, writePref } from "../lib/prefs";
 
 export type MetricKey = "loc" | "complexity" | "symbols";
+
+/** 看图的设置跟着用户走，下次打开还是上次的样子；看到哪、选了什么不算设置，不记 */
+const PREF = {
+  metric: "repolens:metric",
+  noise: "repolens:show-noise",
+  external: "repolens:show-external",
+  confidence: "repolens:call-confidence",
+  callDepth: "repolens:call-depth",
+  callDirection: "repolens:call-direction",
+} as const;
+
+function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
+  const value = readPref(key);
+  return choices.includes(value as T) ? (value as T) : fallback;
+}
+
+function savedConfidence(): Confidence[] {
+  const choices: Confidence[] = ["exact", "likely", "ambiguous", "external", "unresolved"];
+  const saved = (readPref(PREF.confidence) ?? "").split(",").filter((value): value is Confidence =>
+    choices.includes(value as Confidence));
+  return saved.length > 0 ? saved : DEFAULT_CONFIDENCE;
+}
 
 export const SOURCE_ONLY_ROLES: FileRole[] = ["source"];
 export const ALL_VISIBLE_ROLES: FileRole[] = ["source", "test", "config", "generated", "types"];
@@ -198,10 +221,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   repoPickerOpen: false,
   settingsOpen: false,
 
-  showNoise: false,
-  showExternal: false,
-  metric: "loc",
-  confidence: DEFAULT_CONFIDENCE,
+  showNoise: readPref(PREF.noise) === "on",
+  showExternal: readPref(PREF.external) === "on",
+  metric: savedChoice<MetricKey>(PREF.metric, ["loc", "complexity", "symbols"], "loc"),
+  confidence: savedConfidence(),
 
   callGraph: null,
   traceId: null,
@@ -337,8 +360,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       scopeId,
       symbolId,
       label,
-      depth: get().callGraph?.depth ?? 1,
-      direction: get().callGraph?.direction ?? "both",
+      depth: get().callGraph?.depth ?? Number(savedChoice(PREF.callDepth, ["1", "2", "3"], "1")),
+      direction: get().callGraph?.direction ??
+        savedChoice<CallGraphMode["direction"]>(PREF.callDirection, ["callers", "callees", "both"], "both"),
     };
     // 先切模式再取数：否则要等一个来回画布才有反应，看起来像点击丢了
     set({ callGraph: mode, traceId: null, traceLabel: null, selected: `sym:${symbolId}`, drawerOpen: false });
@@ -361,6 +385,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const current = get().callGraph;
     if (!current) return;
     const next = { ...current, depth };
+    writePref(PREF.callDepth, String(depth));
     set({ callGraph: next });
     await get().loadCallGraph(next);
   },
@@ -369,11 +394,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const current = get().callGraph;
     if (!current) return;
     const next = { ...current, direction };
+    writePref(PREF.callDirection, direction);
     set({ callGraph: next });
     await get().loadCallGraph(next);
   },
 
   async setConfidence(confidence) {
+    writePref(PREF.confidence, confidence.join(","));
     set({ confidence });
     const current = get().callGraph;
     if (current) await get().loadCallGraph(current);
@@ -526,18 +553,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setShowNoise(value) {
+    writePref(PREF.noise, value ? "on" : "off");
     set({ showNoise: value, subgraphs: {}, scopeLimits: {} });
     void get().loadScope(get().rootScope);
     for (const id of get().expanded) void get().loadScope(id);
   },
 
   setShowExternal(value) {
+    writePref(PREF.external, value ? "on" : "off");
     set({ showExternal: value, subgraphs: {}, scopeLimits: {} });
     void get().loadScope(get().rootScope);
     for (const id of get().expanded) void get().loadScope(id);
   },
 
   setMetric(value) {
+    writePref(PREF.metric, value);
     set({ metric: value });
   },
 

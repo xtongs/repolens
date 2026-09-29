@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { create } from "zustand";
 import { useT } from "../i18n";
+import { readPref, writePref } from "../lib/prefs";
 
 type PanelSide = "left" | "right";
 
@@ -33,8 +34,8 @@ export function measureSidebarAnchors(header: HTMLElement): void {
 }
 
 /**
- * 侧边栏宽度控制。拖拽只更新覆盖层本身，不触发画布重新布局。只有拖过的宽度才存进
- * localStorage，双击恢复默认就是清掉它，重新跟着顶栏对齐。
+ * 侧边栏宽度控制。拖拽只更新覆盖层本身，不触发画布重新布局。只有拖过的宽度才存成
+ * 偏好，双击恢复默认就是清掉它，重新跟着顶栏对齐。
  */
 export function useResizablePanel(options: ResizablePanelOptions) {
   const { side, storageKey, fallbackWidth, minWidth, maxWidth } = options;
@@ -52,12 +53,7 @@ export function useResizablePanel(options: ResizablePanelOptions) {
   const stopDraggingRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    try {
-      if (custom === null) window.localStorage.removeItem(storageKey);
-      else window.localStorage.setItem(storageKey, String(custom));
-    } catch {
-      // 隐私模式或禁用存储时，当前会话内仍可正常调整。
-    }
+    writePref(storageKey, custom === null ? null : String(custom));
   }, [storageKey, custom]);
 
   useEffect(() => {
@@ -120,12 +116,8 @@ export function useResizablePanel(options: ResizablePanelOptions) {
 }
 
 function readStoredWidth(storageKey: string): number | null {
-  try {
-    const parsed = Number.parseFloat(window.localStorage.getItem(storageKey) ?? "");
-    return Number.isFinite(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parsed = Number.parseFloat(readPref(storageKey) ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function ResizablePanelHandle({
