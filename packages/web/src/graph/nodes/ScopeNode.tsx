@@ -1,6 +1,7 @@
 import type { GraphNodeDto } from "@repolens/core/types";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { memo } from "react";
+import { useT } from "../../i18n";
 import type { MetricKey } from "../../store/useAppStore";
 import { formatCount, metricValue, nodeAccent, symbolGlyph } from "../../lib/visual";
 import { CONTAINER_HEADER } from "../layout/useElkLayout";
@@ -35,6 +36,7 @@ export type ScopeNodeType = Node<ScopeNodeData, "scope">;
  * 状态实现出现细微差异。
  */
 export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeType>) {
+  const t = useT();
   const {
     dto,
     label,
@@ -85,7 +87,7 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
         </div>
         {truncatedInside > 0 && (
           <div className="absolute bottom-1.5 right-2.5 text-[10px] text-[var(--color-ink-faint)]">
-            另有 {truncatedInside} 项未展开
+            {t("另有 {count} 项未展开", { count: truncatedInside })}
           </div>
         )}
         <Handle type="source" position={outPos} />
@@ -185,12 +187,12 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
               <span className="shrink-0">{formatCount(value)}</span>
               {dto.layer && <span className="shrink-0 text-[var(--color-accent)]">· {dto.layer}</span>}
               {dto.childCount > 0 && dto.kind !== "symbol" && (
-                <span className="shrink-0 text-[var(--color-ink-faint)]">· {dto.childCount} 项</span>
+                <span className="shrink-0 text-[var(--color-ink-faint)]">{t("· {count} 项", { count: dto.childCount })}</span>
               )}
               {dto.metrics.inDegree + dto.metrics.outDegree > 0 && (
                 <span
                   className="ml-auto shrink-0 tabular-nums"
-                  title={dto.kind === "symbol" ? "调用 / 被调用" : "依赖 / 被依赖"}
+                  title={dto.kind === "symbol" ? t("调用 / 被调用") : t("依赖 / 被依赖")}
                 >
                   {horizontal
                     ? `→${dto.metrics.outDegree} ←${dto.metrics.inDegree}`
@@ -226,6 +228,7 @@ function stackLayers(dto: GraphNodeDto): number {
  * 计数含子孙上卷，所以在包级视图就能看出问题集中在哪个包。
  */
 function FindingsBadge({ dto, inline }: { dto: GraphNodeDto; inline?: boolean }) {
+  const t = useT();
   const findings = dto.findings;
   if (!findings || findings.count === 0) return null;
 
@@ -236,7 +239,9 @@ function FindingsBadge({ dto, inline }: { dto: GraphNodeDto; inline?: boolean })
     <span
       className={`${position} flex items-center gap-0.5 rounded-full px-1 text-[9.5px] font-medium tabular-nums`}
       style={{ background: `color-mix(in srgb, ${color} 20%, transparent)`, color }}
-      title={`${findings.count} 处结构问题${findings.high > 0 ? `（${findings.high} 处需优先看）` : ""}`}
+      title={findings.high > 0
+        ? t("{count} 处结构问题（{high} 处需优先看）", { count: findings.count, high: findings.high })
+        : t("{count} 处结构问题", { count: findings.count })}
     >
       <span className="h-1 w-1 rounded-full" style={{ background: color }} />
       {findings.count}

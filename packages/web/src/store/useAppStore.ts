@@ -44,6 +44,14 @@ export interface CallGraphMode {
   direction: "callers" | "callees" | "both";
 }
 
+export type PanelTab = "tree" | "findings" | "traces";
+
+export interface DetailRequest {
+  nodeId: string;
+  tab: "source" | "notes";
+  lines: [number, number] | null;
+}
+
 export interface AppState {
   overview: OverviewDto | null;
   bootError: string | null;
@@ -121,6 +129,10 @@ export interface AppState {
   /** 最近一次 reveal 的目标，供画布把视口移过去；消费后清空 */
   revealed: string | null;
   clearRevealed: () => void;
+  /** 定位到节点，并让详情打开指定的页签（有行号时滚到那几行）。详情消费后清空 */
+  detailRequest: DetailRequest | null;
+  openDetail: (nodeId: string, request: Omit<DetailRequest, "nodeId">) => void;
+  clearDetailRequest: () => void;
   hover: (nodeId: string | null, anchor?: { x: number; y: number }) => void;
   setFocus: (nodeId: string | null, depth?: number) => void;
   hideBranch: (nodeId: string) => void;
@@ -130,8 +142,8 @@ export interface AppState {
 
   setDrawerOpen: (open: boolean) => void;
   setChatOpen: (open: boolean) => void;
-  panelTab: "tree" | "findings" | "traces";
-  setPanelTab: (tab: "tree" | "findings" | "traces") => void;
+  panelTab: PanelTab;
+  setPanelTab: (tab: PanelTab) => void;
   setTreeOpen: (open: boolean) => void;
   setFilterOpen: (open: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
@@ -179,6 +191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   treeOpen: false,
   panelTab: "tree",
   revealed: null,
+  detailRequest: null,
   filterOpen: false,
   paletteOpen: false,
   helpOpen: false,
@@ -256,6 +269,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       traceLabel: null,
       hiddenNodes: [],
       revealed: null,
+      detailRequest: null,
     });
     await get().boot();
   },
@@ -471,6 +485,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   clearRevealed() {
     set({ revealed: null });
+  },
+
+  openDetail(nodeId, request) {
+    set({ detailRequest: { nodeId, ...request } });
+    void get().reveal(nodeId);
+  },
+
+  clearDetailRequest() {
+    set({ detailRequest: null });
   },
 
   setPanelTab(tab) {

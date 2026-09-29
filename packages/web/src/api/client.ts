@@ -6,6 +6,8 @@ import type {
   FindingDto,
   FindingSummaryDto,
   GraphDto,
+  NoteDto,
+  NoteInputDto,
   OverviewDto,
   PickRepoResultDto,
   RepoScanTaskDto,
@@ -20,6 +22,7 @@ import type {
   TraceNarrativeResultDto,
   TraceSummaryDto,
 } from "@repolens/core/types";
+import { t, translateMessage } from "../i18n";
 
 const BASE = "/api";
 
@@ -102,6 +105,20 @@ async function post<T>(
   return (await response.json()) as T;
 }
 
+async function send<T>(method: "POST" | "DELETE", path: string, intent: string, body?: unknown): Promise<T> {
+  const query = activeRepo !== undefined ? `?repo=${encodeURIComponent(activeRepo)}` : "";
+  const response = await fetch(`${BASE}${path}${query}`, {
+    method,
+    headers: {
+      "x-repolens-intent": intent,
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) throw await toError(response);
+  return (await response.json()) as T;
+}
+
 async function toError(response: Response): Promise<ApiError> {
   let detail = response.statusText;
   try {
@@ -110,7 +127,7 @@ async function toError(response: Response): Promise<ApiError> {
   } catch {
     // 响应体不是 JSON 就用状态文本
   }
-  return new ApiError(detail, response.status);
+  return new ApiError(translateMessage(detail), response.status);
 }
 
 export interface GraphParams {
@@ -214,6 +231,12 @@ export const api = {
   search: (q: string, limit = 30, roles?: string) =>
     get<SearchHitDto[]>("/search", { q, limit, roles }),
 
+  notes: () => get<{ notes: NoteDto[] }>("/notes"),
+
+  addNote: (input: NoteInputDto) => send<NoteDto>("POST", "/notes", "save-note", input),
+
+  deleteNote: (id: string) => send<{ ok: true }>("DELETE", `/notes/${encodeURIComponent(id)}`, "save-note"),
+
   chat: streamChat,
 };
 
@@ -239,7 +262,7 @@ async function streamChat(
     signal,
   });
   if (!response.ok) throw await toError(response);
-  if (!response.body) throw new ApiError("浏览器不支持流式响应", 0);
+  if (!response.body) throw new ApiError(t("浏览器不支持流式响应"), 0);
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -255,7 +278,7 @@ async function streamChat(
     else if (event === "context" && Array.isArray(payload["items"])) {
       handlers.onContext?.(payload["items"] as ChatContextItemDto[]);
     } else if (event === "done") result.done = payload as unknown as ChatDoneDto;
-    else if (event === "error") throw new ApiError(String(payload["message"] ?? "AI 回答失败"), 502);
+    else if (event === "error") throw new ApiError(payload["message"] ? translateMessage(String(payload["message"])) : t("AI 回答失败"), 502);
   };
 
   while (true) {
@@ -275,7 +298,7 @@ async function streamChat(
     }
   }
   dispatch();
-  if (result.done === null) throw new ApiError("回答在中途断开了", 0);
+  if (result.done === null) throw new ApiError(t("回答在中途断开了"), 0);
   return result.done;
 }
 

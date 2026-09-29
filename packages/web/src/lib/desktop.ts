@@ -44,6 +44,8 @@ export interface DesktopBridge {
   onCommand: (listener: (command: DesktopCommand) => void) => () => void;
   /** macOS 全屏时红绿灯按钮会隐藏，顶栏不必再给它们留位置 */
   onFullScreenChange: (listener: (fullScreen: boolean) => void) => () => void;
+  /** 原生菜单和对话框跟随界面语言 */
+  setLocale: (locale: "zh" | "en") => void;
 }
 
 export const desktop: DesktopBridge | null =

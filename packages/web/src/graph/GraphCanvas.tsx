@@ -12,6 +12,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocale, useT } from "../i18n";
 import { HoverCard } from "../overlays/HoverCard";
 import { NodeContextMenu, type ContextMenuState } from "../overlays/NodeContextMenu";
 import { useAppStore, useGraphSlice, type MetricKey } from "../store/useAppStore";
@@ -62,6 +63,8 @@ export function GraphCanvas() {
 }
 
 function CanvasInner() {
+  const t = useT();
+  const locale = useLocale();
   const slice = useGraphSlice();
   const focus = useAppStore((s) => s.focus);
   const focusDepth = useAppStore((s) => s.focusDepth);
@@ -94,9 +97,10 @@ function CanvasInner() {
     [flat.nodes, metric],
   );
 
+  // 节点宽度按元信息文案估算，换语言后文案变长变短，要重新布局
   const sizeOf = useCallback(
     (node: { dto: GraphNodeDto }) => nodeSize(node.dto, metric, maxMetric),
-    [metric, maxMetric],
+    [metric, maxMetric, locale],
   );
 
   const horizontal = callGraph !== null;
@@ -253,7 +257,7 @@ function CanvasInner() {
   if (flat.nodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-[var(--color-ink-faint)]">
-        {loading ? "正在加载图谱…" : "这个作用域下没有可显示的内容"}
+        {loading ? t("正在加载图谱…") : t("这个作用域下没有可显示的内容")}
       </div>
     );
   }
@@ -297,12 +301,12 @@ function CanvasInner() {
 
       {layout.pending && (
         <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-1 text-[11px] text-[var(--color-ink-muted)]">
-          正在布局…
+          {t("正在布局…")}
         </div>
       )}
 
       <div className="pointer-events-none absolute bottom-4 right-4 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)]/90 px-2.5 py-1 text-[10px] text-[var(--color-ink-faint)] shadow-sm backdrop-blur">
-        {horizontal ? "调用方向：调用方 → 被调用方" : "依赖方向：使用方 ↓ 被依赖方"}
+        {horizontal ? t("调用方向：调用方 → 被调用方") : t("依赖方向：使用方 ↓ 被依赖方")}
       </div>
 
       <HoverCard />
@@ -366,6 +370,8 @@ function useAutoViewport(nodes: PositionedNode[], version: number, attention: st
   const paneWidth = useFlowStore((s) => s.width);
   const paneHeight = useFlowStore((s) => s.height);
   const lastFittedKey = useRef<string | null>(null);
+  /** 图清空时的布局版本。清空后回来的节点先带着上一版坐标，要等更新的一版落地才能量 */
+  const emptiedAt = useRef(0);
   /** 首个镜头落位之前，节点还摆在默认视口里，不能露出来 */
   const [framed, setFramed] = useState(false);
 
@@ -373,7 +379,18 @@ function useAutoViewport(nodes: PositionedNode[], version: number, attention: st
   const rootKey = useMemo(() => roots.map((n) => n.dto.id).join("|"), [roots]);
 
   useEffect(() => {
-    if (version === 0 || roots.length === 0) return;
+    // 图一空 ReactFlow 就被卸掉了（切噪音、外部依赖或进调用图都要重新加载），
+    // 再挂上时镜头已回到默认的原点。从那里过渡，整张图就像从左上角飘进来，
+    // 所以当成首屏：先藏着，新布局落地后从中间淡入，和换仓库一样。
+    if (roots.length === 0) {
+      if (lastFittedKey.current !== null) {
+        lastFittedKey.current = null;
+        emptiedAt.current = version;
+        setFramed(false);
+      }
+      return;
+    }
+    if (version <= emptiedAt.current) return;
     if (paneWidth === 0 || paneHeight === 0) return;
 
     const pane = { width: paneWidth, height: paneHeight };

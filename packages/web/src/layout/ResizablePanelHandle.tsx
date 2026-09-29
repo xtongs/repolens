@@ -1,46 +1,70 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { create } from "zustand";
+import { useT } from "../i18n";
 
 type PanelSide = "left" | "right";
 
 interface ResizablePanelOptions {
   side: PanelSide;
   storageKey: string;
-  defaultWidth: number;
+  /** 顶栏还没量到对齐位置时用这个宽度 */
+  fallbackWidth: number;
   minWidth: number;
   maxWidth: number;
 }
 
 /**
- * 侧边栏宽度控制。拖拽只更新覆盖层本身，不触发画布重新布局；宽度保存在
- * localStorage，下一次打开页面时继续使用。
+ * 侧边栏没拖过时的宽度跟着顶栏走：左栏右缘对齐顶栏左侧那组按钮（最后一个是 AI 追问），
+ * 右栏左缘对齐右侧操作区（第一个是「代码行」）。字号、语言、窗口宽度变了都会重新对齐。
+ * 调用图和链路视图换掉了右侧那组控件，这时沿用上次量到的，免得切视图时抽屉跟着跳。
+ */
+const useSidebarAnchors = create<Record<PanelSide, number | null>>(() => ({ left: null, right: null }));
+
+export function measureSidebarAnchors(header: HTMLElement): void {
+  const box = header.getBoundingClientRect();
+  const left = header.querySelector('[data-sidebar-anchor="left"]')?.getBoundingClientRect();
+  const right = header.querySelector('[data-sidebar-anchor="right"]')?.getBoundingClientRect();
+  const current = useSidebarAnchors.getState();
+  const next = {
+    left: left ? Math.round(left.right - box.left) : current.left,
+    right: right ? Math.round(box.right - right.left) : current.right,
+  };
+  if (next.left !== current.left || next.right !== current.right) useSidebarAnchors.setState(next);
+}
+
+/**
+ * 侧边栏宽度控制。拖拽只更新覆盖层本身，不触发画布重新布局。只有拖过的宽度才存进
+ * localStorage，双击恢复默认就是清掉它，重新跟着顶栏对齐。
  */
 export function useResizablePanel(options: ResizablePanelOptions) {
-  const { side, storageKey, defaultWidth, minWidth, maxWidth } = options;
+  const { side, storageKey, fallbackWidth, minWidth, maxWidth } = options;
+  const anchored = useSidebarAnchors((s) => s[side]);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const clamp = useCallback(
     (value: number) => {
-      const viewportMax = typeof window === "undefined"
-        ? maxWidth
-        : Math.max(minWidth, window.innerWidth - 48);
+      const viewportMax = Math.max(minWidth, viewportWidth - 48);
       return Math.round(Math.min(Math.max(value, minWidth), Math.min(maxWidth, viewportMax)));
     },
-    [maxWidth, minWidth],
+    [maxWidth, minWidth, viewportWidth],
   );
-  const [width, setWidth] = useState(() => readStoredWidth(storageKey, defaultWidth, clamp));
+  const [custom, setCustom] = useState(() => readStoredWidth(storageKey));
+  const width = clamp(custom ?? anchored ?? fallbackWidth);
   const stopDraggingRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(storageKey, String(width));
+      if (custom === null) window.localStorage.removeItem(storageKey);
+      else window.localStorage.setItem(storageKey, String(custom));
     } catch {
       // 隐私模式或禁用存储时，当前会话内仍可正常调整。
     }
-  }, [storageKey, width]);
+  }, [storageKey, custom]);
 
   useEffect(() => {
-    const fitViewport = () => setWidth((current) => clamp(current));
-    window.addEventListener("resize", fitViewport);
-    return () => window.removeEventListener("resize", fitViewport);
-  }, [clamp]);
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => () => stopDraggingRef.current?.(), []);
 
@@ -58,7 +82,7 @@ export function useResizablePanel(options: ResizablePanelOptions) {
     document.body.style.userSelect = "none";
 
     const onMove = (moveEvent: PointerEvent) => {
-      setWidth(clamp(startWidth + (moveEvent.clientX - startX) * direction));
+      setCustom(clamp(startWidth + (moveEvent.clientX - startX) * direction));
     };
     const stop = () => {
       document.removeEventListener("pointermove", onMove);
@@ -82,7 +106,7 @@ export function useResizablePanel(options: ResizablePanelOptions) {
     if (event.key === "ArrowRight") next = width + (side === "left" ? 16 : -16);
     if (next === null) return;
     event.preventDefault();
-    setWidth(clamp(next));
+    setCustom(clamp(next));
   }, [clamp, maxWidth, minWidth, side, width]);
 
   return {
@@ -91,21 +115,16 @@ export function useResizablePanel(options: ResizablePanelOptions) {
     maxWidth: clamp(maxWidth),
     onPointerDown,
     onKeyDown,
-    reset: () => setWidth(clamp(defaultWidth)),
+    reset: () => setCustom(null),
   };
 }
 
-function readStoredWidth(
-  storageKey: string,
-  fallback: number,
-  clamp: (value: number) => number,
-): number {
-  if (typeof window === "undefined") return clamp(fallback);
+function readStoredWidth(storageKey: string): number | null {
   try {
     const parsed = Number.parseFloat(window.localStorage.getItem(storageKey) ?? "");
-    return clamp(Number.isFinite(parsed) ? parsed : fallback);
+    return Number.isFinite(parsed) ? parsed : null;
   } catch {
-    return clamp(fallback);
+    return null;
   }
 }
 
@@ -128,6 +147,7 @@ export function ResizablePanelHandle({
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   onReset: () => void;
 }) {
+  const t = useT();
   return (
     <div
       role="separator"
@@ -137,7 +157,7 @@ export function ResizablePanelHandle({
       aria-valuemax={maxWidth}
       aria-valuenow={width}
       tabIndex={0}
-      title="拖动调整宽度；双击恢复默认"
+      title={t("拖动调整宽度；双击恢复默认")}
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
       onDoubleClick={onReset}

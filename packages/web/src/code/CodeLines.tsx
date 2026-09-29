@@ -20,6 +20,7 @@ export function CodeLine({
   text,
   tokens,
   marked = false,
+  noted = false,
   gutter,
   lineRef,
 }: {
@@ -27,6 +28,8 @@ export function CodeLine({
   text: string;
   tokens: CodeToken[] | null | undefined;
   marked?: boolean;
+  /** 这一行记过笔记，行号换成笔记色 */
+  noted?: boolean;
   /** 行号左侧的细色条，用来把一段源码归到某个伪代码步骤；undefined 时不占位 */
   gutter?: string | null;
   lineRef?: Ref<HTMLDivElement>;
@@ -43,7 +46,11 @@ export function CodeLine({
         <span className="w-[3px] shrink-0" style={{ background: gutter ?? "transparent" }} />
       )}
       {number !== null && (
-        <span className="w-10 shrink-0 select-none pr-2.5 text-right tabular-nums text-[var(--color-ink-faint)]">
+        <span
+          className={`w-10 shrink-0 select-none pr-2.5 text-right tabular-nums ${
+            noted ? "text-[var(--color-note)]" : "text-[var(--color-ink-faint)]"
+          }`}
+        >
           {number}
         </span>
       )}

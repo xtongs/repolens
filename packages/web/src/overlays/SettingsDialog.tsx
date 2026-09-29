@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useT } from "../i18n";
 import { desktop, type DesktopBridge, type LlmSettings } from "../lib/desktop";
 import { useAppStore } from "../store/useAppStore";
 
@@ -17,6 +18,7 @@ export function SettingsDialog() {
 }
 
 function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () => void }) {
+  const t = useT();
   const [settings, setSettings] = useState<LlmSettings | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
@@ -80,12 +82,12 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
         className="w-[480px] overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] shadow-2xl"
       >
         <div className="flex items-center border-b border-[var(--color-line)] px-4 py-2.5">
-          <span className="text-[13px] font-medium">AI 设置</span>
+          <span className="text-[13px] font-medium">{t("AI 设置")}</span>
           <button
             type="button"
             onClick={onClose}
             className="ml-auto text-[13px] text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
-            aria-label="关闭"
+            aria-label={t("关闭")}
           >
             ×
           </button>
@@ -93,16 +95,15 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
 
         {settings === null ? (
           <div className="px-4 py-8 text-center text-[12px] text-[var(--color-ink-faint)]">
-            {error ?? "正在读取设置…"}
+            {error ?? t("正在读取设置…")}
           </div>
         ) : (
           <div className="flex flex-col gap-3.5 p-4">
             <p className="text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-              兼容 OpenAI Chat Completions 接口的服务都可以用：OpenAI、DeepSeek、各类模型网关，
-              或者本机的 Ollama（http://localhost:11434/v1，无需密钥）。
+              {t("兼容 OpenAI Chat Completions 接口的服务都可以用：OpenAI、DeepSeek、各类模型网关，或者本机的 Ollama（http://localhost:11434/v1，无需密钥）。")}
             </p>
 
-            <Field label="服务地址">
+            <Field label={t("服务地址")}>
               <input
                 ref={firstField}
                 value={baseUrl}
@@ -114,7 +115,7 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
             </Field>
 
             <div className="grid grid-cols-2 gap-3">
-              <Field label="模型" hint="生成摘要、伪代码">
+              <Field label={t("模型")} hint={t("生成摘要、伪代码")}>
                 <input
                   value={model}
                   onChange={(event) => setModel(event.target.value)}
@@ -123,11 +124,11 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
                   className={INPUT}
                 />
               </Field>
-              <Field label="交互模型" hint="可选，追问时优先使用">
+              <Field label={t("交互模型")} hint={t("可选，追问时优先使用")}>
                 <input
                   value={interactiveModel}
                   onChange={(event) => setInteractiveModel(event.target.value)}
-                  placeholder="与模型相同"
+                  placeholder={t("与模型相同")}
                   spellCheck={false}
                   className={INPUT}
                 />
@@ -141,7 +142,7 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
                   checked={!requiresKey}
                   onChange={(event) => setRequiresKey(!event.target.checked)}
                 />
-                这个服务不需要密钥
+                {t("这个服务不需要密钥")}
               </label>
               {requiresKey && (
                 <KeyInput
@@ -165,8 +166,8 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
             )}
 
             <p className="border-t border-[var(--color-line)] pt-2.5 text-[10.5px] leading-relaxed text-[var(--color-ink-faint)]">
-              服务地址和模型保存在 <span className="mono break-all">{settings.configPath}</span>，与命令行共用。
-              Key 由系统钥匙串加密后只保存在本机。
+              {t("服务地址和模型保存在")} <span className="mono break-all">{settings.configPath}</span>
+              {t("，与命令行共用。Key 由系统钥匙串加密后只保存在本机。")}
             </p>
 
             <div className="flex justify-end gap-2">
@@ -175,14 +176,14 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
                 onClick={onClose}
                 className="rounded-md border border-[var(--color-line)] px-3 py-1.5 text-[11.5px] text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-line-strong)]"
               >
-                取消
+                {t("取消")}
               </button>
               <button
                 type="submit"
                 disabled={saving}
                 className="rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-[11.5px] font-medium text-[var(--color-canvas)] transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                {saving ? "正在保存…" : "保存"}
+                {saving ? t("正在保存…") : t("保存")}
               </button>
             </div>
           </div>
@@ -231,6 +232,7 @@ function KeyInput({
   clearing: boolean;
   onToggleClear: () => void;
 }) {
+  const t = useT();
   const envName = serviceChanged
     ? settings.newServiceKeyEnv
     : settings.apiKeyEnv || settings.newServiceKeyEnv;
@@ -238,22 +240,22 @@ function KeyInput({
   if (!settings.canSaveKey) {
     return (
       <p className="text-[11px] leading-relaxed text-[var(--color-warn)]">
-        系统钥匙串不可用，无法在这里保存 Key。请在启动 RepoLens 的环境里设置环境变量
+        {t("系统钥匙串不可用，无法在这里保存 Key。请在启动 RepoLens 的环境里设置环境变量")}
         <span className="mono"> {envName}</span>
-        {!serviceChanged && settings.envKeyPresent ? "（当前已读取到）" : ""}。
+        {!serviceChanged && settings.envKeyPresent ? t("（当前已读取到）") : ""}{t("。")}
       </p>
     );
   }
 
   const placeholder = serviceChanged
-    ? "填写这个服务的 API Key"
+    ? t("填写这个服务的 API Key")
     : clearing
-      ? "保存后清除已保存的 Key"
+      ? t("保存后清除已保存的 Key")
       : settings.hasSavedKey
-        ? "已保存，留空保持不变"
+        ? t("已保存，留空保持不变")
         : settings.envKeyPresent
-          ? `已从环境变量 ${envName} 读取，填写后改用这里的`
-          : "粘贴 API Key";
+          ? t("已从环境变量 {env} 读取，填写后改用这里的", { env: envName })
+          : t("粘贴 API Key");
 
   return (
     <div>
@@ -274,13 +276,13 @@ function KeyInput({
             onClick={onToggleClear}
             className="shrink-0 text-[11px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-danger)]"
           >
-            {clearing ? "撤销" : "清除"}
+            {clearing ? t("撤销") : t("清除")}
           </button>
         )}
       </div>
       {serviceChanged && (
         <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--color-ink-faint)]">
-          换了服务地址，原来的 Key 不会发给新地址。
+          {t("换了服务地址，原来的 Key 不会发给新地址。")}
         </p>
       )}
     </div>

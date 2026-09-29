@@ -8,6 +8,7 @@ import {
   screen,
   session,
   shell,
+  type IpcMainEvent,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
   type OpenDialogOptions,
@@ -17,6 +18,7 @@ import { join } from "node:path";
 import type { DesktopCommand } from "../../web/src/lib/desktop.js";
 import { IPC } from "./ipc.js";
 import { LocalServer } from "./local-server.js";
+import { isLocale, locale, setLocale, tr } from "./locale.js";
 import { buildMenu, HOMEPAGE } from "./menu.js";
 import {
   keyEnvUpdate,
@@ -83,7 +85,10 @@ if (!app.requestSingleInstanceLock()) {
     while ((crashTimes[0] ?? now) < now - 60_000) crashTimes.shift();
     log(`服务进程意外退出（代码 ${code}）`);
     if (crashTimes.length > MAX_CRASHES_PER_MINUTE) {
-      dialog.showErrorBox("RepoLens 服务反复退出", `已停止自动重启。日志在：\n${logsDir}`);
+      dialog.showErrorBox(
+        tr("RepoLens 服务反复退出", "The RepoLens server keeps exiting"),
+        tr(`已停止自动重启。日志在：\n${logsDir}`, `Automatic restart has stopped. Logs are in:\n${logsDir}`),
+      );
       return;
     }
     try {
@@ -91,14 +96,17 @@ if (!app.requestSingleInstanceLock()) {
       await connect();
       if (mainWindow) void mainWindow.loadURL(pageUrl(repo));
     } catch (err) {
-      dialog.showErrorBox("RepoLens 服务无法重启", `${(err as Error).message}\n\n日志在：${logsDir}`);
+      dialog.showErrorBox(
+        tr("RepoLens 服务无法重启", "The RepoLens server couldn't restart"),
+        `${(err as Error).message}\n\n${tr("日志在：", "Logs are in: ")}${logsDir}`,
+      );
     }
   }
 
   async function pickDirectory(): Promise<string | null> {
     const options: OpenDialogOptions = {
-      title: "选择要添加到 RepoLens 的代码仓库",
-      buttonLabel: "添加",
+      title: tr("选择要添加到 RepoLens 的代码仓库", "Choose a code repository to add to RepoLens"),
+      buttonLabel: tr("添加", "Add"),
       properties: ["openDirectory"],
     };
     const result = mainWindow
@@ -133,7 +141,8 @@ if (!app.requestSingleInstanceLock()) {
     const saved = readState().window;
     const win = new BrowserWindow({
       ...initialBounds(saved),
-      minWidth: 960,
+      // 与界面的最小宽度一致，窗口拖到最窄时顶栏也不会出现横向滚动
+      minWidth: 1024,
       minHeight: 600,
       show: false,
       title: "RepoLens",
@@ -181,14 +190,14 @@ if (!app.requestSingleInstanceLock()) {
     win.webContents.on("context-menu", (_event, params) => {
       const items: MenuItemConstructorOptions[] = params.isEditable
         ? [
-          { role: "cut", label: "剪切" },
-          { role: "copy", label: "复制" },
-          { role: "paste", label: "粘贴" },
+          { role: "cut", label: tr("剪切", "Cut") },
+          { role: "copy", label: tr("复制", "Copy") },
+          { role: "paste", label: tr("粘贴", "Paste") },
           { type: "separator" },
-          { role: "selectAll", label: "全选" },
+          { role: "selectAll", label: tr("全选", "Select All") },
         ]
         : params.selectionText.trim() !== ""
-          ? [{ role: "copy", label: "复制" }]
+          ? [{ role: "copy", label: tr("复制", "Copy") }]
           : [];
       if (items.length > 0) Menu.buildFromTemplate(items).popup({ window: win });
     });
@@ -213,10 +222,12 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.webContents.send(IPC.command, command);
   }
 
+  function fromApp(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+    return origin !== "" && (event.senderFrame?.url ?? "").startsWith(`${origin}/`);
+  }
+
   function assertFromApp(event: IpcMainInvokeEvent): void {
-    if (!origin || !(event.senderFrame?.url ?? "").startsWith(`${origin}/`)) {
-      throw new Error("拒绝来自未知页面的请求");
-    }
+    if (!fromApp(event)) throw new Error(tr("拒绝来自未知页面的请求", "Rejected a request from an unknown page"));
   }
 
   ipcMain.handle(IPC.getLlmSettings, (event) => {
@@ -231,6 +242,14 @@ if (!app.requestSingleInstanceLock()) {
     injectedKeyEnv = name;
     await server.setEnv(values);
     return readLlmSettings();
+  });
+
+  // 页面每次加载都会报一次；只有语言真的变了才重建菜单并记下来
+  ipcMain.on(IPC.setLocale, (event, value: unknown) => {
+    if (!fromApp(event) || !isLocale(value) || value === locale()) return;
+    setLocale(value);
+    writeState({ locale: value });
+    applyMenu();
   });
 
   app.on("second-instance", () => {
@@ -249,20 +268,29 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("before-quit", () => server.stop());
 
-  void app.whenReady().then(async () => {
-    const updater = setupUpdater(() => mainWindow, log);
+  let updater: ReturnType<typeof setupUpdater> | null = null;
+
+  /** 菜单和关于面板里的文案按当前语言生成，换语言后重新调用 */
+  function applyMenu(): void {
     app.setAboutPanelOptions({
       applicationName: "RepoLens",
       applicationVersion: app.getVersion(),
-      copyright: "本地代码仓库理解工具",
+      copyright: tr("本地代码仓库理解工具", "Understand local code repositories"),
       website: HOMEPAGE,
     });
     Menu.setApplicationMenu(buildMenu({
       addRepository: () => sendCommand("add-repository"),
       openSettings: () => sendCommand("open-settings"),
-      checkForUpdates: () => updater.checkNow(),
+      checkForUpdates: () => updater?.checkNow(),
       openLogs: () => void shell.openPath(logsDir),
     }));
+  }
+
+  void app.whenReady().then(async () => {
+    updater = setupUpdater(() => mainWindow, log);
+    const savedLocale = readState().locale;
+    if (savedLocale) setLocale(savedLocale);
+    applyMenu();
 
     // 从终端启动时环境已经齐全；从 Dock / 桌面菜单启动才需要补读 shell 配置。
     const readsShell = process.platform !== "win32" && !process.env["TERM"];
@@ -272,7 +300,10 @@ if (!app.requestSingleInstanceLock()) {
       await connect();
     } catch (err) {
       log(`服务启动失败：${(err as Error).stack ?? String(err)}`);
-      dialog.showErrorBox("RepoLens 无法启动", `${(err as Error).message}\n\n日志在：${logsDir}`);
+      dialog.showErrorBox(
+        tr("RepoLens 无法启动", "RepoLens couldn't start"),
+        `${(err as Error).message}\n\n${tr("日志在：", "Logs are in: ")}${logsDir}`,
+      );
       app.quit();
       return;
     }

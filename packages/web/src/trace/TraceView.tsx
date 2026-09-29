@@ -1,15 +1,17 @@
 import type { TraceDto, TraceNarrativeDto, TraceStepDto } from "@repolens/core/types";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "../api/client";
+import { msg, useT } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
 
-const LANE = { entry: "入口", call: "内部调用", boundary: "I/O 边界" } as const;
+const LANE = { entry: msg("入口"), call: msg("内部调用"), boundary: msg("I/O 边界") } as const;
 
 /**
  * M4 使用独立的时序视图而不是复用依赖图：纵轴严格代表执行顺序，横向三条
  * 泳道代表步骤角色。颜色只表达证据来源，虚线/琥珀色永远表示静态推断。
  */
 export function TraceView({ traceId }: { traceId: string }) {
+  const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const reveal = useAppStore((s) => s.reveal);
   const [trace, setTrace] = useState<TraceDto | null>(null);
@@ -37,12 +39,12 @@ export function TraceView({ traceId }: { traceId: string }) {
       const result = await api.generateTraceNarrative(traceId);
       setTrace((current) => current ? { ...current, narrative: result.narrative, hasNarrative: true } : current);
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 503 ? "LLM 未配置，确定性链路仍可正常查看。" : (err as Error).message);
+      setError(err instanceof ApiError && err.status === 503 ? t("LLM 未配置，确定性链路仍可正常查看。") : (err as Error).message);
     } finally { setGenerating(false); }
   };
 
   if (error && trace === null) return <TraceState text={error} />;
-  if (trace === null) return <TraceState text="正在装载链路…" />;
+  if (trace === null) return <TraceState text={t("正在装载链路…")} />;
 
   return (
     <div className="thin-scroll h-full overflow-auto bg-[var(--color-canvas)]">
@@ -56,12 +58,12 @@ export function TraceView({ traceId }: { traceId: string }) {
             </div>
             <h1 className="text-[17px] font-medium text-[var(--color-ink)]">{trace.label}</h1>
             <p className="mono mt-1 text-[10.5px] text-[var(--color-ink-faint)]">
-              {trace.entry.filePath}:{trace.entry.line} · {trace.steps} 个有序步骤
+              {trace.entry.filePath}:{trace.entry.line} · {t("{count} 个有序步骤", { count: trace.steps })}
             </p>
           </div>
           <button type="button" disabled={generating} onClick={() => void generate()}
             className="rounded-md border border-[var(--color-accent)]/50 px-3 py-1.5 text-[11px] text-[var(--color-accent)] disabled:opacity-50">
-            {generating ? "正在生成…" : trace.narrative ? "重新生成 AI 叙述" : "AI 解释链路"}
+            {generating ? t("正在生成…") : trace.narrative ? t("重新生成 AI 叙述") : t("AI 解释链路")}
           </button>
         </header>
 
@@ -70,7 +72,7 @@ export function TraceView({ traceId }: { traceId: string }) {
 
         <div className="grid grid-cols-[24px_repeat(3,minmax(0,1fr))] gap-x-4 border-b border-[var(--color-line)] pb-2 text-center text-[10px] uppercase tracking-wider text-[var(--color-ink-faint)]">
           <span aria-hidden="true" />
-          <span>入口</span><span>内部调用</span><span>I/O 边界</span>
+          <span>{t(LANE.entry)}</span><span>{t(LANE.call)}</span><span>{t(LANE.boundary)}</span>
         </div>
 
         <div className="relative py-3">
@@ -82,8 +84,7 @@ export function TraceView({ traceId }: { traceId: string }) {
 
         <TypeFlows trace={trace} />
         <div className="mt-5 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
-          绿色“确定”来自 AST 和精确调用链接；琥珀色“推断”来自唯一名/可见类型启发式。
-          类型流仅按函数签名归纳，不代表运行时值或污点传播。
+          {t("绿色“确定”来自 AST 和精确调用链接；琥珀色“推断”来自唯一名/可见类型启发式。类型流仅按函数签名归纳，不代表运行时值或污点传播。")}
         </div>
       </div>
     </div>
@@ -93,6 +94,7 @@ export function TraceView({ traceId }: { traceId: string }) {
 function StepRow({ step, last, narrative, onOpen }: {
   step: TraceStepDto; last: boolean; narrative?: TraceNarrativeDto["steps"][number]; onOpen: () => void;
 }) {
+  const t = useT();
   const column = step.kind === "entry" ? 1 : step.kind === "boundary" ? 3 : 2;
   const color = step.source === "deterministic" ? "var(--color-success)" : "var(--color-warn)";
   return (
@@ -127,11 +129,14 @@ function StepRow({ step, last, narrative, onOpen }: {
             <span className="truncate text-[12px] font-medium">{step.label}</span>
           </div>
           <div className="mono mt-1.5 truncate text-[9.5px] text-[var(--color-ink-faint)]">
-            定义 {step.filePath}:{step.line}
+            {t("定义 {location}", { location: `${step.filePath}:${step.line}` })}
           </div>
           {step.callSite && (
             <div className="mono mt-0.5 truncate text-[9.5px] text-[var(--color-ink-faint)]">
-              调用 {step.callSite.filePath}:{step.callSite.line} · {step.argCount} 个实参
+              {t("调用 {location} · {count} 个实参", {
+                location: `${step.callSite.filePath}:${step.callSite.line}`,
+                count: step.argCount,
+              })}
             </div>
           )}
           {step.arguments.length > 0 && (
@@ -142,30 +147,32 @@ function StepRow({ step, last, narrative, onOpen }: {
           {narrative && (
             <div className="mt-2 border-t border-[var(--color-line)] pt-2 text-[10.5px] leading-relaxed text-[var(--color-ink-muted)]">
               <span className="mr-1 text-[9px] text-[var(--color-accent)]">AI</span>{narrative.narrative}
-              {narrative.parameterFlow && <div className="mt-1 text-[var(--color-ink-faint)]">参数：{narrative.parameterFlow}</div>}
+              {narrative.parameterFlow && <div className="mt-1 text-[var(--color-ink-faint)]">{t("参数：{flow}", { flow: narrative.parameterFlow })}</div>}
             </div>
           )}
         </button>
-        <div className="mt-1 text-center text-[9px] text-[var(--color-ink-faint)]">{LANE[step.kind]}</div>
+        <div className="mt-1 text-center text-[9px] text-[var(--color-ink-faint)]">{t(LANE[step.kind])}</div>
       </div>
     </div>
   );
 }
 
 function Narrative({ value }: { value: TraceNarrativeDto }) {
+  const t = useT();
   return (
     <section className="mb-6 rounded-lg border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 px-4 py-3">
-      <div className="mb-1 text-[9px] uppercase tracking-wider text-[var(--color-accent)]">AI 生成的链路叙述</div>
+      <div className="mb-1 text-[9px] uppercase tracking-wider text-[var(--color-accent)]">{t("AI 生成的链路叙述")}</div>
       <p className="text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">{value.summary}</p>
     </section>
   );
 }
 
 function TypeFlows({ trace }: { trace: TraceDto }) {
+  const t = useT();
   if (trace.typeFlows.length === 0) return null;
   return (
     <section className="mt-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
-      <h2 className="text-[12px] font-medium">数据结构流转 <span className="ml-1 text-[9px] font-normal text-[var(--color-warn)]">签名推断</span></h2>
+      <h2 className="text-[12px] font-medium">{t("数据结构流转")} <span className="ml-1 text-[9px] font-normal text-[var(--color-warn)]">{t("签名推断")}</span></h2>
       <div className="mt-3 space-y-2">
         {trace.typeFlows.slice(0, 20).map((flow) => (
           <div key={flow.type} className="flex items-start gap-3 text-[10.5px]">
@@ -174,7 +181,7 @@ function TypeFlows({ trace }: { trace: TraceDto }) {
               {flow.through.map((point, index) => (
                 <span key={`${point.ordinal}:${point.role}`}>
                   {index > 0 && <span className="mx-1 text-[var(--color-ink-faint)]">→</span>}
-                  {point.label} <span className="text-[var(--color-ink-faint)]">({point.role === "parameter" ? "参数" : "返回"})</span>
+                  {point.label} <span className="text-[var(--color-ink-faint)]">({point.role === "parameter" ? t("参数") : t("返回")})</span>
                 </span>
               ))}
             </div>

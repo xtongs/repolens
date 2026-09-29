@@ -23,6 +23,7 @@ const bridge: DesktopBridge = {
   saveLlmSettings: (input) => invoke(IPC.saveLlmSettings, input),
   onCommand: (listener) => subscribe<DesktopCommand>(IPC.command, listener),
   onFullScreenChange: (listener) => subscribe<boolean>(IPC.fullScreen, listener),
+  setLocale: (locale) => ipcRenderer.send(IPC.setLocale, locale),
 };
 
 contextBridge.exposeInMainWorld("repolensDesktop", bridge);

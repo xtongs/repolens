@@ -1,27 +1,33 @@
 import type {
   FileDetailDto,
+  NoteDto,
   PseudocodeStepDto,
   SymbolDetailDto,
 } from "@repolens/core/types";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { ChatDock } from "../chat/ChatDock";
+import { msg, useT } from "../i18n";
 import { SelectionAsk } from "../chat/SelectionAsk";
 import { PseudocodePanel, stepMarkerWidth, type StepQuote } from "../code/PseudocodePanel";
 import { SourcePanel, type SourceFocus } from "../code/SourcePanel";
 import { formatCount, languageColor, symbolGlyph } from "../lib/visual";
+import { NoteList } from "../notes/NoteCard";
 import { useAppStore } from "../store/useAppStore";
 import { useChatStore } from "../store/useChatStore";
+import { notesInRange, notesOnFile, notesOnScope, useNotes } from "../store/useNotesStore";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
+import { TabStrip } from "./TabStrip";
 
-type Tab = "overview" | "params" | "pseudocode" | "source" | "relations";
+type Tab = "overview" | "params" | "pseudocode" | "source" | "relations" | "notes";
 
 const TAB_LABELS: Record<Tab, string> = {
-  overview: "概览",
-  params: "传参",
-  pseudocode: "伪代码",
-  source: "源码",
-  relations: "关系",
+  overview: msg("概览"),
+  params: msg("传参"),
+  pseudocode: msg("伪代码"),
+  source: msg("源码"),
+  relations: msg("关系"),
+  notes: msg("笔记"),
 };
 
 /** 标签页之间的跳转：伪代码步骤「在源码中定位」、概览里「查看伪代码」 */
@@ -30,6 +36,8 @@ interface TabNavigation {
   setTab: (tab: Tab) => void;
   sourceFocus: SourceFocus | null;
   jumpToSource: (lines: [number, number]) => void;
+  /** 各类详情自己算出挂在它上面的笔记，页签上显示条数 */
+  setNoteCount: (count: number) => void;
 }
 
 /**
@@ -40,46 +48,54 @@ interface TabNavigation {
  * 对话独占整个侧栏。
  */
 export function DetailDrawer() {
+  const t = useT();
   const open = useAppStore((s) => s.drawerOpen);
   const selected = useAppStore((s) => s.selected);
   const chatOpen = useAppStore((s) => s.chatOpen);
   const setDrawerOpen = useAppStore((s) => s.setDrawerOpen);
+  const detailRequest = useAppStore((s) => s.detailRequest);
   const [tab, setTab] = useState<Tab>("overview");
   const [sourceFocus, setSourceFocus] = useState<SourceFocus | null>(null);
+  const [noteCount, setNoteCount] = useState(0);
   const [content, setContent] = useState<HTMLDivElement | null>(null);
   const resize = useResizablePanel({
     side: "right",
-    storageKey: "repolens:right-panel-width",
-    defaultWidth: 400,
+    storageKey: "repolens:right-panel-custom-width",
+    fallbackWidth: 400,
     minWidth: 320,
-    maxWidth: 720,
+    maxWidth: 800,
   });
+
+  const jumpToSource = (lines: [number, number]) => {
+    setSourceFocus((current) => ({ lines, nonce: (current?.nonce ?? 0) + 1 }));
+    setTab("source");
+  };
 
   useEffect(() => {
     setTab("overview");
     setSourceFocus(null);
+    setNoteCount(0);
   }, [selected]);
 
+  // 必须排在上面的重置之后：选中项和请求同时到达时，以请求的页签为准
+  useEffect(() => {
+    if (detailRequest === null || detailRequest.nodeId !== selected) return;
+    useAppStore.getState().clearDetailRequest();
+    if (detailRequest.lines) jumpToSource(detailRequest.lines);
+    else setTab(detailRequest.tab);
+  }, [selected, detailRequest]);
   const detailVisible = open && selected !== null;
   if (!detailVisible && !chatOpen) return null;
 
   const isSymbol = selected?.startsWith("sym:") ?? false;
   const isFile = selected?.startsWith("file:") ?? false;
   const availableTabs: Tab[] = isSymbol
-    ? ["overview", "params", "pseudocode", "source", "relations"]
+    ? ["overview", "params", "pseudocode", "source", "relations", "notes"]
     : isFile
-      ? ["overview", "pseudocode", "source", "relations"]
-      : ["overview"];
+      ? ["overview", "pseudocode", "source", "relations", "notes"]
+      : /^(?:dir|pkg):/.test(selected ?? "") ? ["overview", "notes"] : ["overview"];
 
-  const navigation: TabNavigation = {
-    tab,
-    setTab,
-    sourceFocus,
-    jumpToSource: (lines) => {
-      setSourceFocus((current) => ({ lines, nonce: (current?.nonce ?? 0) + 1 }));
-      setTab("source");
-    },
-  };
+  const navigation: TabNavigation = { tab, setTab, sourceFocus, jumpToSource, setNoteCount };
 
   return (
     <aside
@@ -88,7 +104,7 @@ export function DetailDrawer() {
     >
       <ResizablePanelHandle
         side="right"
-        label="调整右侧边栏宽度"
+        label={t("调整右侧边栏宽度")}
         width={resize.width}
         minWidth={resize.minWidth}
         maxWidth={resize.maxWidth}
@@ -99,25 +115,31 @@ export function DetailDrawer() {
       {detailVisible && selected !== null && (
         <>
           <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--color-line)] pl-3 pr-2">
-            {availableTabs.map((key) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setTab(key)}
-                className={`rounded px-2 py-1 text-[11.5px] transition-colors ${
-                  tab === key
-                    ? "bg-[var(--color-surface-3)] text-[var(--color-ink)]"
-                    : "text-[var(--color-ink-faint)] hover:text-[var(--color-ink-muted)]"
-                }`}
-              >
-                {TAB_LABELS[key]}
-              </button>
-            ))}
+            <TabStrip scrollKey={`${selected}:${tab}`}>
+              {availableTabs.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={tab === key}
+                  onClick={() => setTab(key)}
+                  className={`shrink-0 rounded px-2 py-1 text-[11.5px] transition-colors ${
+                    tab === key
+                      ? "bg-[var(--color-surface-3)] text-[var(--color-ink)]"
+                      : "text-[var(--color-ink-faint)] hover:text-[var(--color-ink-muted)]"
+                  }`}
+                >
+                  {t(TAB_LABELS[key])}
+                  {key === "notes" && noteCount > 0 && (
+                    <span className="ml-1 tabular-nums text-[var(--color-note)]">{noteCount}</span>
+                  )}
+                </button>
+              ))}
+            </TabStrip>
             <button
               type="button"
               onClick={() => setDrawerOpen(false)}
-              aria-label="关闭详情"
-              className="ml-auto px-1 text-[13px] text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
+              aria-label={t("关闭详情")}
+              className="shrink-0 px-1 text-[13px] text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
             >
               ×
             </button>
@@ -126,7 +148,7 @@ export function DetailDrawer() {
           <div ref={setContent} className="thin-scroll min-h-0 flex-1 overflow-y-auto">
             {isSymbol && <SymbolBody key={selected} id={selected} navigation={navigation} />}
             {isFile && <FileBody key={selected} id={selected} navigation={navigation} />}
-            {!isSymbol && !isFile && <ScopeBody id={selected} />}
+            {!isSymbol && !isFile && <ScopeBody id={selected} navigation={navigation} />}
           </div>
           <SelectionAsk container={content} nodeId={selected} />
         </>
@@ -145,7 +167,7 @@ function askAboutStep(quote: StepQuote, fileId: string, nodeId: string): void {
     text: quote.text,
     nodeId: lines ? fileId : nodeId,
     lines,
-    label: `${lines ? `L${lines[0]}${lines[1] === lines[0] ? "" : `–${lines[1]}`} · ` : ""}${quote.text.replace(/^步骤 /, "#").slice(0, 18)}`,
+    label: `${lines ? `L${lines[0]}${lines[1] === lines[0] ? "" : `–${lines[1]}`} · ` : ""}${quote.label.slice(0, 18)}`,
   });
 }
 
@@ -154,6 +176,7 @@ function askAboutStep(quote: StepQuote, fileId: string, nodeId: string): void {
 // ---------------------------------------------------------------------------
 
 function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation }) {
+  const t = useT();
   const { tab } = navigation;
   const rememberLabel = useChatStore((s) => s.rememberLabel);
   const [detail, setDetail] = useState<SymbolDetailDto | null>(null);
@@ -210,8 +233,17 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
     generateSemantics();
   }, [tab, detail, semanticLoading, semanticError]);
 
+  const allNotes = useNotes();
+  const notes = useMemo(
+    () => (detail ? notesInRange(allNotes, detail.filePath, detail.startLine, detail.endLine) : []),
+    [allNotes, detail],
+  );
+  useNoteCount(navigation, notes.length);
+
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
+
+  if (tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath={false} />;
 
   if (tab === "pseudocode") {
     return (
@@ -222,7 +254,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
         to={detail.endLine}
         loading={semanticLoading}
         error={semanticError}
-        loadingLabel="正在理解这个符号并生成伪代码…"
+        loadingLabel={t("正在理解这个符号并生成伪代码…")}
         onGenerate={generateSemantics}
         onJumpToSource={navigation.jumpToSource}
         onAsk={(quote) => askAboutStep(quote, detail.fileId, detail.id)}
@@ -234,14 +266,14 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
     return (
       <div className="p-3">
         {detail.params.length === 0 ? (
-          <Empty>这个符号没有参数</Empty>
+          <Empty>{t("这个符号没有参数")}</Empty>
         ) : (
           <table className="w-full text-[11.5px]">
             <thead>
               <tr className="text-left text-[var(--color-ink-faint)]">
-                <th className="pb-1.5 font-normal">参数</th>
-                <th className="pb-1.5 font-normal">类型</th>
-                <th className="pb-1.5 font-normal">默认值</th>
+                <th className="pb-1.5 font-normal">{t("参数")}</th>
+                <th className="pb-1.5 font-normal">{t("类型")}</th>
+                <th className="pb-1.5 font-normal">{t("默认值")}</th>
               </tr>
             </thead>
             <tbody>
@@ -266,7 +298,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
 
         {detail.returnType && (
           <div className="mt-3 border-t border-[var(--color-line)] pt-2.5">
-            <Label>返回</Label>
+            <Label>{t("返回")}</Label>
             <div className="mono mt-1 text-[11.5px] text-[var(--color-accent)]">
               {detail.returnType}
             </div>
@@ -284,6 +316,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
         to={detail.endLine}
         steps={detail.pseudocodeSteps}
         focus={navigation.sourceFocus}
+        notes={notes}
       />
     );
   }
@@ -292,12 +325,12 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
     return (
       <div className="p-3">
         <CallGraphButton detail={detail} />
-        <RelationList title="调用它的" items={detail.callers} />
-        <RelationList title="它调用的" items={detail.callees} />
+        <RelationList title={t("调用它的")} items={detail.callers} />
+        <RelationList title={t("它调用的")} items={detail.callees} />
 
         {detail.externalCallees.length > 0 && (
           <div className="mt-3">
-            <Label>外部调用</Label>
+            <Label>{t("外部调用")}</Label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {detail.externalCallees.map((ext) => (
                 <span
@@ -314,7 +347,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
         {detail.callers.length === 0 &&
           detail.callees.length === 0 &&
           detail.externalCallees.length === 0 && (
-            <Empty>没有解析出调用关系。可能它只被动态调用，或者调用方都在索引范围之外。</Empty>
+            <Empty>{t("没有解析出调用关系。可能它只被动态调用，或者调用方都在索引范围之外。")}</Empty>
           )}
       </div>
     );
@@ -350,7 +383,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
 
       {detail.doc && (
         <div className="mt-2.5">
-          <Label>文档注释</Label>
+          <Label>{t("文档注释")}</Label>
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.doc}
           </p>
@@ -360,37 +393,37 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
       {detail.summary ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
           <div className="flex items-center justify-between gap-2">
-            <Label ai>AI 摘要</Label>
+            <Label ai>{t("AI 摘要")}</Label>
             <SemanticRefreshButton loading={semanticLoading} onClick={() => generateSemantics(true)} />
           </div>
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
           {semanticError && (
-            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
+            <div className="mt-2 text-[11px] text-[var(--color-warn)]">{t("刷新失败：{error}", { error: semanticError })}</div>
           )}
           <PseudocodeLink steps={detail.pseudocodeSteps} onOpen={() => navigation.setTab("pseudocode")} />
         </div>
       ) : semanticLoading ? (
-        <SemanticLoading label="正在生成函数摘要与伪代码…" />
+        <SemanticLoading label={t("正在生成函数摘要与伪代码…")} />
       ) : semanticError ? (
         <div className="mt-2">
           <div className="text-[11px] text-[var(--color-warn)]">{semanticError}</div>
-          <RetryButton onClick={generateSemantics}>重试</RetryButton>
+          <RetryButton onClick={generateSemantics}>{t("重试")}</RetryButton>
         </div>
       ) : (
-        <RetryButton onClick={generateSemantics}>生成 AI 摘要与伪代码</RetryButton>
+        <RetryButton onClick={generateSemantics}>{t("生成 AI 摘要与伪代码")}</RetryButton>
       )}
 
       <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--color-line)] pt-2.5">
-        <Metric label="行数" value={String(detail.endLine - detail.startLine + 1)} />
-        <Metric label="复杂度" value={String(detail.complexity)} />
-        <Metric label="种类" value={detail.kind} />
+        <Metric label={t("行数")} value={String(detail.endLine - detail.startLine + 1)} />
+        <Metric label={t("复杂度")} value={String(detail.complexity)} />
+        <Metric label={t("种类")} value={detail.kind} />
       </div>
 
       {detail.typeRelations.length > 0 && (
         <div className="mt-3">
-          <Label>类型关系</Label>
+          <Label>{t("类型关系")}</Label>
           <div className="mt-1.5 space-y-1">
             {detail.typeRelations.map((rel, i) => (
               <div key={`${rel.relation}-${rel.target}-${i}`} className="text-[11.5px]">
@@ -407,6 +440,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
 
 /** 把当前符号切成画布上的调用图中心 */
 function CallGraphButton({ detail }: { detail: SymbolDetailDto }) {
+  const t = useT();
   const openCallGraph = useAppStore((s) => s.openCallGraph);
   const label = detail.container ? `${detail.container}.${detail.name}` : detail.name;
   const total = detail.callers.length + detail.callees.length;
@@ -418,7 +452,7 @@ function CallGraphButton({ detail }: { detail: SymbolDetailDto }) {
       onClick={() => void openCallGraph(Number(detail.id.slice("sym:".length)), label)}
       className="mb-3 w-full rounded border border-[var(--color-line-strong)] px-2 py-1.5 text-[11.5px] text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-ink)]"
     >
-      在画布上展开调用图
+      {t("在画布上展开调用图")}
     </button>
   );
 }
@@ -481,6 +515,7 @@ function RelationList({
 }
 
 function ConfidenceBadge({ value }: { value: string }) {
+  const t = useT();
   const styles: Record<string, string> = {
     exact: "border-[var(--color-accent)]/40 text-[var(--color-accent)]",
     likely: "border-[var(--color-warn)]/40 text-[var(--color-warn)]",
@@ -489,11 +524,11 @@ function ConfidenceBadge({ value }: { value: string }) {
     unresolved: "border-[var(--color-line)] text-[var(--color-ink-faint)]",
   };
   const labels: Record<string, string> = {
-    exact: "确定",
-    likely: "可能",
-    ambiguous: "多义",
-    external: "外部",
-    unresolved: "未解析",
+    exact: t("确定"),
+    likely: t("可能"),
+    ambiguous: t("多义"),
+    external: t("外部"),
+    unresolved: t("未解析"),
   };
   return (
     <span
@@ -509,6 +544,7 @@ function ConfidenceBadge({ value }: { value: string }) {
 // ---------------------------------------------------------------------------
 
 function FileBody({ id, navigation }: { id: string; navigation: TabNavigation }) {
+  const t = useT();
   const { tab } = navigation;
   const select = useAppStore((s) => s.select);
   const rememberLabel = useChatStore((s) => s.rememberLabel);
@@ -568,20 +604,26 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
     generateSummary();
   }, [detail, semanticLoading, semanticError, semanticSkipReason]);
 
+  const allNotes = useNotes();
+  const notes = useMemo(() => (detail ? notesOnFile(allNotes, detail.path) : []), [allNotes, detail]);
+  useNoteCount(navigation, notes.length);
+
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
+
+  if (tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath={false} />;
 
   const empty = detail.bytes === 0 || semanticSkipReason === "empty-file";
 
   if (tab === "pseudocode") {
-    if (empty) return <Empty>空文件，没有可生成的伪代码</Empty>;
+    if (empty) return <Empty>{t("空文件，没有可生成的伪代码")}</Empty>;
     return (
       <PseudocodePanel
         steps={detail.pseudocodeSteps ?? null}
         fileId={detail.id}
         loading={semanticLoading}
         error={semanticError}
-        loadingLabel="正在分析文件内函数与整体逻辑…"
+        loadingLabel={t("正在分析文件内函数与整体逻辑…")}
         onGenerate={generateSummary}
         onJumpToSource={navigation.jumpToSource}
         onAsk={(quote) => askAboutStep(quote, detail.id, detail.id)}
@@ -590,13 +632,15 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
   }
 
   if (tab === "source") {
-    return <SourcePanel fileId={detail.id} steps={detail.pseudocodeSteps} focus={navigation.sourceFocus} />;
+    return (
+      <SourcePanel fileId={detail.id} steps={detail.pseudocodeSteps} focus={navigation.sourceFocus} notes={notes} />
+    );
   }
 
   if (tab === "relations") {
     return (
       <div className="p-3">
-        <Label>依赖 ({detail.imports.length})</Label>
+        <Label>{t("依赖 ({count})", { count: detail.imports.length })}</Label>
         <div className="mt-1.5 space-y-0.5">
           {detail.imports.map((imp, i) => (
             <div
@@ -615,7 +659,7 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
         </div>
 
         <div className="mt-3">
-          <Label>被依赖 ({detail.importedBy.length})</Label>
+          <Label>{t("被依赖 ({count})", { count: detail.importedBy.length })}</Label>
           <div className="mt-1.5 space-y-0.5">
             {detail.importedBy.map((ref) => (
               <button
@@ -657,40 +701,40 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
 
       {empty ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11.5px] text-[var(--color-ink-faint)]">
-          空文件，没有可生成的内容
+          {t("空文件，没有可生成的内容")}
         </div>
       ) : detail.summary ? (
         <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
           <div className="flex items-center justify-between gap-2">
-            <Label ai>AI 摘要</Label>
+            <Label ai>{t("AI 摘要")}</Label>
             <SemanticRefreshButton loading={semanticLoading} onClick={() => generateSummary(true)} />
           </div>
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
             {detail.summary}
           </p>
           {semanticError && (
-            <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{semanticError}</div>
+            <div className="mt-2 text-[11px] text-[var(--color-warn)]">{t("刷新失败：{error}", { error: semanticError })}</div>
           )}
           <PseudocodeLink steps={detail.pseudocodeSteps} onOpen={() => navigation.setTab("pseudocode")} />
         </div>
       ) : semanticLoading || !semanticError ? (
-        <SemanticLoading label="正在生成文件摘要与伪代码…" />
+        <SemanticLoading label={t("正在生成文件摘要与伪代码…")} />
       ) : semanticError ? (
         <div className="mt-2">
           <div className="text-[11px] text-[var(--color-warn)]">{semanticError}</div>
-          <RetryButton onClick={generateSummary}>重试</RetryButton>
+          <RetryButton onClick={generateSummary}>{t("重试")}</RetryButton>
         </div>
       ) : null}
 
       <div className="mt-3 grid grid-cols-4 gap-2 border-t border-[var(--color-line)] pt-2.5">
-        <Metric label="代码行" value={formatCount(detail.loc)} />
-        <Metric label="符号" value={String(detail.symbols.length)} />
-        <Metric label="依赖" value={String(detail.imports.length)} />
-        <Metric label="被依赖" value={String(detail.importedBy.length)} />
+        <Metric label={t("代码行")} value={formatCount(detail.loc)} />
+        <Metric label={t("符号数")} value={String(detail.symbols.length)} />
+        <Metric label={t("依赖")} value={String(detail.imports.length)} />
+        <Metric label={t("被依赖")} value={String(detail.importedBy.length)} />
       </div>
 
       <div className="mt-3">
-        <Label>符号 ({detail.symbols.length})</Label>
+        <Label>{t("符号 ({count})", { count: detail.symbols.length })}</Label>
         <div className="mt-1.5 space-y-0.5">
           {detail.symbols.map((sym) => (
             <button
@@ -709,7 +753,7 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
                 {sym.container ? `${sym.container}.${sym.name}` : sym.name}
               </span>
               {!sym.exported && (
-                <span className="shrink-0 text-[9.5px] text-[var(--color-ink-faint)]">内部</span>
+                <span className="shrink-0 text-[9.5px] text-[var(--color-ink-faint)]">{t("内部")}</span>
               )}
               <span className="ml-auto shrink-0 tabular-nums text-[10px] text-[var(--color-ink-faint)]">
                 {sym.startLine}
@@ -726,15 +770,20 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
 // 包 / 目录 / 聚合
 // ---------------------------------------------------------------------------
 
-function ScopeBody({ id }: { id: string }) {
+function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }) {
+  const t = useT();
   const store = useAppStore();
+  const allNotes = useNotes();
+  const notes = useMemo(() => notesOnScope(allNotes, id), [allNotes, id]);
+  useNoteCount(navigation, notes.length);
   const graph = store.subgraphs[store.rootScope];
   const node =
     Object.values(store.subgraphs)
       .flatMap((g) => g.nodes)
       .find((n) => n.id === id) ?? graph?.nodes.find((n) => n.id === id);
 
-  if (!node) return <Empty>找不到这个节点</Empty>;
+  if (navigation.tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath />;
+  if (!node) return <Empty>{t("找不到这个节点")}</Empty>;
 
   return (
     <div className="p-3">
@@ -746,22 +795,22 @@ function ScopeBody({ id }: { id: string }) {
       )}
 
       {node.layer && (
-        <div className="mt-2 text-[10px] text-[var(--color-accent)]">AI 架构层 · {node.layer}</div>
+        <div className="mt-2 text-[10px] text-[var(--color-accent)]">{t("AI 架构层 · {layer}", { layer: node.layer })}</div>
       )}
       {node.summary && (
         <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
-          <Label ai>AI 摘要</Label>
+          <Label ai>{t("AI 摘要")}</Label>
           <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">{node.summary}</p>
         </div>
       )}
 
       <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[var(--color-line)] pt-2.5">
-        <Metric label="代码行" value={formatCount(node.metrics.loc)} />
-        <Metric label="文件" value={formatCount(node.metrics.files)} />
-        <Metric label="符号" value={formatCount(node.metrics.symbols)} />
-        <Metric label="复杂度" value={formatCount(node.metrics.complexity)} />
-        <Metric label="依赖" value={String(node.metrics.outDegree)} />
-        <Metric label="被依赖" value={String(node.metrics.inDegree)} />
+        <Metric label={t("代码行")} value={formatCount(node.metrics.loc)} />
+        <Metric label={t("文件数")} value={formatCount(node.metrics.files)} />
+        <Metric label={t("符号数")} value={formatCount(node.metrics.symbols)} />
+        <Metric label={t("复杂度")} value={formatCount(node.metrics.complexity)} />
+        <Metric label={t("依赖")} value={String(node.metrics.outDegree)} />
+        <Metric label={t("被依赖")} value={String(node.metrics.inDegree)} />
       </div>
 
       {node.expandable && (
@@ -770,7 +819,7 @@ function ScopeBody({ id }: { id: string }) {
           onClick={() => void store.toggleExpand(node)}
           className="mt-3 w-full rounded-md border border-[var(--color-line)] py-1.5 text-[11.5px] text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-line-strong)] hover:text-[var(--color-ink)]"
         >
-          {store.expanded.includes(node.id) ? "收起子项" : `展开 ${node.childCount} 项`}
+          {store.expanded.includes(node.id) ? t("收起子项") : t("展开 {count} 项", { count: node.childCount })}
         </button>
       )}
     </div>
@@ -799,6 +848,29 @@ function Metric({ label, value }: { label: string; value: string }) {
       <div className="mt-0.5 truncate text-[12.5px] tabular-nums text-[var(--color-ink)]">
         {value}
       </div>
+    </div>
+  );
+}
+
+function useNoteCount(navigation: TabNavigation, count: number): void {
+  const { setNoteCount } = navigation;
+  useEffect(() => setNoteCount(count), [setNoteCount, count]);
+}
+
+/** 文件和符号里点笔记的位置就地滚动源码；目录里的笔记分散在各个文件，要跳过去 */
+function NotesTab({ notes, navigation, showPath }: { notes: NoteDto[]; navigation: TabNavigation; showPath: boolean }) {
+  const t = useT();
+  return (
+    <div className="p-3">
+      <NoteList
+        notes={notes}
+        showPath={showPath}
+        empty={t("还没有笔记。在追问 AI 的回答里划选文字、或点回答下方的「记笔记」，就能存到这里。")}
+        onLocate={showPath ? undefined : (note) => {
+          const lines = note.target.kind === "file" ? note.target.lines : null;
+          return lines ? () => navigation.jumpToSource(lines) : null;
+        }}
+      />
     </div>
   );
 }
@@ -835,17 +907,18 @@ function SemanticLoading({ label }: { label: string }) {
 /** 伪代码有了独立标签页，概览里只留一行入口，列出前两步让人知道值不值得点开 */
 /** 概览里只列顶层步骤、每步一行，当作提纲；子步骤和源码对应留给伪代码标签。 */
 function PseudocodeLink({ steps, onOpen }: { steps: PseudocodeStepDto[] | null | undefined; onOpen: () => void }) {
+  const t = useT();
   if (!steps || steps.length === 0) return null;
   const markerWidth = stepMarkerWidth(steps.length);
   return (
     <button
       type="button"
       onClick={onOpen}
-      title="查看完整伪代码"
+      title={t("查看完整伪代码")}
       className="group mt-2.5 block w-full border-t border-[var(--color-accent)]/20 pt-2 text-left"
     >
       <span className="flex items-baseline">
-        <span className="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">伪代码 {steps.length} 步</span>
+        <span className="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">{t("伪代码 {count} 步", { count: steps.length })}</span>
         <span className="ml-auto text-[11px] text-[var(--color-ink-faint)] group-hover:text-[var(--color-accent)]">→</span>
       </span>
       <span className="mt-1 block space-y-0.5">
@@ -863,13 +936,14 @@ function PseudocodeLink({ steps, onOpen }: { steps: PseudocodeStepDto[] | null |
 }
 
 function SemanticRefreshButton({ loading, onClick }: { loading: boolean; onClick: () => void }) {
+  const t = useT();
   return (
     <button
       type="button"
       disabled={loading}
       onClick={onClick}
-      aria-label={loading ? "正在重新生成 AI 摘要" : "重新生成 AI 摘要"}
-      title={loading ? "正在重新生成…" : "重新生成 AI 摘要"}
+      aria-label={loading ? t("正在重新生成 AI 摘要") : t("重新生成 AI 摘要")}
+      title={loading ? t("正在重新生成…") : t("重新生成 AI 摘要")}
       className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[14px] leading-none text-[var(--color-ink-faint)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-accent)] disabled:cursor-wait disabled:opacity-60"
     >
       <span className={loading ? "animate-spin" : ""}>↻</span>

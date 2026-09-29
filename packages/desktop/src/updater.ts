@@ -1,5 +1,6 @@
 import { app, dialog, shell, type BrowserWindow } from "electron";
 import { autoUpdater } from "electron-updater";
+import { tr } from "./locale.js";
 import { HOMEPAGE } from "./menu.js";
 
 /** 未签名的 macOS 应用装不了自动更新（Squirrel.Mac 会校验签名），只能提示去下载 */
@@ -27,16 +28,22 @@ export function setupUpdater(getWindow: () => BrowserWindow | null, log: (line: 
 
   autoUpdater.on("update-available", (info) => {
     if (CAN_INSTALL) {
-      if (manual) void show({ type: "info", message: `发现新版本 ${info.version}`, detail: "正在后台下载，完成后会提示你重启安装。" });
+      if (manual) {
+        void show({
+          type: "info",
+          message: tr(`发现新版本 ${info.version}`, `Version ${info.version} is available`),
+          detail: tr("正在后台下载，完成后会提示你重启安装。", "Downloading in the background. You'll be asked to restart when it's ready."),
+        });
+      }
       manual = false;
       return;
     }
     manual = false;
     void show({
       type: "info",
-      message: `发现新版本 ${info.version}`,
-      detail: "前往下载页面获取安装包。",
-      buttons: ["前往下载", "稍后"],
+      message: tr(`发现新版本 ${info.version}`, `Version ${info.version} is available`),
+      detail: tr("前往下载页面获取安装包。", "Get the installer from the download page."),
+      buttons: [tr("前往下载", "Download"), tr("稍后", "Later")],
       defaultId: 0,
       cancelId: 1,
     }).then(({ response }) => {
@@ -45,16 +52,22 @@ export function setupUpdater(getWindow: () => BrowserWindow | null, log: (line: 
   });
 
   autoUpdater.on("update-not-available", () => {
-    if (manual) void show({ type: "info", message: "已是最新版本", detail: `当前版本 ${app.getVersion()}` });
+    if (manual) {
+      void show({
+        type: "info",
+        message: tr("已是最新版本", "You're up to date"),
+        detail: tr(`当前版本 ${app.getVersion()}`, `Current version ${app.getVersion()}`),
+      });
+    }
     manual = false;
   });
 
   autoUpdater.on("update-downloaded", (info) => {
     void show({
       type: "info",
-      message: `新版本 ${info.version} 已下载`,
-      detail: "重启 RepoLens 完成安装。",
-      buttons: ["立即重启", "稍后"],
+      message: tr(`新版本 ${info.version} 已下载`, `Version ${info.version} has been downloaded`),
+      detail: tr("重启 RepoLens 完成安装。", "Restart RepoLens to finish installing."),
+      buttons: [tr("立即重启", "Restart Now"), tr("稍后", "Later")],
       defaultId: 0,
       cancelId: 1,
     }).then(({ response }) => {
@@ -65,7 +78,7 @@ export function setupUpdater(getWindow: () => BrowserWindow | null, log: (line: 
 
   autoUpdater.on("error", (err) => {
     log(`[updater] ${err.stack ?? err.message}`);
-    if (manual) void show({ type: "warning", message: "检查更新失败", detail: err.message });
+    if (manual) void show({ type: "warning", message: tr("检查更新失败", "Couldn't check for updates"), detail: err.message });
     manual = false;
   });
 
@@ -76,7 +89,7 @@ export function setupUpdater(getWindow: () => BrowserWindow | null, log: (line: 
     },
     checkNow() {
       if (!app.isPackaged) {
-        void show({ type: "info", message: "开发版本不检查更新" });
+        void show({ type: "info", message: tr("开发版本不检查更新", "Development builds don't check for updates") });
         return;
       }
       manual = true;

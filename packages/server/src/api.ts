@@ -6,7 +6,6 @@ import {
   getFindingSummary,
   getRevealChain,
   getFindings,
-  getMeta,
   getOverview,
   getScopeGraph,
   getSource,
@@ -17,9 +16,14 @@ import {
   generateFileSummary,
   generateSymbolSemantics,
   generateTraceNarrative,
+  NoteInputError,
+  addNote,
+  deleteNote,
   indexPath,
+  listNotes,
   openDb,
   parseChatRequest,
+  parseNoteInput,
   recordChatUsage,
   search,
   streamRepositoryChat,
@@ -36,7 +40,7 @@ export interface ApiDeps {
 }
 
 /**
- * HTTP API。除带本地意图标记的 semantic / chat POST 外均为只读。
+ * HTTP API。除带本地意图标记的 semantic / chat / notes 写请求外均为只读。
  *
  * 所有端点都是「按需拉一层」的形状，没有任何返回全图的端点——
  * 这是 docs/INTERACTION.md「转移」策略的硬约束：前端不持有全图。
@@ -44,7 +48,9 @@ export interface ApiDeps {
 export function createApi(deps: ApiDeps): Hono {
   const app = new Hono();
   const { db } = deps;
-  const repoRoot = getMeta(db, "repo_root") ?? deps.repoRoot;
+  // 以索引实际所在的目录为准，不用索引里记的 repo_root：仓库连同 .repolens
+  // 一起被移动或复制后，那个路径指向的是旧位置，读源码、写缓存和笔记都会落错地方。
+  const { repoRoot } = deps;
 
   app.get("/overview", (c) => {
     const overview = getOverview(db);
@@ -230,6 +236,48 @@ export function createApi(deps: ApiDeps): Hono {
         await send("error", { message: (err as Error).message.slice(0, 500) });
       }
     });
+  });
+
+  // 笔记写在索引旁边的 notes.json 里，不经过 index.db，所以只读连接就够用：
+  // 它只负责把节点 id 换算成路径和行号。
+  app.get("/notes", (c) => {
+    try {
+      return c.json({ notes: listNotes(db, repoRoot) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/notes", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "save-note") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体不是 JSON" }, 400);
+    }
+    const input = parseNoteInput(body);
+    if (input === null) return c.json({ error: "笔记格式不正确" }, 400);
+    try {
+      return c.json(addNote(db, repoRoot, input));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, err instanceof NoteInputError ? 400 : 500);
+    }
+  });
+
+  app.delete("/notes/:id", (c) => {
+    if (c.req.header("x-repolens-intent") !== "save-note") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    try {
+      return deleteNote(repoRoot, c.req.param("id"))
+        ? c.json({ ok: true })
+        : c.json({ error: "笔记不存在" }, 404);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
   });
 
   app.get("/source/:id", (c) => {

@@ -2,6 +2,7 @@ import { utilityProcess, type UtilityProcess } from "electron";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync, statSync, truncateSync, type WriteStream } from "node:fs";
 import type { FromServer, ToServer } from "./ipc.js";
+import { tr } from "./locale.js";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
@@ -77,8 +78,14 @@ export class LocalServer {
         if (this.child === child) this.child = null;
         for (const done of this.pendingEnv.values()) done();
         this.pendingEnv.clear();
-        if (!ready) reject(new Error(`服务进程启动失败（代码 ${code}），详见日志 ${this.options.logFile}`));
-        else if (!this.stopping) this.options.onCrash(code);
+        if (!ready) {
+          reject(new Error(tr(
+            `服务进程启动失败（代码 ${code}），详见日志 ${this.options.logFile}`,
+            `The server process failed to start (code ${code}). See the log at ${this.options.logFile}`,
+          )));
+        } else if (!this.stopping) {
+          this.options.onCrash(code);
+        }
       });
     });
   }

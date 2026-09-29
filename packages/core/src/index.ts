@@ -57,13 +57,16 @@ export {
   rememberRepo,
   repoId,
 } from "./registry.js";
+export { NoteInputError, addNote, deleteNote, listNotes, notesPath, parseNoteInput } from "./notes.js";
 
 export { scanRepo, type ScanOptions } from "./pipeline/scan.js";
 export {
+  dropSemanticsFromOutdatedInput,
   enrichRepository,
   generateFileSummary,
   generateSymbolSemantics,
   generateTraceNarrative,
+  semanticInputOutdated,
 } from "./llm/enrich.js";
 export {
   LlmResponseError,

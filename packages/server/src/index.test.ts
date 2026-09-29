@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scanRepo } from "@repolens/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_HEADER, startServer, type RunningServer } from "./index.js";
 
@@ -58,5 +59,38 @@ describe("startServer", () => {
     });
     expect(await response.json()).toEqual({ cancelled: true });
     expect(pickDirectory).toHaveBeenCalledOnce();
+  });
+
+  it("笔记写请求必须带意图标记，保存后按路径读回；仓库挪过位置也写在新位置", async () => {
+    const scanned = join(home, "scanned");
+    mkdirSync(join(scanned, "src"), { recursive: true });
+    writeFileSync(join(scanned, "src/a.ts"), "export function a() {\n  return 1;\n}\n");
+    await scanRepo({ root: scanned });
+    const repo = join(home, "repo");
+    renameSync(scanned, repo);
+    server = await startServer({ repoRoot: repo, port: 0 });
+    const hit = (await (await fetch(`${server.url}/api/search?q=a.ts`)).json()) as Array<{ id: string }>;
+    const fileId = hit.find((item) => item.id.startsWith("file:"))!.id;
+    const save = (headers: Record<string, string>) =>
+      fetch(`${server!.url}/api/notes`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ nodeId: fileId, lines: [2, 2], text: "返回 1" }),
+      });
+
+    expect((await save({})).status).toBe(403);
+    const saved = (await (await save({ "x-repolens-intent": "save-note" })).json()) as { id: string };
+    const listed = await (await fetch(`${server.url}/api/notes`)).json();
+    expect(listed).toMatchObject({
+      notes: [{ id: saved.id, nodeId: fileId, target: { kind: "file", path: "src/a.ts", lines: [2, 2] } }],
+    });
+    expect(existsSync(join(repo, ".repolens", "notes.json"))).toBe(true);
+    expect(existsSync(scanned)).toBe(false);
+
+    const remove = (headers: Record<string, string>) =>
+      fetch(`${server!.url}/api/notes/${saved.id}`, { method: "DELETE", headers });
+    expect((await remove({})).status).toBe(403);
+    expect((await remove({ "x-repolens-intent": "save-note" })).status).toBe(200);
+    expect(await (await fetch(`${server.url}/api/notes`)).json()).toEqual({ notes: [] });
   });
 });

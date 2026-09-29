@@ -3,6 +3,7 @@ import { app, safeStorage } from "electron";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { LlmSettings, LlmSettingsInput } from "../../web/src/lib/desktop.js";
+import { tr, type Locale } from "./locale.js";
 
 export interface WindowState {
   x?: number;
@@ -20,6 +21,8 @@ interface DesktopState {
   llmApiKeyService?: string;
   /** 上次关闭窗口时在看的仓库 */
   lastRepo?: string;
+  /** 界面上次用的语言，下次启动时先按它建菜单 */
+  locale?: Locale;
   window?: WindowState;
 }
 
@@ -130,12 +133,12 @@ export function parseLlmSettingsInput(value: unknown): LlmSettingsInput {
 export function writeLlmSettings(input: LlmSettingsInput): void {
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, "");
   const service = /^https?:\/\//i.test(baseUrl) ? serviceOf(baseUrl) : null;
-  if (service === null) throw new Error("服务地址要以 http:// 或 https:// 开头");
+  if (service === null) throw new Error(tr("服务地址要以 http:// 或 https:// 开头", "The service URL must start with http:// or https://"));
   const model = input.model.trim();
-  if (model === "") throw new Error("请填写模型名称");
+  if (model === "") throw new Error(tr("请填写模型名称", "Enter a model name"));
   const apiKey = typeof input.apiKey === "string" ? input.apiKey.trim() : input.apiKey;
   const newKey = typeof apiKey === "string" && apiKey !== "" ? apiKey : null;
-  if (newKey !== null && !canEncrypt()) throw new Error("系统钥匙串不可用，无法保存 Key");
+  if (newKey !== null && !canEncrypt()) throw new Error(tr("系统钥匙串不可用，无法保存 Key", "The system keychain is unavailable, so the key can't be saved"));
 
   const path = globalConfigPath();
   let raw: Record<string, unknown> = {};
@@ -143,14 +146,17 @@ export function writeLlmSettings(input: LlmSettingsInput): void {
     try {
       raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     } catch (err) {
-      throw new Error(`配置文件 ${path} 不是合法的 JSON，先修正它再保存：${(err as Error).message}`);
+      throw new Error(tr(
+        `配置文件 ${path} 不是合法的 JSON，先修正它再保存：${(err as Error).message}`,
+        `The config file ${path} isn't valid JSON. Fix it before saving: ${(err as Error).message}`,
+      ));
     }
   }
   const previous = loadGlobalConfig().llm;
   const previousEnv = previous.apiKeyEnv.trim();
   const serviceChanged = serviceOf(previous.baseUrl) !== service;
   if (input.requiresKey && serviceChanged && newKey === null && canEncrypt()) {
-    throw new Error("请填写新服务的 API Key");
+    throw new Error(tr("请填写新服务的 API Key", "Enter the API key for the new service"));
   }
 
   const llm = typeof raw["llm"] === "object" && raw["llm"] !== null ? raw["llm"] as Record<string, unknown> : {};

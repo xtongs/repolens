@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { GraphCanvas } from "./graph/GraphCanvas";
+import { useLocale, useT } from "./i18n";
 import { TraceView } from "./trace/TraceView";
 import { DetailDrawer } from "./layout/DetailDrawer";
 import { TopBar } from "./layout/TopBar";
@@ -29,10 +30,16 @@ export function App() {
   const traceId = useAppStore((s) => s.traceId);
   const repoRevision = useAppStore((s) => s.repoRevision);
   const noRepo = useAppStore((s) => s.noRepo);
+  const locale = useLocale();
 
   useEffect(() => {
     void boot();
   }, [boot]);
+
+  // 原生菜单和更新对话框由主进程绘制，界面换了语言要告诉它
+  useEffect(() => {
+    desktop?.setLocale(locale);
+  }, [locale]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -104,25 +111,26 @@ export function App() {
 }
 
 function Welcome() {
+  const t = useT();
   const requestAddRepo = useAppStore((s) => s.requestAddRepo);
   return (
     <div className="flex h-full items-center justify-center p-8">
       <div className="max-w-sm text-center">
-        <div className="text-[15px] font-medium">打开一个代码仓库</div>
+        <div className="text-[15px] font-medium">{t("打开一个代码仓库")}</div>
         <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-ink-muted)]">
-          选择本机的代码目录，RepoLens 会在本地建立索引，之后就能浏览架构分层、调用关系和关键链路。
-          启用 AI 后，生成摘要和回答追问时会把相关代码发给你配置的模型服务。
+          {t("选择本机的代码目录，RepoLens 会在本地建立索引，之后就能浏览架构分层、调用关系和关键链路。")}
+          {t("启用 AI 后，生成摘要和回答追问时会把相关代码发给你配置的模型服务。")}
         </p>
         <button
           type="button"
           onClick={requestAddRepo}
           className="mt-5 rounded-md bg-[var(--color-accent)] px-4 py-2 text-[12px] font-medium text-[var(--color-canvas)] transition-opacity hover:opacity-90"
         >
-          添加本地仓库
+          {t("添加本地仓库")}
         </button>
         {!desktop && (
           <p className="mono mt-4 text-[11px] text-[var(--color-ink-faint)]">
-            也可以在终端运行 repolens scan &lt;仓库路径&gt;
+            {t("也可以在终端运行 repolens scan <仓库路径>")}
           </p>
         )}
       </div>
@@ -131,13 +139,14 @@ function Welcome() {
 }
 
 function BootFailure({ message }: { message: string }) {
+  const t = useT();
   return (
     <div className="flex h-full items-center justify-center p-8">
       <div className="max-w-md text-center">
-        <div className="text-[14px] font-medium">无法加载索引</div>
+        <div className="text-[14px] font-medium">{t("无法加载索引")}</div>
         <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-ink-muted)]">{message}</p>
         <p className="mono mt-3 text-[11px] text-[var(--color-ink-faint)]">
-          {desktop ? "在顶栏的仓库菜单里重新扫描，或添加其他仓库" : "先运行 repolens scan <仓库路径>"}
+          {desktop ? t("在顶栏的仓库菜单里重新扫描，或添加其他仓库") : t("先运行 repolens scan <仓库路径>")}
         </p>
       </div>
     </div>
@@ -145,9 +154,10 @@ function BootFailure({ message }: { message: string }) {
 }
 
 function BootSkeleton() {
+  const t = useT();
   return (
     <div className="flex h-full items-center justify-center">
-      <div className="text-[12px] text-[var(--color-ink-faint)]">正在读取索引…</div>
+      <div className="text-[12px] text-[var(--color-ink-faint)]">{t("正在读取索引…")}</div>
     </div>
   );
 }

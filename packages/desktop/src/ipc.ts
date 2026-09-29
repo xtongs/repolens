@@ -4,6 +4,7 @@ export const IPC = {
   saveLlmSettings: "repolens:save-llm-settings",
   command: "repolens:command",
   fullScreen: "repolens:full-screen",
+  setLocale: "repolens:set-locale",
 } as const;
 
 /** 主进程发给服务进程 */

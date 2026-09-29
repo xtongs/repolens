@@ -3,9 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../db/database.js";
-import { getFileDetail, getSymbolDetail } from "../db/queries.js";
+import { getFileDetail, getSymbolDetail, symbolKey } from "../db/queries.js";
 import { getCachedSemantic, putCachedSemantic } from "./cache.js";
-import { generateFileSummary, generateSymbolSemantics } from "./enrich.js";
+import {
+  dropSemanticsFromOutdatedInput,
+  generateFileSummary,
+  generateSymbolSemantics,
+  semanticInputOutdated,
+} from "./enrich.js";
 
 let db: Db | null = null;
 const temporaryDirectories: string[] = [];
@@ -239,5 +244,65 @@ describe("generateSymbolSemantics", () => {
     await expect(generateSymbolSemantics(db, repo, symbolId)).resolves.toMatchObject({
       cacheHit: true, pseudocodeSteps: expectedSteps,
     });
+  });
+});
+
+describe("dropSemanticsFromOutdatedInput", () => {
+  it("只清掉源码里有超长行的文件和符号的缓存，其余照常可用", () => {
+    const repo = tempDir("repolens-outdated-input-repo-");
+    const blob = "A".repeat(500);
+    const files: Record<string, string> = {
+      "demo.ipynb": `{\n "image/png": "${blob}"\n}\n`,
+      "src/mixed.py": `def short():\n    return 1\n\ndef blob():\n    return "${blob}"\n`,
+      "src/plain.ts": "export const ok = 1;\n",
+    };
+    mkdirSync(join(repo, "src"));
+    db = openDb(join(repo, "index.db"));
+    const fileIds = new Map<string, number>();
+    for (const [path, content] of Object.entries(files)) {
+      writeFileSync(join(repo, path), content);
+      fileIds.set(path, Number(db.prepare(
+        `INSERT INTO files (path, dir_path, name, language, role, loc, bytes, hash)
+         VALUES (?, ?, ?, 'other', 'source', 3, ?, 'hash')`,
+      ).run(path, path.includes("/") ? "src" : "", path.split("/").at(-1), content.length).lastInsertRowid));
+    }
+    const insertSymbol = db.prepare(
+      `INSERT INTO symbols (file_id, name, kind, exported, start_line, end_line, start_byte, end_byte, hash)
+       VALUES (?, ?, 'function', 0, ?, ?, 0, 0, 'hash')`,
+    );
+    insertSymbol.run(fileIds.get("src/mixed.py"), "short", 1, 2);
+    insertSymbol.run(fileIds.get("src/mixed.py"), "blob", 4, 5);
+
+    const shortKey = symbolKey("src/mixed.py", null, "short", 1);
+    const blobKey = symbolKey("src/mixed.py", null, "blob", 4);
+    const targets = [
+      ["file", "demo.ipynb"], ["file", "src/mixed.py"], ["file", "src/plain.ts"],
+      ["symbol", shortKey], ["symbol", blobKey],
+    ] as const;
+    const cache = (kind: "file" | "symbol", key: string) =>
+      getCachedSemantic(db!, kind, key, "pseudocode", "zh")?.content ?? null;
+    for (const [targetKind, targetKey] of targets) {
+      putCachedSemantic(db, {
+        targetKind, targetKey, flavor: "pseudocode", lang: "zh",
+        content: `1. ${targetKey}`, sourceHash: "hash", model: "test-model",
+      });
+    }
+
+    expect(semanticInputOutdated(db)).toBe(true);
+    dropSemanticsFromOutdatedInput(db, repo);
+    expect(cache("file", "demo.ipynb")).toBeNull();
+    expect(cache("file", "src/mixed.py")).toBeNull();
+    expect(cache("symbol", blobKey)).toBeNull();
+    expect(cache("file", "src/plain.ts")).toBe("1. src/plain.ts");
+    expect(cache("symbol", shortKey)).toBe(`1. ${shortKey}`);
+    expect(semanticInputOutdated(db)).toBe(false);
+
+    // 只做一次：按新输入重新生成的结果不能再被删掉
+    putCachedSemantic(db, {
+      targetKind: "file", targetKey: "demo.ipynb", flavor: "pseudocode", lang: "zh",
+      content: "1. 新结果", sourceHash: "hash", model: "test-model",
+    });
+    dropSemanticsFromOutdatedInput(db, repo);
+    expect(cache("file", "demo.ipynb")).toBe("1. 新结果");
   });
 });

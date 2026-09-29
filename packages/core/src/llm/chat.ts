@@ -24,7 +24,7 @@ import type {
 } from "../types.js";
 import { mergeLlmStatusUsage } from "./cache.js";
 import { OpenAiCompatibleClient, type ChatTurn, type LlmClientOptions } from "./client.js";
-import { numberSourceLines, pseudocodeStepsToText } from "./format.js";
+import { hasElidedLines, numberSourceLines, pseudocodeStepsToText } from "./format.js";
 
 const MAX_MESSAGES = 24;
 const MAX_MESSAGE_CHARS = 8_000;
@@ -300,7 +300,7 @@ function symbolBlock(db: Db, root: string, symbolId: number, lang: "zh" | "en", 
   const shownLines = source === "" ? 0 : source.split("\n").length;
   const text = source === ""
     ? header
-    : `${header}\n${sourceHeading(lang, shownLines < slice!.endLine - slice!.startLine + 1)}\n\`\`\`${slice!.language}\n${source}\n\`\`\``;
+    : `${header}\n${sourceHeading(lang, shownLines < slice!.endLine - slice!.startLine + 1, hasElidedLines(source))}\n\`\`\`${slice!.language}\n${source}\n\`\`\``;
   return {
     text,
     item: {
@@ -349,7 +349,7 @@ function fileBlock(db: Db, root: string, fileId: number, lang: "zh" | "en", budg
   const shownLines = source === "" ? 0 : source.split("\n").length;
   const text = source === ""
     ? header
-    : `${header}\n${sourceHeading(lang, shownLines < slice!.endLine)}\n\`\`\`${slice!.language}\n${source}\n\`\`\``;
+    : `${header}\n${sourceHeading(lang, shownLines < slice!.endLine, hasElidedLines(source))}\n\`\`\`${slice!.language}\n${source}\n\`\`\``;
   return {
     text,
     item: {
@@ -436,9 +436,15 @@ function relationLine(
   return `${label}：${shown.join(", ")}${more}`;
 }
 
-function sourceHeading(lang: "zh" | "en", truncated: boolean): string {
-  if (lang === "zh") return `源码（每行开头的「行号| 」是绝对行号，不属于代码${truncated ? "；超出长度的部分已截断" : ""}）：`;
-  return `Source (the leading "N| " is the absolute line number, not code${truncated ? "; truncated for length" : ""}):`;
+function sourceHeading(lang: "zh" | "en", truncated: boolean, elided: boolean): string {
+  if (lang === "zh") {
+    return `源码（每行开头的「行号| 」是绝对行号，不属于代码` +
+      `${elided ? "；以「…（省略 N 字符）」结尾的行过长，只保留了开头" : ""}` +
+      `${truncated ? "；超出长度的部分已截断" : ""}）：`;
+  }
+  return `Source (the leading "N| " is the absolute line number, not code` +
+    `${elided ? "; lines ending in \"…（省略 N 字符）\" were too long and only their start is kept" : ""}` +
+    `${truncated ? "; truncated for length" : ""}):`;
 }
 
 /** `sym:12` / `file:3` / `trace:7` / `7` → 7 */
@@ -526,7 +532,7 @@ function chatSystem(lang: "zh" | "en"): string {
       "2. Separate facts from inference: calls, imports and signatures come from static analysis and are facts; AI explanations and pseudocode are model-generated, so say so when relying on them; runtime behavior can only be described as likely.",
       "3. When you mention a symbol, file, directory or package that appears in the context, write it as a Markdown link [display name](node:ID), copying ID exactly from an id=… field in the context. Never make up an ID.",
       "4. Cite concrete code as path:line. Show code only in fenced blocks with a language tag, and only the few lines that matter.",
-      "5. Answer in English. Lead with the conclusion, then details; be concise and don't restate the context unless asked.",
+      "5. Reply in the language the user writes in. Lead with the conclusion, then details; be concise and don't restate the context unless asked.",
     ].join("\n");
   }
   return [
@@ -536,7 +542,7 @@ function chatSystem(lang: "zh" | "en"): string {
     "2. 区分事实与推断：调用、导入、签名来自静态解析，可以当作事实；AI 解释和伪代码是模型生成的，依据它们时要说明；运行时行为只能说「可能」。",
     "3. 提到上下文中出现的符号、文件、目录或包时，写成 Markdown 链接 [显示名](node:ID)，ID 必须原样复制上下文里 id=… 的值，不得自行拼造。",
     "4. 引用具体代码时注明 路径:行号；展示代码只用带语言标记的代码块，并只摘录关键的几行。",
-    "5. 用简体中文回答，先给结论再展开，保持简洁；除非用户要求，不要复述上下文。",
+    "5. 用用户提问所用的语言回答（中文提问就用简体中文），先给结论再展开，保持简洁；除非用户要求，不要复述上下文。",
   ].join("\n");
 }
 

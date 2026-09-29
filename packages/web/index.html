@@ -8,11 +8,11 @@
     <script>
       (() => {
         let theme = "dark";
-        let fontSize = "medium";
+        let fontSize = "small";
         try {
           if (localStorage.getItem("repolens-theme") === "light") theme = "light";
           const savedFontSize = localStorage.getItem("repolens-font-size");
-          if (savedFontSize === "small" || savedFontSize === "large") fontSize = savedFontSize;
+          if (savedFontSize === "medium" || savedFontSize === "large") fontSize = savedFontSize;
         } catch {
           // 隐私模式禁用存储时仍使用默认主题和字号。
         }

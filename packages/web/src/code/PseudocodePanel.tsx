@@ -1,6 +1,7 @@
 import type { PseudocodeStepDto } from "@repolens/core/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../i18n";
 import { CodeBlock } from "./CodeLines";
 import { useSource, type LoadedSource } from "./useSource";
 
@@ -16,6 +17,8 @@ const PREVIEW_BOTTOM_MARGIN = 12;
 export interface StepQuote {
   text: string;
   lines: [number, number] | null;
+  /** 引用标签上的简称，以步骤序号开头 */
+  label: string;
 }
 
 interface HoverState {
@@ -54,6 +57,7 @@ export function PseudocodePanel({
   onJumpToSource: (lines: [number, number]) => void;
   onAsk: (quote: StepQuote) => void;
 }) {
+  const t = useT();
   const linked = useMemo(() => hasLines(steps), [steps]);
   const { source } = useSource(fileId, from, to);
   const [hover, setHover] = useState<HoverState | null>(null);
@@ -71,10 +75,10 @@ export function PseudocodePanel({
         ) : error ? (
           <div>
             <div className="text-[11px] text-[var(--color-warn)]">{error}</div>
-            <ActionButton onClick={() => onGenerate()}>重试</ActionButton>
+            <ActionButton onClick={() => onGenerate()}>{t("重试")}</ActionButton>
           </div>
         ) : (
-          <ActionButton onClick={() => onGenerate()}>生成 AI 伪代码</ActionButton>
+          <ActionButton onClick={() => onGenerate()}>{t("生成 AI 伪代码")}</ActionButton>
         )}
       </div>
     );
@@ -101,9 +105,9 @@ export function PseudocodePanel({
   return (
     <div className="p-3" onMouseLeave={clearHover} data-source-file={fileId}>
       <div className="flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">AI 伪代码</span>
+        <span className="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">{t("AI 伪代码")}</span>
         {linked && (
-          <span className="truncate text-[10px] text-[var(--color-ink-faint)]">悬停预览源码 · 点击定位到源码</span>
+          <span className="truncate text-[10px] text-[var(--color-ink-faint)]">{t("悬停预览源码 · 点击定位到源码")}</span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <RefreshButton loading={loading} onClick={() => onGenerate(true)} />
@@ -112,19 +116,19 @@ export function PseudocodePanel({
 
       {!linked && !loading && (
         <div className="mt-2 rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] px-2.5 py-2 text-[10.5px] leading-relaxed text-[var(--color-ink-faint)]">
-          这份伪代码来自旧版缓存，还没有和源码行对应。
+          {t("这份伪代码来自旧版缓存，还没有和源码行对应。")}
           <button
             type="button"
             onClick={() => onGenerate(true)}
             className="mx-0.5 text-[var(--color-accent)] hover:underline"
           >
-            重新生成
+            {t("重新生成")}
           </button>
-          后可以悬停预览、定位对应源码。
+          {t("后可以悬停预览、定位对应源码。")}
         </div>
       )}
-      {loading && <InlineStatus label="正在重新生成伪代码与源码对应关系…" />}
-      {error && <div className="mt-2 text-[11px] text-[var(--color-warn)]">刷新失败：{error}</div>}
+      {loading && <InlineStatus label={t("正在重新生成伪代码与源码对应关系…")} />}
+      {error && <div className="mt-2 text-[11px] text-[var(--color-warn)]">{t("刷新失败：{error}", { error })}</div>}
 
       <ol className="mt-2 space-y-1">
         {steps.map((step, index) => (
@@ -136,7 +140,11 @@ export function PseudocodePanel({
               onHover={(el, lines) => scheduleHover(el, lines)}
               onLeave={clearHover}
               onJump={jump}
-              onAsk={() => onAsk({ text: `步骤 ${index + 1}：${step.text}`, lines: step.lines ?? null })}
+              onAsk={() => onAsk({
+                text: t("步骤 {n}：{text}", { n: index + 1, text: step.text }),
+                lines: step.lines ?? null,
+                label: `#${index + 1} ${step.text}`,
+              })}
             />
             {step.children.length > 0 && (
               <ul className="pb-0.5">
@@ -150,7 +158,11 @@ export function PseudocodePanel({
                       onLeave={clearHover}
                       onJump={jump}
                       onAsk={() =>
-                        onAsk({ text: `步骤 ${index + 1} 的子步骤：${child.text}`, lines: child.lines ?? null })
+                        onAsk({
+                          text: t("步骤 {n} 的子步骤：{text}", { n: index + 1, text: child.text }),
+                          lines: child.lines ?? null,
+                          label: `#${index + 1}.${childIndex + 1} ${child.text}`,
+                        })
                       }
                     />
                   </li>
@@ -163,7 +175,7 @@ export function PseudocodePanel({
 
       {linked && (
         <p className="mt-3 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
-          步骤与源码行的对应由 AI 标注，可能有几行偏差；以源码为准。
+          {t("步骤与源码行的对应由 AI 标注，可能有几行偏差；以源码为准。")}
         </p>
       )}
 
@@ -195,13 +207,14 @@ function StepRow({
   onJump: (lines: [number, number]) => void;
   onAsk: () => void;
 }) {
+  const t = useT();
   const lines = step.lines ?? null;
   const child = marker === null;
   return (
     <div
       role={lines ? "button" : undefined}
       tabIndex={lines ? 0 : undefined}
-      title={lines ? "在源码标签中定位" : undefined}
+      title={lines ? t("在源码标签中定位") : undefined}
       onClick={() => lines && onJump(lines)}
       onKeyDown={(event) => {
         if (lines && (event.key === "Enter" || event.key === " ")) {
@@ -232,14 +245,14 @@ function StepRow({
       <span className="flex shrink-0 items-center gap-1 pt-px">
         <button
           type="button"
-          title="就这一步追问 AI"
+          title={t("就这一步追问 AI")}
           onClick={(event) => {
             event.stopPropagation();
             onAsk();
           }}
           className="rounded px-1 text-[10px] text-[var(--color-ink-faint)] opacity-0 transition-opacity hover:text-[var(--color-accent)] focus-visible:opacity-100 group-hover:opacity-100"
         >
-          追问
+          {t("追问")}
         </button>
         {lines && (
           <span className="mono px-1 text-[9.5px] tabular-nums text-[var(--color-ink-faint)] transition-colors group-hover:text-[var(--color-accent)]">
@@ -256,6 +269,7 @@ function StepRow({
  * 在看详情时恰好是空闲的，借用那块空间比在抽屉里挤出一个小窗口好读得多。
  */
 function SourcePreview({ source, hover }: { source: LoadedSource; hover: HoverState }) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const total = hover.range[1] - hover.range[0] + 1;
   const [shown, setShown] = useState(() => Math.min(total, PREVIEW_MAX_LINES));
@@ -305,7 +319,7 @@ function SourcePreview({ source, hover }: { source: LoadedSource; hover: HoverSt
       </div>
       {hidden > 0 && (
         <div className="border-t border-[var(--color-line)] px-2.5 py-1 text-[10px] text-[var(--color-ink-faint)]">
-          还有 {hidden} 行，点击在源码标签中查看
+          {t("还有 {count} 行，点击在源码标签中查看", { count: hidden })}
         </div>
       )}
     </div>,
@@ -314,13 +328,14 @@ function SourcePreview({ source, hover }: { source: LoadedSource; hover: HoverSt
 }
 
 function RefreshButton({ loading, onClick }: { loading: boolean; onClick: () => void }) {
+  const t = useT();
   return (
     <button
       type="button"
       disabled={loading}
       onClick={onClick}
-      aria-label={loading ? "正在重新生成伪代码" : "重新生成伪代码"}
-      title={loading ? "正在重新生成…" : "重新生成（同时刷新 AI 摘要）"}
+      aria-label={loading ? t("正在重新生成伪代码") : t("重新生成伪代码")}
+      title={loading ? t("正在重新生成…") : t("重新生成（同时刷新 AI 摘要）")}
       className="flex h-5 w-5 items-center justify-center rounded text-[14px] leading-none text-[var(--color-ink-faint)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-accent)] disabled:cursor-wait disabled:opacity-60"
     >
       <span className={loading ? "animate-spin" : ""}>↻</span>

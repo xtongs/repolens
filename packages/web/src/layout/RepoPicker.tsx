@@ -9,21 +9,22 @@ import type {
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api/client";
+import { msg, t, translateMessage, useT } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
 
 const STATUS_HINT: Record<Exclude<RepoStatus, "ok">, string> = {
-  "index-missing": "索引已被删除，需要重新扫描",
-  "root-missing": "目录已不存在",
+  "index-missing": msg("索引已被删除，需要重新扫描"),
+  "root-missing": msg("目录已不存在"),
 };
 
 const PHASE_LABELS: Record<ScanPhase, string> = {
-  discover: "发现文件",
-  parse: "解析语法",
-  resolve: "解析依赖",
-  link: "链接图谱",
-  rollup: "聚合指标",
-  enrich: "生成 AI 语义",
-  index: "建立索引",
+  discover: msg("发现文件"),
+  parse: msg("解析语法"),
+  resolve: msg("解析依赖"),
+  link: msg("链接图谱"),
+  rollup: msg("聚合指标"),
+  enrich: msg("生成 AI 语义"),
+  index: msg("建立索引"),
 };
 
 const TOOLTIP_WIDTH = 420;
@@ -42,6 +43,7 @@ const overviewRequests = new Map<string, Promise<OverviewDto>>();
  * 不由网页填写，而由本机服务唤起系统目录选择器，避免开放任意路径读取。
  */
 export function RepoPicker() {
+  useT();
   const repos = useAppStore((s) => s.repos);
   const repoId = useAppStore((s) => s.repoId);
   const overview = useAppStore((s) => s.overview);
@@ -95,7 +97,7 @@ export function RepoPicker() {
         scanKindRef.current = null;
       } catch (err) {
         completedRef.current = null;
-        setScanError(`仓库已扫描，但打开失败：${(err as Error).message}`);
+        setScanError(t("仓库已扫描，但打开失败：{error}", { error: (err as Error).message }));
       }
     },
     [refreshRepos, repoId, repos, setOpen, switchRepo],
@@ -133,9 +135,9 @@ export function RepoPicker() {
         if (disposed) return;
         setScanTask(next);
         if (next.status === "completed") void finishScan(next);
-        if (next.status === "failed") setScanError(next.error ?? "扫描失败");
+        if (next.status === "failed") setScanError(next.error ? translateMessage(next.error) : t("扫描失败"));
       }).catch((err: Error) => {
-        if (!disposed) setScanError(`无法读取扫描进度：${err.message}`);
+        if (!disposed) setScanError(t("无法读取扫描进度：{error}", { error: err.message }));
       }).finally(() => {
         polling = false;
       });
@@ -169,7 +171,7 @@ export function RepoPicker() {
       scanKindRef.current = "add";
       setScanTask(result.task);
       if (result.task.status === "completed") await finishScan(result.task);
-      if (result.task.status === "failed") setScanError(result.task.error ?? "扫描失败");
+      if (result.task.status === "failed") setScanError(result.task.error ? translateMessage(result.task.error) : t("扫描失败"));
     } catch (err) {
       setScanError((err as Error).message);
     } finally {
@@ -200,7 +202,7 @@ export function RepoPicker() {
       const task = await api.rescanRepo(repo.id);
       setScanTask(task);
       if (task.status === "completed") await finishScan(task);
-      if (task.status === "failed") setScanError(task.error ?? "扫描失败");
+      if (task.status === "failed") setScanError(task.error ? translateMessage(task.error) : t("扫描失败"));
     } catch (err) {
       scanKindRef.current = null;
       setScanError((err as Error).message);
@@ -219,7 +221,7 @@ export function RepoPicker() {
         type="button"
         onClick={() => setOpen(!open)}
         className="flex max-w-[220px] items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-semibold transition-colors hover:bg-[var(--color-surface-3)]"
-        title="切换或添加仓库"
+        title={t("切换或添加仓库")}
       >
         <span className="truncate">{label}</span>
         <span className="shrink-0 text-[9px] text-[var(--color-ink-faint)]">▾</span>
@@ -260,13 +262,13 @@ export function RepoPicker() {
             >
               <FolderPlusIcon />
               {picking
-                ? "等待选择目录…"
+                ? t("等待选择目录…")
                 : scanTask?.status === "running"
-                  ? "正在扫描仓库…"
-                  : "添加本地仓库"}
+                  ? t("正在扫描仓库…")
+                  : t("添加本地仓库")}
             </button>
             <p className="mt-1.5 px-1 text-[9.5px] leading-relaxed text-[var(--color-ink-faint)]">
-              选择代码目录后会自动建立索引；扫描只在本机进行。
+              {t("选择代码目录后会自动建立索引；扫描只在本机进行。")}
             </p>
           </div>
         </div>
@@ -276,15 +278,16 @@ export function RepoPicker() {
 }
 
 function ScanProgress({ task }: { task: RepoScanTaskDto }) {
+  useT();
   const percent = Math.round(task.progress * 100);
-  const phase = task.phase ? PHASE_LABELS[task.phase] : "准备扫描";
+  const phase = task.phase ? t(PHASE_LABELS[task.phase]) : t("准备扫描");
   const count = task.total > 1 ? `${task.done.toLocaleString()} / ${task.total.toLocaleString()}` : null;
 
   return (
     <div className="mb-2 rounded-md bg-[var(--color-surface-3)] px-2.5 py-2" aria-live="polite">
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0 truncate text-[11px] font-medium">
-          {task.status === "completed" ? "扫描完成" : task.status === "failed" ? "扫描失败" : `正在扫描 ${task.name}`}
+          {task.status === "completed" ? t("扫描完成") : task.status === "failed" ? t("扫描失败") : t("正在扫描 {name}", { name: task.name })}
         </span>
         <span className="mono shrink-0 text-[10px] tabular-nums text-[var(--color-ink-faint)]">
           {task.status === "completed" ? "100%" : `${percent}%`}
@@ -341,6 +344,7 @@ function RepoRow({
   starting: boolean;
   onRescan: () => void;
 }) {
+  useT();
   const switchRepo = useAppStore((s) => s.switchRepo);
   const forget = useAppStore((s) => s.forgetRepo);
   const setOpen = useAppStore((s) => s.setRepoPickerOpen);
@@ -394,14 +398,14 @@ function RepoRow({
           {repo.branch && (
             <span
               className="mono max-w-[120px] shrink-0 truncate rounded bg-[var(--color-surface-3)] px-1 py-px text-[9.5px] font-normal text-[var(--color-accent)]"
-              title={`当前分支：${repo.branch}`}
+              title={t("当前分支：{branch}", { branch: repo.branch })}
             >
               {repo.branch}
             </span>
           )}
           {!usable && (
             <span className="shrink-0 text-[10px] text-[var(--color-danger)]">
-              {STATUS_HINT[repo.status as Exclude<RepoStatus, "ok">]}
+              {t(STATUS_HINT[repo.status as Exclude<RepoStatus, "ok">])}
             </span>
           )}
         </span>
@@ -421,9 +425,9 @@ function RepoRow({
         className={`shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--color-ink-faint)] transition-[color,background-color,opacity] hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)] disabled:cursor-not-allowed ${
           hovered ? "visible opacity-100" : "invisible opacity-0"
         }`}
-        title={repo.status === "root-missing" ? "仓库目录不存在，无法扫描" : "增量重新扫描仓库"}
+        title={repo.status === "root-missing" ? t("仓库目录不存在，无法扫描") : t("增量重新扫描仓库")}
       >
-        {starting ? "启动中…" : scanningThisRepo ? "扫描中…" : "重新扫描"}
+        {starting ? t("启动中…") : scanningThisRepo ? t("扫描中…") : t("重新扫描")}
       </button>
 
       {/*
@@ -441,9 +445,9 @@ function RepoRow({
           className={`shrink-0 rounded px-1 py-0.5 text-[10px] text-[var(--color-ink-faint)] transition-opacity hover:text-[var(--color-danger)] ${
             hovered ? "visible opacity-100" : "invisible opacity-0"
           }`}
-          title="从清单移除（不删除仓库和索引）"
+          title={t("从清单移除（不删除仓库和索引）")}
         >
-          移除
+          {t("移除")}
         </button>
       )}
 
@@ -477,6 +481,7 @@ function RepoOverviewTooltip({
   activeOverview: OverviewDto | null;
   anchor: React.RefObject<HTMLDivElement | null>;
 }) {
+  useT();
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [load, setLoad] = useState<OverviewLoadState>(() => {
     if (activeOverview) return { status: "ready", overview: activeOverview };
@@ -577,7 +582,7 @@ function RepoOverviewTooltip({
       <div className="flex items-baseline justify-between gap-3">
         <span className="min-w-0 truncate text-[11px] font-semibold text-[var(--color-ink)]">{repo.name}</span>
         <span className="shrink-0 text-[9px] uppercase tracking-wider text-[var(--color-accent)]">
-          AI 仓库概览
+          {t("AI 仓库概览")}
         </span>
       </div>
       <div className="mono mt-1 break-all text-[9px] leading-relaxed text-[var(--color-ink-faint)]">
@@ -586,7 +591,7 @@ function RepoOverviewTooltip({
 
       {repo.status !== "ok" ? (
         <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-danger)]">
-          {STATUS_HINT[repo.status]}
+          {t(STATUS_HINT[repo.status])}
         </p>
       ) : content?.status === "ready" ? (
         <>
@@ -603,10 +608,10 @@ function RepoOverviewTooltip({
         </>
       ) : content?.status === "error" ? (
         <p className="mt-2 break-words text-[11px] leading-relaxed text-[var(--color-danger)]">
-          无法读取仓库概览：{content.message}
+          {t("无法读取仓库概览：{error}", { error: content.message })}
         </p>
       ) : (
-        <p className="mt-2 text-[11px] text-[var(--color-ink-faint)]">正在读取仓库概览…</p>
+        <p className="mt-2 text-[11px] text-[var(--color-ink-faint)]">{t("正在读取仓库概览…")}</p>
       )}
     </div>,
     document.body,
@@ -623,8 +628,8 @@ function overviewFacts(overview: OverviewDto): string {
     .map((item) => item.language)
     .join(" / ");
   return [
-    `${overview.totals.files.toLocaleString("zh-CN")} 个文件`,
-    `${overview.totals.loc.toLocaleString("zh-CN")} 行代码`,
+    t("{count} 个文件", { count: overview.totals.files.toLocaleString("en-US") }),
+    t("{count} 行代码", { count: overview.totals.loc.toLocaleString("en-US") }),
     languages || null,
   ].filter(Boolean).join(" · ");
 }
@@ -633,10 +638,10 @@ function missingOverviewMessage(
   scanReason: string | null | undefined,
   llm: LlmStatusDto | null | undefined,
 ): string {
-  if (scanReason) return `仓库概览未生成：${scanReason}。重新扫描后会再次尝试。`;
-  if (llm?.enabled === false) return "当前仓库扫描时未启用 AI，因此没有生成仓库概览。";
-  if (llm && !llm.available && llm.reason) return `仓库概览未生成：${llm.reason}。重新扫描后会再次尝试。`;
-  return "这个索引尚未生成仓库概览，通常是旧索引或上次扫描时模型不可用；重新扫描后会再次尝试。";
+  if (scanReason) return t("仓库概览未生成：{reason}。重新扫描后会再次尝试。", { reason: translateMessage(scanReason) });
+  if (llm?.enabled === false) return t("当前仓库扫描时未启用 AI，因此没有生成仓库概览。");
+  if (llm && !llm.available && llm.reason) return t("仓库概览未生成：{reason}。重新扫描后会再次尝试。", { reason: translateMessage(llm.reason) });
+  return t("这个索引尚未生成仓库概览，通常是旧索引或上次扫描时模型不可用；重新扫描后会再次尝试。");
 }
 
 /**

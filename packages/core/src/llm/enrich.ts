@@ -17,6 +17,7 @@ import { addUsage, emptyUsage, LlmUnavailableError, OpenAiCompatibleClient } fro
 import {
   cleanSingleLine,
   cleanText,
+  MAX_SOURCE_LINE_CHARS,
   normalizePseudocodeSteps,
   normalizeSummary,
   numberSourceLines,
@@ -68,6 +69,68 @@ interface TraceNarrativeResponse {
 
 const inflight = new Map<string, Promise<SemanticResultDto>>();
 const traceInflight = new Map<string, Promise<TraceNarrativeResultDto>>();
+
+/** 发给模型的源码形式变了就加一，由 dropSemanticsFromOutdatedInput 清掉受影响的缓存 */
+const SEMANTIC_INPUT_VERSION = "2";
+const SEMANTIC_INPUT_VERSION_KEY = "semantic_input_version";
+
+export function semanticInputOutdated(db: Db): boolean {
+  return getMeta(db, SEMANTIC_INPUT_VERSION_KEY) !== SEMANTIC_INPUT_VERSION;
+}
+
+/**
+ * 版本 2 起超长的行先缩短再发给模型。源码里有超长行时，旧结果是按被这些
+ * 行挤掉一大截的源码生成的，删掉后界面会按新输入重新生成；其他文件和
+ * 符号的输入没变，缓存照常可用。
+ */
+export function dropSemanticsFromOutdatedInput(db: Db, root: string): void {
+  if (!semanticInputOutdated(db)) return;
+  const cached = db.prepare(
+    "SELECT DISTINCT target_kind AS kind, target_key AS key FROM summaries WHERE target_kind IN ('file', 'symbol')",
+  ).all() as Array<{ kind: "file" | "symbol"; key: string }>;
+  const byPath = new Map<string, { file: boolean; symbolKeys: string[] }>();
+  for (const row of cached) {
+    const path = row.kind === "file" ? row.key : row.key.slice(0, row.key.indexOf("#"));
+    const entry = byPath.get(path) ?? { file: false, symbolKeys: [] };
+    if (row.kind === "file") entry.file = true;
+    else entry.symbolKeys.push(row.key);
+    byPath.set(path, entry);
+  }
+
+  const symbolsOf = db.prepare(
+    `SELECT s.name, s.container, s.start_line AS startLine, s.end_line AS endLine
+     FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?`,
+  );
+  const stale: Array<{ kind: "file" | "symbol"; key: string }> = [];
+  for (const [path, entry] of byPath) {
+    let lines: string[];
+    try {
+      lines = readFileSync(join(root, path), "utf8").split("\n");
+    } catch {
+      continue;
+    }
+    const hasLongLine = (from: number, to: number) =>
+      lines.slice(from - 1, to).some((line) => line.length > MAX_SOURCE_LINE_CHARS);
+    if (!hasLongLine(1, lines.length)) continue;
+    if (entry.file) stale.push({ kind: "file", key: path });
+    if (entry.symbolKeys.length === 0) continue;
+
+    const ranges = new Map(
+      (symbolsOf.all(path) as Array<{ name: string; container: string | null; startLine: number; endLine: number }>)
+        .map((s) => [symbolKey(path, s.container, s.name, s.startLine), s] as const),
+    );
+    for (const key of entry.symbolKeys) {
+      const range = ranges.get(key);
+      if (range && hasLongLine(range.startLine, range.endLine)) stale.push({ kind: "symbol", key });
+    }
+  }
+
+  transact(db, () => {
+    const drop = db.prepare("DELETE FROM summaries WHERE target_kind = ? AND target_key = ?");
+    for (const target of stale) drop.run(target.kind, target.key);
+    setMeta(db, SEMANTIC_INPUT_VERSION_KEY, SEMANTIC_INPUT_VERSION);
+  });
+}
 
 /** 扫描期语义增强：只碰 repo / package / directory，不预生成文件和函数。 */
 export async function enrichRepository(db: Db, root: string, config: LlmConfig): Promise<LlmRunStats> {
@@ -814,6 +877,7 @@ function semanticJsonContract(): string {
     `"pseudocode":[{"step":"顶层步骤","lines":[起始行,结束行],` +
     `"details":[{"text":"子步骤","lines":[起始行,结束行]}]}]}。` +
     `source 每行开头的「行号| 」是该行在文件中的绝对行号，不属于代码本身；` +
+    `以「…（省略 N 字符）」结尾的行过长（多为 base64、压缩代码或内联数据），只保留了开头，这不是源码被截断；` +
     `lines 用这些行号标出该步骤对应源码的起止行（闭区间），子步骤的范围应落在所属步骤之内；` +
     `无法对应到具体代码时省略 lines，不要猜测。` +
     `数组顺序必须遵循源码组织或执行顺序；没有内容时返回空数组，不得更换字段名。`;

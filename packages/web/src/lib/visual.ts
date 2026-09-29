@@ -1,4 +1,5 @@
 import type { GraphNodeDto, Language, SymbolKind } from "@repolens/core/types";
+import { msg, t } from "../i18n";
 import type { MetricKey } from "../store/useAppStore";
 
 const LANGUAGE_COLORS: Record<string, string> = {
@@ -39,10 +40,11 @@ export function nodeAccent(node: GraphNodeDto): string {
   return "var(--color-ink-muted)";
 }
 
+/** 取值要在渲染时过 t() */
 export const METRIC_LABELS: Record<MetricKey, string> = {
-  loc: "代码行",
-  complexity: "复杂度",
-  symbols: "符号数",
+  loc: msg("代码行"),
+  complexity: msg("复杂度"),
+  symbols: msg("符号数"),
 };
 
 export function metricValue(node: GraphNodeDto, metric: MetricKey): number {
@@ -70,12 +72,12 @@ export function nodeSize(
   if (node.kind === "external") return { width: 150, height: 46 };
 
   const raw = metricValue(node, metric);
-  const t = maxMetric > 0 ? Math.sqrt(Math.max(0, raw) / maxMetric) : 0;
-  const metricWidth = 152 + 84 * t;
+  const scale = maxMetric > 0 ? Math.sqrt(Math.max(0, raw) / maxMetric) : 0;
+  const metricWidth = 152 + 84 * scale;
   const metadata = [
     formatCount(raw),
     node.layer ? `· ${node.layer}` : null,
-    node.childCount > 0 && node.kind !== "symbol" ? `· ${node.childCount} 项` : null,
+    node.childCount > 0 && node.kind !== "symbol" ? t("· {count} 项", { count: node.childCount }) : null,
     node.metrics.inDegree + node.metrics.outDegree > 0
       ? `↓${node.metrics.outDegree} ↑${node.metrics.inDegree}`
       : null,
@@ -89,7 +91,7 @@ export function nodeSize(
     + 28;
   return {
     width: Math.round(Math.max(metricWidth, metadataWidth)),
-    height: Math.round(50 + 24 * t),
+    height: Math.round(50 + 24 * scale),
   };
 }
 
@@ -162,16 +164,16 @@ export function symbolGlyph(kind: SymbolKind | null | undefined): string {
 export function kindLabel(node: GraphNodeDto): string {
   switch (node.kind) {
     case "package":
-      return "包";
+      return t("包");
     case "directory":
-      return "目录";
+      return t("目录");
     case "file":
-      return "文件";
+      return t("文件");
     case "symbol":
-      return node.symbolKind ?? "符号";
+      return node.symbolKind ?? t("符号");
     case "external":
-      return "外部依赖";
+      return t("外部依赖");
     case "aggregate":
-      return "折叠组";
+      return t("折叠组");
   }
 }

@@ -1,6 +1,7 @@
 import type { ChatContextItemDto, ChatMessageDto, ChatRefDto } from "@repolens/core/types";
 import { create } from "zustand";
 import { api } from "../api/client";
+import { t } from "../i18n";
 import { useAppStore, type AppState } from "./useAppStore";
 
 /** 服务端接受的节点 id；聚合节点、外部依赖这类合成节点没有可读的内容 */
@@ -238,7 +239,7 @@ function viewAttachment(app: ChatViewState): ChatAttachment {
       key: "view",
       kind: "view",
       ref: { kind: "view", mode: "trace", traceId: app.traceId },
-      label: `链路 · ${app.traceLabel ?? app.traceId}`,
+      label: t("链路 · {name}", { name: app.traceLabel ?? app.traceId }),
     };
   }
   if (app.callGraph) {
@@ -246,7 +247,7 @@ function viewAttachment(app: ChatViewState): ChatAttachment {
       key: "view",
       kind: "view",
       ref: { kind: "view", mode: "callgraph", scope: app.callGraph.scopeId },
-      label: `调用图 · ${app.callGraph.label}`,
+      label: t("调用图 · {name}", { name: app.callGraph.label }),
     };
   }
   // 最近展开的层级最能说明用户在看哪儿，服务端只取前几个
@@ -255,7 +256,7 @@ function viewAttachment(app: ChatViewState): ChatAttachment {
     key: "view",
     kind: "view",
     ref: { kind: "view", mode: "structure", scope: app.rootScope, expanded },
-    label: expanded.length > 0 ? `结构图 · 展开 ${expanded.length} 层` : "结构图 · 仓库根",
+    label: expanded.length > 0 ? t("结构图 · 展开 {count} 层", { count: expanded.length }) : t("结构图 · 仓库根"),
   };
 }
 
@@ -272,7 +273,7 @@ export function nodeLabel(
     if (node) return node.label;
   }
   if (id.startsWith("dir:") || id.startsWith("pkg:")) return id.slice(4).split("/").at(-1) || id;
-  return id.startsWith("sym:") ? "符号" : "文件";
+  return id.startsWith("sym:") ? t("符号") : t("文件");
 }
 
 function toRef(attachment: ChatAttachment): ChatRefDto {

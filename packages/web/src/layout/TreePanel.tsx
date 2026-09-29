@@ -1,9 +1,11 @@
 import type { EntryPointDto, FindingDto, TraceSummaryDto, TreeNodeDto } from "@repolens/core/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type FindingsResponse, api } from "../api/client";
+import { useT } from "../i18n";
 import { formatCount, languageColor } from "../lib/visual";
 import { ALL_VISIBLE_ROLES, SOURCE_ONLY_ROLES, useAppStore } from "../store/useAppStore";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
+import { TabStrip } from "./TabStrip";
 
 /**
  * 结构树。
@@ -12,6 +14,7 @@ import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle"
  * 这个代价比多占一点空间大得多。
  */
 export function TreePanel() {
+  const t = useT();
   const open = useAppStore((s) => s.treeOpen);
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
@@ -20,9 +23,9 @@ export function TreePanel() {
   const setTab = useAppStore((s) => s.setPanelTab);
   const resize = useResizablePanel({
     side: "left",
-    storageKey: "repolens:left-panel-width",
-    defaultWidth: 300,
-    minWidth: 240,
+    storageKey: "repolens:left-panel-custom-width",
+    fallbackWidth: 300,
+    minWidth: 180,
     maxWidth: 560,
   });
 
@@ -35,7 +38,7 @@ export function TreePanel() {
     >
       <ResizablePanelHandle
         side="left"
-        label="调整左侧边栏宽度"
+        label={t("调整左侧边栏宽度")}
         width={resize.width}
         minWidth={resize.minWidth}
         maxWidth={resize.maxWidth}
@@ -44,13 +47,15 @@ export function TreePanel() {
         onReset={resize.reset}
       />
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--color-line)] px-3">
-        <PanelTab active={tab === "tree"} onClick={() => setTab("tree")} label="结构" />
-        <PanelTab active={tab === "findings"} onClick={() => setTab("findings")} label="体检" />
-        <PanelTab active={tab === "traces"} onClick={() => setTab("traces")} label="链路" />
+        <TabStrip scrollKey={tab}>
+          <PanelTab active={tab === "tree"} onClick={() => setTab("tree")} label={t("结构")} />
+          <PanelTab active={tab === "findings"} onClick={() => setTab("findings")} label={t("体检")} />
+          <PanelTab active={tab === "traces"} onClick={() => setTab("traces")} label={t("链路")} />
+        </TabStrip>
         <button
           type="button"
           onClick={() => setTreeOpen(false)}
-          className="ml-auto text-[13px] text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
+          className="shrink-0 text-[13px] text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
         >
           ×
         </button>
@@ -68,6 +73,7 @@ export function TreePanel() {
 }
 
 function TracesBody() {
+  const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
   const showNoise = useAppStore((s) => s.showNoise);
@@ -109,17 +115,17 @@ function TracesBody() {
     }
   };
 
-  if (entries === null) return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">加载中…</div>;
+  if (entries === null) return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>;
   if (visibleEntries.length === 0) return (
     <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
-      没有识别到入口。重新扫描后可识别 main、HTTP 路由、CLI、公共 API 与测试入口。
+      {t("没有识别到入口。重新扫描后可识别 main、HTTP 路由、CLI、公共 API 与测试入口。")}
     </div>
   );
 
   return (
     <>
       <div className="shrink-0 px-3 pt-2 text-[10.5px] text-[var(--color-ink-faint)]">
-        可追踪入口 · 终点为数据库、网络、文件等 I/O
+        {t("可追踪入口 · 终点为数据库、网络、文件等 I/O")}
       </div>
       <div className="thin-scroll flex-1 overflow-y-auto py-1">
         {tracedEntries.map((entry) => (
@@ -135,7 +141,7 @@ function TracesBody() {
         ))}
         {tracedEntries.length === 0 && (
           <div className="px-3 py-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-            没有入口能沿当前静态调用关系到达 I/O 边界。
+            {t("没有入口能沿当前静态调用关系到达 I/O 边界。")}
           </div>
         )}
         {untracedEntries.length > 0 && (
@@ -146,9 +152,9 @@ function TracesBody() {
               aria-expanded={showUntraced}
               className="flex w-full items-center px-3 py-1.5 text-left text-[10.5px] text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-ink-muted)]"
             >
-              <span>未形成链路的入口</span>
+              <span>{t("未形成链路的入口")}</span>
               <span className="ml-auto tabular-nums">{untracedEntries.length}</span>
-              <span className="ml-2 w-6 text-right">{showUntraced ? "收起" : "显示"}</span>
+              <span className="ml-2 w-6 text-right">{showUntraced ? t("收起") : t("显示")}</span>
             </button>
             {showUntraced && untracedEntries.map((entry) => (
               <TraceEntryRow
@@ -183,6 +189,7 @@ function TraceEntryRow({
   onToggle: () => void;
   onOpen: (id: string, label: string) => void;
 }) {
+  const t = useT();
   return (
     <div>
       <button
@@ -190,7 +197,7 @@ function TraceEntryRow({
         onClick={onToggle}
         disabled={entry.traceCount === 0}
         aria-expanded={expanded}
-        title={entry.traceCount > 0 ? `展开 ${entry.traceCount} 条链路` : "未追踪到 I/O 边界"}
+        title={entry.traceCount > 0 ? t("展开 {count} 条链路", { count: entry.traceCount }) : t("未追踪到 I/O 边界")}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left enabled:hover:bg-[var(--color-surface-raised)] disabled:cursor-default"
       >
         <span className="rounded border border-[var(--color-line)] px-1 text-[9px] uppercase text-[var(--color-accent)]">
@@ -198,15 +205,15 @@ function TraceEntryRow({
         </span>
         <span className="min-w-0 flex-1 truncate text-[11.5px]">{entry.label}</span>
         <span className="ml-auto text-[10px] tabular-nums text-[var(--color-ink-faint)]">
-          {entry.traceCount > 0 ? entry.traceCount : "未形成"}
+          {entry.traceCount > 0 ? entry.traceCount : t("未形成")}
         </span>
       </button>
       {expanded && (
         <div className="border-y border-[var(--color-line)]/60 bg-[var(--color-canvas)]/30 py-1">
           {!traces ? (
-            <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">加载链路…</div>
+            <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">{t("加载链路…")}</div>
           ) : traces.length === 0 ? (
-            <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">未沿确定调用边到达 I/O 边界</div>
+            <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">{t("未沿确定调用边到达 I/O 边界")}</div>
           ) : traces.map((trace) => (
             <button
               key={trace.id}
@@ -218,8 +225,8 @@ function TraceEntryRow({
             >
               <div className="truncate text-[11px]">{trace.label}</div>
               <div className="mt-0.5 text-[9.5px] text-[var(--color-ink-faint)]">
-                {trace.steps} 步 · {trace.confidence === "exact" ? "确定" : "含推断"}
-                {trace.hasNarrative ? " · AI 已解释" : ""}
+                {t("{count} 步", { count: trace.steps })} · {trace.confidence === "exact" ? t("确定") : t("含推断")}
+                {trace.hasNarrative ? ` · ${t("AI 已解释")}` : ""}
               </div>
             </button>
           ))}
@@ -260,8 +267,9 @@ function PanelTab({
   return (
     <button
       type="button"
+      aria-pressed={active}
       onClick={onClick}
-      className={`rounded px-2 py-0.5 text-[12px] transition-colors ${
+      className={`shrink-0 rounded px-2 py-0.5 text-[12px] transition-colors ${
         active
           ? "bg-[var(--color-surface-raised)] font-medium text-[var(--color-ink)]"
           : "text-[var(--color-ink-faint)] hover:text-[var(--color-ink-muted)]"
@@ -273,6 +281,7 @@ function PanelTab({
 }
 
 function TreeBody() {
+  const t = useT();
   const showNoise = useAppStore((s) => s.showNoise);
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
@@ -299,11 +308,11 @@ function TreeBody() {
   return (
     <>
       <div className="shrink-0 px-3 pt-2 text-[10.5px] text-[var(--color-ink-faint)]">
-        按代码行热力排序
+        {t("按代码行热力排序")}
       </div>
       <div className="thin-scroll flex-1 overflow-y-auto py-1">
         {root === null ? (
-          <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">加载中…</div>
+          <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>
         ) : (
           (root.children ?? []).map((child) => (
             <TreeRow key={child.id} node={child} depth={0} roles={roles} />
@@ -315,6 +324,7 @@ function TreeBody() {
 }
 
 function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; roles: string }) {
+  const t = useT();
   const select = useAppStore((s) => s.select);
   const selected = useAppStore((s) => s.selected === node.id);
   const [expanded, setExpanded] = useState(false);
@@ -387,7 +397,7 @@ function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; rol
           className="py-1 text-[10.5px] text-[var(--color-ink-faint)]"
           style={{ paddingLeft: 26 + depth * 13 }}
         >
-          加载中…
+          {t("加载中…")}
         </div>
       )}
 
@@ -437,6 +447,7 @@ function FolderIcon({ open }: { open: boolean }) {
  * 一条结论只列一次（服务端按 group_key 去重），点击落到图上对应节点。
  */
 function FindingsBody() {
+  const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
   const [data, setData] = useState<FindingsResponse | null>(null);
@@ -461,15 +472,15 @@ function FindingsBody() {
   }, [kind, repoId, repoRevision]);
 
   if (data === null) {
-    return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">加载中…</div>;
+    return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>;
   }
 
   if (data.summary.total === 0) {
     return (
       <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
-        没有发现结构问题。
+        {t("没有发现结构问题。")}
         <br />
-        当前检查项：跨文件的重复实现、同级作用域之间的循环依赖。
+        {t("当前检查项：跨文件的重复实现、同级作用域之间的循环依赖。")}
       </div>
     );
   }
@@ -478,13 +489,13 @@ function FindingsBody() {
     <>
       <div className="flex shrink-0 items-center gap-1 px-3 pt-2">
         <FilterChip active={kind === "all"} onClick={() => setKind("all")}>
-          全部 {data.summary.total}
+          {t("全部 {count}", { count: data.summary.total })}
         </FilterChip>
         <FilterChip active={kind === "duplicate"} onClick={() => setKind("duplicate")}>
-          重复 {data.summary.byKind["duplicate"] ?? 0}
+          {t("重复 {count}", { count: data.summary.byKind["duplicate"] ?? 0 })}
         </FilterChip>
         <FilterChip active={kind === "cycle"} onClick={() => setKind("cycle")}>
-          循环 {data.summary.byKind["cycle"] ?? 0}
+          {t("循环 {count}", { count: data.summary.byKind["cycle"] ?? 0 })}
         </FilterChip>
       </div>
 

@@ -2,6 +2,7 @@ import type { GraphNodeDto, SemanticResultDto } from "@repolens/core/types";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { findNode } from "../graph/model";
+import { useT } from "../i18n";
 import { ALT_KEY } from "../lib/shortcut";
 import { formatCount, kindLabel, nodeAccent } from "../lib/visual";
 import { useAppStore } from "../store/useAppStore";
@@ -35,6 +36,7 @@ const semanticRequests = new Map<string, Promise<HoverSemantic>>();
  * 推迟到这张卡片里，用户不必点击就能判断值不值得深入。
  */
 export function HoverCard() {
+  const t = useT();
   const hovered = useAppStore((s) => s.hovered);
   const anchor = useAppStore((s) => s.hoverAnchor);
   const metric = useAppStore((s) => s.metric);
@@ -168,7 +170,7 @@ export function HoverCard() {
       )}
 
       {node.layer && (
-        <div className="mt-1.5 text-[10px] text-[var(--color-accent)]">AI 架构层 · {node.layer}</div>
+        <div className="mt-1.5 text-[10px] text-[var(--color-accent)]">{t("AI 架构层 · {layer}", { layer: node.layer })}</div>
       )}
 
       {shortSummary && (
@@ -182,18 +184,18 @@ export function HoverCard() {
       {activeSemantic?.status === "loading" && (
         <div className="mt-2 flex items-center gap-2 rounded border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/5 px-2 py-1.5 text-[10.5px] text-[var(--color-ink-muted)]">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-accent)]" />
-          {node.kind === "file" ? "正在生成文件摘要与整体伪代码…" : "正在生成函数摘要与伪代码…"}
+          {node.kind === "file" ? t("正在生成文件摘要与整体伪代码…") : t("正在生成函数摘要与伪代码…")}
         </div>
       )}
 
       {activeSemantic?.value?.skipReason === "empty-file" && (
         <div className="mt-2 text-[10.5px] text-[var(--color-ink-faint)]">
-          空文件，没有可生成的内容
+          {t("空文件，没有可生成的内容")}
         </div>
       )}
 
       {activeSemantic?.status === "error" && (
-        <div className="mt-2 text-[10.5px] text-[var(--color-warn)]">AI 内容生成失败，稍后再次悬停可重试</div>
+        <div className="mt-2 text-[10.5px] text-[var(--color-warn)]">{t("AI 内容生成失败，稍后再次悬停可重试")}</div>
       )}
 
       {pseudocode && (
@@ -205,24 +207,24 @@ export function HoverCard() {
       )}
 
       <div className="mt-2.5 grid grid-cols-3 gap-x-3 gap-y-1 text-[11px]">
-        <Stat label="代码行" value={formatCount(node.metrics.loc)} emphasized={metric === "loc"} />
+        <Stat label={t("代码行")} value={formatCount(node.metrics.loc)} emphasized={metric === "loc"} />
         <Stat
-          label="复杂度"
+          label={t("复杂度")}
           value={formatCount(node.metrics.complexity)}
           emphasized={metric === "complexity"}
         />
         <Stat
-          label="符号"
+          label={t("符号数")}
           value={formatCount(node.metrics.symbols)}
           emphasized={metric === "symbols"}
         />
-        <Stat label={node.kind === "symbol" ? "调用" : "依赖"} value={String(outgoing)} />
-        <Stat label={node.kind === "symbol" ? "被调用" : "被依赖"} value={String(incoming)} />
+        <Stat label={node.kind === "symbol" ? t("调用") : t("依赖")} value={String(outgoing)} />
+        <Stat label={node.kind === "symbol" ? t("被调用") : t("被依赖")} value={String(incoming)} />
       </div>
 
       {node.expandable && (
         <div className="mt-2.5 border-t border-[var(--color-line)] pt-2 text-[10.5px] text-[var(--color-ink-faint)]">
-          双击展开 {node.childCount} 项 · {ALT_KEY}双击 只看它的邻居
+          {t("双击展开 {count} 项 · {alt}双击 只看它的邻居", { count: node.childCount, alt: ALT_KEY })}
         </div>
       )}
     </div>

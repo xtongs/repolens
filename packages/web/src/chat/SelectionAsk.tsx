@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../i18n";
 import { useChatStore, type ChatAttachment } from "../store/useChatStore";
 
 const MAX_QUOTE_CHARS = 2_000;
@@ -17,6 +18,7 @@ interface Anchor {
  * 一起交给模型——用户不用再解释「我说的是哪一段」。
  */
 export function SelectionAsk({ container, nodeId }: { container: HTMLElement | null; nodeId: string | null }) {
+  const t = useT();
   const attach = useChatStore((s) => s.attach);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
 
@@ -69,7 +71,7 @@ export function SelectionAsk({ container, nodeId }: { container: HTMLElement | n
       className="anim-fade fixed z-50 flex items-center gap-1 rounded-full border border-[var(--color-accent)]/50 bg-[var(--color-surface-2)] px-2 py-0.5 text-[11px] text-[var(--color-accent)] shadow-lg transition-colors hover:bg-[var(--color-surface-3)]"
       style={{ left, top }}
     >
-      <span aria-hidden="true">✦</span>追问
+      <span aria-hidden="true">✦</span>{t("追问")}
     </button>,
     document.body,
   );

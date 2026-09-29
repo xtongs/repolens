@@ -1,13 +1,14 @@
 import type { SearchHitDto } from "@repolens/core/types";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { msg, useT } from "../i18n";
 import { ALL_VISIBLE_ROLES, SOURCE_ONLY_ROLES, useAppStore } from "../store/useAppStore";
 
 const KIND_LABELS: Record<string, string> = {
-  file: "文件",
-  symbol: "符号",
-  package: "包",
-  directory: "目录",
+  file: msg("文件"),
+  symbol: msg("符号"),
+  package: msg("包"),
+  directory: msg("目录"),
 };
 
 /**
@@ -17,6 +18,7 @@ const KIND_LABELS: Record<string, string> = {
  * 而不是在界面上散落十几个跳转按钮。
  */
 export function CommandPalette() {
+  const t = useT();
   const open = useAppStore((s) => s.paletteOpen);
   const setOpen = useAppStore((s) => s.setPaletteOpen);
   const reveal = useAppStore((s) => s.reveal);
@@ -103,14 +105,14 @@ export function CommandPalette() {
               setOpen(false);
             }
           }}
-          placeholder="搜索文件、符号、包…"
+          placeholder={t("搜索文件、符号、包…")}
           className="w-full border-b border-[var(--color-line)] bg-transparent px-4 py-3 text-[13px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-faint)]"
         />
 
         <div className="thin-scroll max-h-[52vh] overflow-y-auto py-1">
           {hits.length === 0 ? (
             <div className="px-4 py-6 text-center text-[11.5px] text-[var(--color-ink-faint)]">
-              {query.trim().length === 0 ? "输入关键词开始搜索" : "没有匹配项"}
+              {query.trim().length === 0 ? t("输入关键词开始搜索") : t("没有匹配项")}
             </div>
           ) : (
             hits.map((hit, index) => (
@@ -124,7 +126,7 @@ export function CommandPalette() {
                 }`}
               >
                 <span className="w-7 shrink-0 text-[9.5px] text-[var(--color-ink-faint)]">
-                  {KIND_LABELS[hit.kind] ?? hit.kind}
+                  {t(KIND_LABELS[hit.kind] ?? hit.kind)}
                 </span>
                 {/*
                   收缩优先级：名字是主标识，路径是辅助信息，所以让路径先让位。
@@ -141,9 +143,9 @@ export function CommandPalette() {
         </div>
 
         <div className="flex items-center gap-3 border-t border-[var(--color-line)] px-4 py-1.5 text-[10px] text-[var(--color-ink-faint)]">
-          <span>↑↓ 选择</span>
-          <span>⏎ 打开详情</span>
-          <span>Esc 关闭</span>
+          <span>↑↓ {t("选择")}</span>
+          <span>⏎ {t("打开详情")}</span>
+          <span>Esc {t("关闭")}</span>
         </div>
       </div>
     </div>

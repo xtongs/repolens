@@ -2,6 +2,7 @@ import { memo, useEffect, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeLine } from "../code/CodeLines";
+import { useT } from "../i18n";
 import { shikiLanguage, useHighlightedLines } from "../lib/highlight";
 import { useAppStore } from "../store/useAppStore";
 import { canAttachNode } from "../store/useChatStore";
@@ -89,6 +90,7 @@ function textOf(node: HastNode): string {
 }
 
 function NodeLink({ id, children }: { id: string; children: ReactNode }) {
+  const t = useT();
   const reveal = useAppStore((s) => s.reveal);
   const hover = useAppStore((s) => s.hover);
   // 悬停中被卸载（Esc 收起对话、关掉详情）时收不到 mouseleave，画布会一直停在高亮态
@@ -99,7 +101,7 @@ function NodeLink({ id, children }: { id: string; children: ReactNode }) {
   return (
     <button
       type="button"
-      title="在画布上定位"
+      title={t("在画布上定位")}
       onClick={() => {
         hover(null);
         void reveal(id);

@@ -1,5 +1,8 @@
-import type { PseudocodeStepDto } from "@repolens/core/types";
+import type { NoteDto, PseudocodeStepDto } from "@repolens/core/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useT } from "../i18n";
+import { NoteCard } from "../notes/NoteCard";
+import { formatLines } from "../store/useNotesStore";
 import { Chevron } from "./Chevron";
 import { CodeLine } from "./CodeLines";
 import { hasLines } from "./PseudocodePanel";
@@ -7,6 +10,9 @@ import { useSource } from "./useSource";
 
 const ANNOTATION_STORAGE_KEY = "repolens:source-annotations";
 const STEP_COLOR = "color-mix(in srgb, var(--color-accent) 55%, transparent)";
+const TOP_STEP_BACKGROUND = "color-mix(in srgb, var(--color-accent) 10%, transparent)";
+const CHILD_STEP_BACKGROUND = "color-mix(in srgb, var(--color-accent) 5%, transparent)";
+const NOTE_BACKGROUND = "color-mix(in srgb, var(--color-note) 9%, transparent)";
 
 export interface SourceFocus {
   lines: [number, number];
@@ -35,13 +41,17 @@ export function SourcePanel({
   to,
   steps,
   focus,
+  notes,
 }: {
   fileId: string;
   from?: number;
   to?: number;
   steps?: PseudocodeStepDto[] | null;
   focus?: SourceFocus | null;
+  /** 这个文件上的笔记；带行号的插在所记范围的最后一行下面 */
+  notes?: NoteDto[];
 }) {
+  const t = useT();
   const { source, error } = useSource(fileId, from, to);
   const annotatable = hasLines(steps);
   const [annotate, setAnnotate] = useState(readAnnotationPreference);
@@ -62,7 +72,7 @@ export function SourcePanel({
       if (step.lines) add(step.lines[0], { step, label: String(index + 1), index });
       for (const child of step.children) {
         // 和父步骤同一行开始的子步骤并进父注解里，不再单独占一行
-        if (child.lines && child.lines[0] !== step.lines?.[0]) add(child.lines[0], { step: child, label: "·", index: null });
+        if (child.lines && child.lines[0] !== step.lines?.[0]) add(child.lines[0], { step: child, label: "•", index: null });
       }
     });
     return map;
@@ -81,6 +91,23 @@ export function SourcePanel({
     });
     return owner;
   }, [source, showAnnotations, topSteps]);
+
+  /** 按笔记范围的最后一行归组；范围超出当前片段的落到片段边上 */
+  const noteRows = useMemo(() => {
+    const map = new Map<number, NoteDto[]>();
+    if (!source) return { at: map, covered: () => false };
+    const { startLine, endLine } = source.slice;
+    const ranged = (notes ?? []).flatMap((note) =>
+      note.target.kind === "file" && note.target.lines ? [{ note, lines: note.target.lines }] : [],
+    );
+    for (const { note, lines } of ranged) {
+      if (lines[1] < startLine || lines[0] > endLine) continue;
+      const line = Math.min(lines[1], endLine);
+      map.set(line, [...(map.get(line) ?? []), note]);
+    }
+    const covered = (line: number) => ranged.some(({ lines }) => line >= lines[0] && line <= lines[1]);
+    return { at: map, covered };
+  }, [source, notes]);
 
   const loaded = source !== null;
   useEffect(() => {
@@ -111,6 +138,11 @@ export function SourcePanel({
     });
 
   const rows: ReactNode[] = [];
+  const pushNotes = (line: number) => {
+    for (const note of noteRows.at.get(line) ?? []) {
+      rows.push(<SourceNote key={`n:${note.id}`} note={note} width={viewportWidth} gutter={showAnnotations} />);
+    }
+  };
   const foldedStepAt = (line: number) =>
     topSteps.findIndex((step, index) => folded.has(index) && step.lines && line >= step.lines[0] && line <= step.lines[1]);
 
@@ -140,13 +172,15 @@ export function SourcePanel({
             key={`f:${line}`}
             type="button"
             onClick={() => toggleFold(foldedIndex)}
-            className="sticky left-0 block py-0.5 pl-[3.35rem] text-left text-[10.5px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-accent)]"
+            className="sticky left-0 block py-0.5 pl-[calc(2.5rem+3px)] text-left text-[10.5px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-accent)]"
             style={{ width: viewportWidth || undefined }}
           >
-            ⋯ 已折叠 L{range[0]}–{range[1]}，共 {range[1] - range[0] + 1} 行
+            ⋯ {t("已折叠 L{from}–{to}，共 {count} 行", { from: range[0], to: range[1], count: range[1] - range[0] + 1 })}
           </button>,
         );
       }
+      // 折起来的代码里记过的笔记照样露出来，笔记比那几行代码更值得一眼看到
+      pushNotes(line);
       continue;
     }
 
@@ -158,6 +192,7 @@ export function SourcePanel({
         text={source.lines[offset] ?? ""}
         tokens={source.tokens?.[offset]}
         marked={marked !== null && line >= marked[0] && line <= marked[1]}
+        noted={noteRows.covered(line)}
         gutter={showAnnotations ? (owner >= 0 ? STEP_COLOR : null) : undefined}
         lineRef={(el) => {
           if (el) lineRefs.current.set(line, el);
@@ -165,6 +200,7 @@ export function SourcePanel({
         }}
       />,
     );
+    pushNotes(line);
   }
 
   const allFolded = topSteps.every((step, index) => !step.lines || folded.has(index));
@@ -173,7 +209,7 @@ export function SourcePanel({
     <div className="flex min-h-full flex-col" data-source-file={fileId}>
       <div className="sticky top-0 z-10 flex h-8 shrink-0 items-center gap-2 border-b border-[var(--color-line)] bg-[var(--color-surface)]/95 px-3 text-[10.5px] text-[var(--color-ink-faint)] backdrop-blur">
         <span className="mono truncate tabular-nums">
-          L{source.slice.startLine}–{source.slice.endLine} · {source.lines.length} 行
+          L{source.slice.startLine}–{source.slice.endLine} · {t("{count} 行", { count: source.lines.length })}
         </span>
         {annotatable && (
           <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -185,7 +221,7 @@ export function SourcePanel({
                 }
                 className="rounded px-1.5 py-0.5 transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink-muted)]"
               >
-                {allFolded ? "全部展开" : "全部折叠"}
+                {allFolded ? t("全部展开") : t("全部折叠")}
               </button>
             )}
             <button
@@ -196,14 +232,14 @@ export function SourcePanel({
                 setAnnotate(next);
                 writeAnnotationPreference(next);
               }}
-              title="在源码中穿插 AI 伪代码步骤"
+              title={t("在源码中穿插 AI 伪代码步骤")}
               className={`rounded border px-1.5 py-0.5 transition-colors ${
                 annotate
                   ? "border-[var(--color-accent)]/50 text-[var(--color-accent)]"
                   : "border-[var(--color-line)] hover:text-[var(--color-ink-muted)]"
               }`}
             >
-              伪代码注解
+              {t("伪代码注解")}
             </button>
           </div>
         )}
@@ -215,6 +251,10 @@ export function SourcePanel({
   );
 }
 
+/**
+ * 和 CodeLine 用同一套列：色条、行号列、正文。序号和圆点落在行号列里与行号
+ * 右对齐，文字从代码首列开始，读的时候注解和它下面的代码是一条竖线。
+ */
 function Annotation({
   anchor,
   width,
@@ -226,30 +266,32 @@ function Annotation({
   folded: boolean;
   onToggle: (() => void) | undefined;
 }) {
+  const t = useT();
   const top = anchor.index !== null;
   const lines = anchor.step.lines;
+  const merged = top ? anchor.step.children.filter((child) => child.lines?.[0] === lines?.[0]) : [];
   return (
     <div
-      className={`sticky left-0 flex items-start gap-2 pr-3 ${top ? "mt-2 first:mt-0 py-1" : "py-0.5"}`}
-      style={{ width: width || undefined }}
+      className={`sticky left-0 flex items-baseline pr-2 ${top ? "mt-2 first:mt-0 py-1" : "py-0.5"}`}
+      style={{ width: width || undefined, background: top ? TOP_STEP_BACKGROUND : CHILD_STEP_BACKGROUND }}
     >
       <span className="w-[3px] shrink-0 self-stretch" style={{ background: top ? "var(--color-accent)" : STEP_COLOR }} />
       <span
-        className={`mono w-10 shrink-0 pr-2.5 text-right tabular-nums ${
-          top ? "pt-px text-[10.5px] text-[var(--color-accent)]" : "text-[11px] text-[var(--color-ink-faint)]"
+        className={`mono w-10 shrink-0 select-none pr-2.5 text-right text-[11px] leading-[1.6] tabular-nums ${
+          top ? "font-semibold text-[var(--color-accent)]" : "text-[var(--color-accent)]/70"
         }`}
       >
         {anchor.label}
       </span>
       <span
-        className={`min-w-0 flex-1 leading-relaxed ${
-          top ? "text-[11.5px] text-[var(--color-ink)]" : "text-[10.5px] text-[var(--color-ink-muted)]"
+        className={`min-w-0 flex-1 pr-1 leading-[1.6] ${
+          top ? "text-[11.5px] font-medium text-[var(--color-ink)]" : "text-[11px] text-[var(--color-ink-muted)]"
         }`}
       >
         {anchor.step.text}
-        {top && anchor.step.children.some((child) => child.lines?.[0] === lines?.[0]) && (
-          <span className="ml-1 text-[10.5px] text-[var(--color-ink-faint)]">
-            · {anchor.step.children.filter((child) => child.lines?.[0] === lines?.[0]).map((c) => c.text).join(" · ")}
+        {merged.length > 0 && (
+          <span className="ml-1 text-[11px] font-normal text-[var(--color-ink-muted)]">
+            · {merged.map((child) => child.text).join(" · ")}
           </span>
         )}
       </span>
@@ -258,14 +300,79 @@ function Annotation({
           type="button"
           onClick={onToggle}
           aria-expanded={!folded}
-          title={folded ? "展开这一步的源码" : "折叠这一步的源码"}
-          className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-ink-faint)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink)]"
+          title={folded ? t("展开这一步的源码") : t("折叠这一步的源码")}
+          className="flex h-[1.6em] w-4 shrink-0 self-start items-center justify-center rounded text-[11.5px] text-[var(--color-ink-faint)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink)]"
         >
           <Chevron open={!folded} />
         </button>
       )}
     </div>
   );
+}
+
+/**
+ * 源码里的笔记，和注解同一套列：行号列放 ✎，正文从代码首列开始。
+ * 默认只露两行，点开是完整的笔记卡片，可以在这里直接删。
+ */
+function SourceNote({ note, width, gutter }: { note: NoteDto; width: number; gutter: boolean }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const lines = note.target.kind === "file" ? note.target.lines : null;
+  return (
+    <div
+      className="sticky left-0 my-1 flex items-baseline pr-2"
+      // 没有步骤色条那一列时用内阴影画竖条，不占宽度，行号列才能和代码对齐
+      style={{
+        width: width || undefined,
+        background: NOTE_BACKGROUND,
+        boxShadow: gutter ? undefined : "inset 3px 0 0 var(--color-note)",
+      }}
+    >
+      {gutter && <span className="w-[3px] shrink-0 self-stretch bg-[var(--color-note)]" />}
+      <span className="mono w-10 shrink-0 select-none pr-2.5 text-right text-[11px] leading-[1.6] text-[var(--color-note)]">
+        ✎
+      </span>
+      {open ? (
+        <div className="min-w-0 flex-1 py-1.5 pr-1">
+          <NoteCard note={note} showPath={false} onLocate={null} />
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="mt-1 text-[10.5px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-ink-muted)]"
+          >
+            {t("收起笔记")}
+          </button>
+        </div>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            title={t("展开笔记")}
+            className="min-w-0 flex-1 py-1 text-left text-[11px] leading-[1.6] text-[var(--color-ink-muted)] transition-colors hover:text-[var(--color-ink)]"
+          >
+            <span className="line-clamp-2">{notePreview(note.text)}</span>
+          </button>
+          {lines && (
+            <span className="mono shrink-0 pl-2 text-[10px] leading-[1.6] text-[var(--color-ink-faint)]">
+              {formatLines(lines)}
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 只去掉 Markdown 标记本身，单个下划线和星号多半是标识符或表达式的一部分 */
+function notePreview(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " … ")
+    .replace(/`+/g, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/^\s*(?:#+|>|[-*]\s)\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function SourceSkeleton() {

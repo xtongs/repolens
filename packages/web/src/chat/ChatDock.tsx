@@ -10,8 +10,10 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Chevron } from "../code/Chevron";
+import { t, translateMessage, useT } from "../i18n";
 import { desktop } from "../lib/desktop";
 import { modKey } from "../lib/shortcut";
+import { draftFor, hasNoteTarget, noteTextFromAnswer, SaveNotePopover, SelectionNote, type NoteDraft } from "../notes/SaveNote";
 import { useAppStore } from "../store/useAppStore";
 import {
   autoAttachments,
@@ -37,6 +39,7 @@ const MIN_DETAIL_HEIGHT = 140;
  * 没有选中项时它独占侧栏。
  */
 export function ChatDock({ detailVisible }: { detailVisible: boolean }) {
+  useT();
   const chatOpen = useAppStore((s) => s.chatOpen);
   const openChat = useChatStore((s) => s.open);
   const messageCount = useChatStore((s) => s.messages.length);
@@ -51,7 +54,7 @@ export function ChatDock({ detailVisible }: { detailVisible: boolean }) {
       >
         <span className="text-[var(--color-accent)]">✦</span>
         <span className="truncate">
-          {messageCount > 0 ? `继续追问（${Math.ceil(messageCount / 2)} 轮对话）` : "追问 AI…"}
+          {messageCount > 0 ? t("继续追问（{count} 轮对话）", { count: Math.ceil(messageCount / 2) }) : t("追问 AI…")}
         </span>
         <kbd className="mono ml-auto shrink-0 text-[10px]">{modKey("I")}</kbd>
       </button>
@@ -68,7 +71,7 @@ export function ChatDock({ detailVisible }: { detailVisible: boolean }) {
         <div
           role="separator"
           aria-orientation="horizontal"
-          aria-label="调整对话区高度"
+          aria-label={t("调整对话区高度")}
           onPointerDown={split.onPointerDown}
           onDoubleClick={split.reset}
           className="absolute inset-x-0 -top-1 z-10 h-2 cursor-row-resize"
@@ -82,12 +85,13 @@ export function ChatDock({ detailVisible }: { detailVisible: boolean }) {
 }
 
 function ChatHeader() {
+  useT();
   const setChatOpen = useAppStore((s) => s.setChatOpen);
   const clear = useChatStore((s) => s.clear);
   const hasMessages = useChatStore((s) => s.messages.length > 0);
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-[var(--color-line)] pl-3 pr-1.5">
-      <span className="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">追问 AI</span>
+      <span className="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">{t("追问 AI")}</span>
       <div className="ml-auto flex items-center gap-0.5">
         {hasMessages && (
           <button
@@ -95,14 +99,14 @@ function ChatHeader() {
             onClick={clear}
             className="rounded px-1.5 py-0.5 text-[10.5px] text-[var(--color-ink-faint)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink-muted)]"
           >
-            新对话
+            {t("新对话")}
           </button>
         )}
         <button
           type="button"
           onClick={() => setChatOpen(false)}
-          title="收起（Esc）"
-          aria-label="收起对话"
+          title={t("收起（Esc）")}
+          aria-label={t("收起对话")}
           className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-ink-faint)] transition-colors hover:bg-[var(--color-surface-3)] hover:text-[var(--color-ink)]"
         >
           <Chevron open />
@@ -118,7 +122,8 @@ function ChatHeader() {
 
 function ChatThread() {
   const messages = useChatStore((s) => s.messages);
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const stick = useRef(true);
 
   // 用户往上翻看时不要把他拽回底部；停在底部附近时跟随新内容
@@ -129,7 +134,10 @@ function ChatThread() {
 
   return (
     <div
-      ref={ref}
+      ref={(element) => {
+        ref.current = element;
+        setContainer(element);
+      }}
       onScroll={(event) => {
         const element = event.currentTarget;
         stick.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
@@ -149,47 +157,48 @@ function ChatThread() {
           )}
         </div>
       )}
+      <SelectionNote container={container} />
     </div>
   );
 }
 
 function EmptyThread() {
+  useT();
   const selected = useAppStore((s) => s.selected);
   const callGraph = useAppStore((s) => s.callGraph !== null);
   const traceId = useAppStore((s) => s.traceId);
   const send = useChatStore((s) => s.send);
   const reason = useAppStore((s) => (s.overview?.llm && !(s.overview.llm.enabled && s.overview.llm.available)
-    ? (s.overview.llm.reason ?? "扫描时未启用 AI")
+    ? (s.overview.llm.reason ? translateMessage(s.overview.llm.reason) : t("扫描时未启用 AI"))
     : null));
 
   const suggestions = traceId
-    ? ["用一段话讲清这条链路在做什么", "数据在哪一步被改写或落盘？", "这条链路有哪些失败分支？"]
+    ? [t("用一段话讲清这条链路在做什么"), t("数据在哪一步被改写或落盘？"), t("这条链路有哪些失败分支？")]
     : callGraph
-      ? ["这些调用方分别在什么场景下调用它？", "改动它的签名会影响哪些地方？"]
+      ? [t("这些调用方分别在什么场景下调用它？"), t("改动它的签名会影响哪些地方？")]
       : selected?.startsWith("sym:")
-        ? ["这个函数做了什么，为什么这样写？", "谁会调用它，在什么场景下？", "有哪些边界情况或潜在问题？"]
+        ? [t("这个函数做了什么，为什么这样写？"), t("谁会调用它，在什么场景下？"), t("有哪些边界情况或潜在问题？")]
         : selected?.startsWith("file:")
-          ? ["这个文件的职责是什么？", "应该从哪个函数开始读？", "它和哪些模块耦合最紧？"]
+          ? [t("这个文件的职责是什么？"), t("应该从哪个函数开始读？"), t("它和哪些模块耦合最紧？")]
           : selected
-            ? ["这个模块整体是怎么组织的？", "它对外暴露了哪些能力？", "从哪里开始读比较好？"]
-            : ["这个仓库的整体架构是怎样的？", "主要入口在哪里？", "新人应该按什么顺序读代码？"];
+            ? [t("这个模块整体是怎么组织的？"), t("它对外暴露了哪些能力？"), t("从哪里开始读比较好？")]
+            : [t("这个仓库的整体架构是怎样的？"), t("主要入口在哪里？"), t("新人应该按什么顺序读代码？")];
 
   return (
     <div className="py-1">
       <p className="text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-        AI 会读到下方标签里的上下文：选中节点的源码与关系、当前画布视图，以及你引用的片段。
-        在详情里划选文字、或在伪代码步骤上点「追问」，都能把它加进来。
+        {t("AI 会读到下方标签里的上下文：选中节点的源码与关系、当前画布视图，以及你引用的片段。在详情里划选文字、或在伪代码步骤上点「追问」，都能把它加进来。")}
       </p>
       {reason && (
         <p className="mt-2 rounded border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/5 px-2 py-1.5 text-[10.5px] text-[var(--color-warn)]">
-          AI 可能不可用：{reason}
+          {t("AI 可能不可用：{reason}", { reason })}
           {desktop && (
             <button
               type="button"
               onClick={() => useAppStore.getState().setSettingsOpen(true)}
               className="ml-1.5 underline underline-offset-2 hover:text-[var(--color-ink)]"
             >
-              去设置
+              {t("去设置")}
             </button>
           )}
         </p>
@@ -212,7 +221,7 @@ function EmptyThread() {
 
 function UserMessage({ message }: { message: ChatMessage }) {
   return (
-    <div className="rounded-md bg-[var(--color-surface-2)] px-2.5 py-2">
+    <div className="rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent-dim)] px-2.5 py-2">
       {message.attachments.length > 0 && (
         <div className="mb-1.5 flex flex-wrap gap-1">
           {message.attachments.map((item) => (
@@ -226,23 +235,28 @@ function UserMessage({ message }: { message: ChatMessage }) {
 }
 
 function AssistantMessage({ message, last }: { message: ChatMessage; last: boolean }) {
+  useT();
   const retry = useChatStore((s) => s.retry);
   const [showContext, setShowContext] = useState(false);
+  const [noteDraft, setNoteDraft] = useState<NoteDraft | null>(null);
   const streaming = message.status === "streaming";
+  const canNote = !streaming && message.content.trim() !== "" && hasNoteTarget(message.id);
 
   return (
     <div className="pl-0.5">
       {message.content === "" && streaming ? (
         <div className="flex items-center gap-2 text-[11px] text-[var(--color-ink-faint)]">
           <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]" />
-          {message.context ? "正在思考…" : "正在读取上下文…"}
+          {message.context ? t("正在思考…") : t("正在读取上下文…")}
         </div>
       ) : (
-        <Suspense
-          fallback={<div className="whitespace-pre-wrap text-[12px] leading-relaxed">{message.content}</div>}
-        >
-          <ChatMarkdown content={message.content} streaming={streaming} />
-        </Suspense>
+        <div data-note-source={streaming ? undefined : message.id}>
+          <Suspense
+            fallback={<div className="whitespace-pre-wrap text-[12px] leading-relaxed">{message.content}</div>}
+          >
+            <ChatMarkdown content={message.content} streaming={streaming} />
+          </Suspense>
+        </div>
       )}
       {streaming && message.content !== "" && (
         <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-[var(--color-accent)] align-middle" />
@@ -253,20 +267,20 @@ function AssistantMessage({ message, last }: { message: ChatMessage; last: boole
           {message.error}
           {last && (
             <button type="button" onClick={() => void retry()} className="ml-2 underline-offset-2 hover:underline">
-              重试
+              {t("重试")}
             </button>
           )}
         </div>
       )}
 
-      {(message.context || message.status === "stopped") && (
+      {(message.context || message.status === "stopped" || canNote) && (
         <div className="mt-1.5 flex items-center gap-2 text-[10px] text-[var(--color-ink-faint)]">
           {message.status === "stopped" && (
             <>
-              <span>已停止</span>
+              <span>{t("已停止")}</span>
               {last && (
                 <button type="button" onClick={() => void retry()} className="hover:text-[var(--color-ink-muted)]">
-                  重新回答
+                  {t("重新回答")}
                 </button>
               )}
             </>
@@ -278,11 +292,27 @@ function AssistantMessage({ message, last }: { message: ChatMessage; last: boole
               onClick={() => setShowContext((value) => !value)}
               className="transition-colors hover:text-[var(--color-ink-muted)]"
             >
-              依据 {message.context.length} 项上下文 {showContext ? "▾" : "▸"}
+              {t("依据 {count} 项上下文", { count: message.context.length })} {showContext ? "▾" : "▸"}
+            </button>
+          )}
+          {canNote && (
+            <button
+              type="button"
+              title={t("把整段回答存为笔记；只想存一部分可以先划选")}
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setNoteDraft(draftFor(message.id, noteTextFromAnswer(message.content), {
+                  left: rect.left + rect.width / 2, top: rect.top, bottom: rect.bottom,
+                }));
+              }}
+              className="ml-auto flex items-center gap-1 transition-colors hover:text-[var(--color-note)]"
+            >
+              <span aria-hidden="true">✎</span>{t("记笔记")}
             </button>
           )}
         </div>
       )}
+      {noteDraft && <SaveNotePopover draft={noteDraft} onClose={() => setNoteDraft(null)} />}
       {showContext && message.context && (
         <ul className="mt-1 space-y-0.5 border-l border-[var(--color-line)] pl-2">
           {message.context.map((item, index) => (
@@ -302,6 +332,7 @@ function AssistantMessage({ message, last }: { message: ChatMessage; last: boole
 // ---------------------------------------------------------------------------
 
 function ChatComposer() {
+  useT();
   const app = useAppStore(
     useShallow((s) => ({
       selected: s.selected,
@@ -380,7 +411,7 @@ function ChatComposer() {
             onClick={() => chat.setIncludeView(true)}
             className="rounded border border-dashed border-[var(--color-line)] px-1.5 py-px text-[10px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-ink-muted)]"
           >
-            + 当前视图
+            + {t("当前视图")}
           </button>
         )}
       </div>
@@ -391,25 +422,25 @@ function ChatComposer() {
           value={chat.draft}
           onChange={(event) => chat.setDraft(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"
-          className="thin-scroll min-h-[20px] flex-1 resize-none bg-transparent text-[12px] leading-[20px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-faint)]"
+          placeholder={t("问点什么…（Enter 发送，Shift+Enter 换行）")}
+          className="thin-scroll min-h-[20px] flex-1 resize-none bg-transparent text-[11px] leading-[20px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-faint)]"
         />
         {chat.streaming ? (
           <button
             type="button"
             onClick={chat.stop}
-            className="shrink-0 rounded border border-[var(--color-line-strong)] px-2 py-0.5 text-[10.5px] text-[var(--color-ink-muted)] transition-colors hover:text-[var(--color-ink)]"
+            className="shrink-0 rounded border border-[var(--color-line-strong)] px-2 py-0.5 text-[11px] text-[var(--color-ink-muted)] transition-colors hover:text-[var(--color-ink)]"
           >
-            停止
+            {t("停止")}
           </button>
         ) : (
           <button
             type="button"
             disabled={!canSend}
             onClick={submit}
-            className="shrink-0 rounded bg-[var(--color-accent)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--color-canvas)] transition-opacity disabled:opacity-30"
+            className="shrink-0 rounded bg-[var(--color-accent)] px-2 py-0.5 text-[11px] font-medium text-[var(--color-canvas)] transition-opacity disabled:opacity-30"
           >
-            发送
+            {t("发送")}
           </button>
         )}
       </div>
@@ -428,6 +459,7 @@ function AttachmentChip({
   auto?: boolean;
   onRemove?: () => void;
 }) {
+  useT();
   const title = item.kind === "quote" ? item.text : item.kind === "node" ? item.id : undefined;
   return (
     <span
@@ -444,7 +476,7 @@ function AttachmentChip({
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`移除 ${item.label}`}
+          aria-label={t("移除 {name}", { name: item.label })}
           className="-mr-0.5 px-0.5 opacity-60 transition-opacity hover:opacity-100"
         >
           ×

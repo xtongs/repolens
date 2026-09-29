@@ -21,6 +21,7 @@
   --color-accent: #5eb0ff;
   --color-accent-dim: #1b3a5c;
   --color-warn: #e0a458;
+  --color-note: #e3c46f;
   --color-danger: #ef7279;
   --color-success: #34d399;
   --color-graph-grid: #1e232b;
@@ -47,7 +48,7 @@
 
 :root {
   color-scheme: dark;
-  --font-scale: 1.15;
+  --font-scale: 1;
   --node-hover-shadow: 0 8px 24px rgb(0 0 0 / 45%);
 
   /*
@@ -101,6 +102,7 @@
   --color-accent: #1672b8;
   --color-accent-dim: #dceeff;
   --color-warn: #9b5c08;
+  --color-note: #86640a;
   --color-danger: #c73a43;
   --color-success: #167553;
   --color-graph-grid: #d3dae4;
@@ -147,6 +149,14 @@ body,
   margin: 0;
 }
 
+/*
+ * 再窄顶栏就放不下两侧的控件了。窗口比这还窄时整页横向滚动，
+ * 而不是让按钮挤到一起或互相盖住；桌面端窗口的最小宽度与此一致。
+ */
+#root {
+  min-width: 1024px;
+}
+
 body {
   background: var(--color-canvas);
   color: var(--color-ink);
@@ -154,7 +164,8 @@ body {
     ui-sans-serif, -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui,
     sans-serif;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 /*
@@ -219,6 +230,16 @@ body .text-sm { font-size: calc(14px * var(--font-scale)); }
 }
 :root[data-desktop="darwin"] .app-topbar :is(button, a, input, kbd, [role="group"], .absolute) {
   -webkit-app-region: no-drag;
+}
+
+/* 顶栏放不下时逐级收起的次要文字，什么时候算放不下见 TopBar 的 useCompactTopBar */
+.app-topbar[data-compact] [data-topbar-optional="1"],
+.app-topbar[data-compact="2"] [data-topbar-optional="2"] {
+  display: none;
+}
+.app-topbar[data-compact] :is([data-breadcrumb], [data-breadcrumb] > *) {
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 /* React Flow 自带的背景和边框都要盖掉，否则和暗色主题打架 */
@@ -294,6 +315,14 @@ body .text-sm { font-size: calc(14px * var(--font-scale)); }
 }
 .thin-scroll::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 一行高的横向滚动条（如详情页签）：滚动条会把这一行挤歪，末尾被截断的页签本身就提示还能滚 */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* AI 回答。侧栏很窄，块间距比文档排版收紧一档 */

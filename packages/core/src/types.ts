@@ -936,6 +936,45 @@ export interface ChatDoneDto {
 }
 
 // ---------------------------------------------------------------------------
+// 笔记
+// ---------------------------------------------------------------------------
+
+/**
+ * 笔记挂在哪儿。节点 id 每次扫描都会变，所以文件和符号存路径与行号，
+ * 包和目录的 id 本身就由名字、路径组成，可以原样保存。
+ */
+export type NoteTargetDto =
+  | {
+      kind: "file";
+      path: string;
+      lines: [number, number] | null;
+      /** 从符号记下时的符号名，界面用它说明这几行是什么 */
+      symbol: string | null;
+    }
+  | { kind: "scope"; id: string; label: string };
+
+export interface NoteDto {
+  id: string;
+  target: NoteTargetDto;
+  text: string;
+  /** 记笔记时对应的那个追问 */
+  question: string | null;
+  createdAt: string;
+  /** 当前索引里对应的节点；文件已删除或改名时为 null */
+  nodeId: string | null;
+  /** 文件在记笔记之后改过，行号可能已经对不上 */
+  stale: boolean;
+}
+
+export interface NoteInputDto {
+  /** 当前索引里的节点 id，服务端据此换算成稳定的路径和行号 */
+  nodeId: string;
+  lines?: [number, number] | null;
+  text: string;
+  question?: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // 图查询参数
 // ---------------------------------------------------------------------------
 

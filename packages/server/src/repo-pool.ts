@@ -1,10 +1,12 @@
 import {
+  dropSemanticsFromOutdatedInput,
   indexPath,
   gitBranch,
   listRepos,
   openDb,
   probe,
   repoId,
+  semanticInputOutdated,
   type Db,
   type RepoEntry,
 } from "@repolens/core";
@@ -114,6 +116,8 @@ export class RepoPool {
     }
 
     const db = openDb(indexPath(root), { readonly: true });
+    // 只读连接已经确认过索引版本；可写的 openDb 遇到版本不符会重建索引，不能先开它
+    if (semanticInputOutdated(db)) refreshSemanticCache(root);
     const entry: PooledRepo = {
       id: target,
       root,
@@ -149,5 +153,20 @@ export class RepoPool {
       oldest.db.close();
       this.open.delete(oldest.id);
     }
+  }
+}
+
+/**
+ * 旧缓存只是不够准，不值得为它让仓库打不开：清理失败（比如扫描正占着
+ * 写锁）就跳过，版本标记没写入，下次打开会再试。
+ */
+function refreshSemanticCache(root: string): void {
+  let writeDb: Db | null = null;
+  try {
+    writeDb = openDb(indexPath(root));
+    dropSemanticsFromOutdatedInput(writeDb, root);
+  } catch {
+  } finally {
+    writeDb?.close();
   }
 }
