@@ -28,19 +28,37 @@ export interface CompletionOptions {
   maxOutputTokens?: number | undefined;
 }
 
-export interface ChatTurn {
-  role: "system" | "user" | "assistant";
-  content: string;
+export type ChatTurn =
+  | { role: "system" | "user"; content: string }
+  | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+/** 模型要求执行的一次函数调用；arguments 是模型写的 JSON 文本，不保证合法 */
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export interface ToolDefinition {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 
 export interface StreamOptions extends CompletionOptions {
   signal?: AbortSignal | undefined;
   onDelta: (text: string) => void;
+  tools?: ToolDefinition[] | undefined;
+  /** none：带着工具定义但不许再调用，用在最后一轮逼模型直接作答 */
+  toolChoice?: "auto" | "none" | undefined;
 }
 
 export interface StreamResult {
   content: string;
   usage: LlmUsage;
+  toolCalls: ToolCall[];
+  /** 服务不认识 tools 参数，这次是去掉工具后重发的 */
+  toolsRejected: boolean;
 }
 
 export interface LlmClientOptions {
@@ -99,18 +117,19 @@ export class OpenAiCompatibleClient {
    * 直接报错，由用户决定是否重问。
    */
   async streamChat(messages: ChatTurn[], options: StreamOptions): Promise<StreamResult> {
-    const { response, controller, idle } = await this.openStream(messages, options);
+    const { response, controller, idle, toolsRejected } = await this.openStream(messages, options);
     try {
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || response.body === null) {
         // 部分网关忽略 stream 参数，仍然一次性返回完整 JSON
         const text = await response.text();
         const body = parseJsonObject(text, response.status);
-        const content = completionContent(body);
+        const toolCalls = messageToolCalls(body);
+        const content = toolCalls.length > 0 ? optionalContent(body) : completionContent(body);
         if (content !== "") options.onDelta(content);
-        return { content, usage: responseUsage(body) };
+        return { content, usage: responseUsage(body), toolCalls, toolsRejected };
       }
-      return await readEventStream(response.body, options.onDelta, idle);
+      return { ...(await readEventStream(response.body, options.onDelta, idle)), toolsRejected };
     } catch (err) {
       throw normalizeError(err, this.config.requestTimeoutMs, options.signal);
     } finally {
@@ -122,9 +141,11 @@ export class OpenAiCompatibleClient {
   private async openStream(
     messages: ChatTurn[],
     options: StreamOptions,
-  ): Promise<{ response: Response; controller: AbortController; idle: IdleTimer }> {
+  ): Promise<{ response: Response; controller: AbortController; idle: IdleTimer; toolsRejected: boolean }> {
     let lastError: Error | null = null;
     let includeUsage = true;
+    let tools = options.tools !== undefined && options.tools.length > 0 ? options.tools : null;
+    const offeredTools = tools !== null;
 
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
       if (options.signal?.aborted) throw abortError();
@@ -139,17 +160,26 @@ export class OpenAiCompatibleClient {
           signal: controller.signal,
           body: JSON.stringify({
             ...this.requestBody(messages, options),
+            ...(tools === null ? {} : { tools, tool_choice: options.toolChoice ?? "auto" }),
             stream: true,
             ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
           }),
         });
-        if (response.ok) return { response, controller, idle };
+        if (response.ok) return { response, controller, idle, toolsRejected: offeredTools && tools === null };
 
         const text = await response.text();
         const error = new LlmResponseError(safeApiError(text) ?? `LLM HTTP ${response.status}`, response.status);
-        if (includeUsage && (response.status === 400 || response.status === 422) && /stream_options/i.test(text)) {
+        const badRequest = response.status === 400 || response.status === 422;
+        if (includeUsage && badRequest && /stream_options/i.test(text)) {
           // 较老的兼容网关不认识 stream_options；去掉后重发一次，不计入重试次数
           includeUsage = false;
+          attempt--;
+          idle.stop();
+          continue;
+        }
+        if (tools !== null && badRequest && /tool|function/i.test(text)) {
+          // 模型或网关不支持函数调用（不少本地模型如此），退回只用预先组装的上下文
+          tools = null;
           attempt--;
           idle.stop();
           continue;
@@ -268,6 +298,61 @@ function completionContent(body: Record<string, unknown>): string {
   throw new LlmResponseError("LLM 响应缺少文本 content", 200);
 }
 
+/** 只调用工具时 content 常常是 null */
+function optionalContent(body: Record<string, unknown>): string {
+  try {
+    return completionContent(body);
+  } catch {
+    return "";
+  }
+}
+
+function messageToolCalls(body: Record<string, unknown>): ToolCall[] {
+  const choices = body["choices"];
+  const choice = Array.isArray(choices) ? (choices[0] as Record<string, unknown> | null) : null;
+  const message = typeof choice === "object" && choice !== null ? choice["message"] : null;
+  const raw = typeof message === "object" && message !== null ? (message as Record<string, unknown>)["tool_calls"] : null;
+  if (!Array.isArray(raw)) return [];
+  const calls = new ToolCallCollector();
+  raw.forEach((item, index) => calls.add(item, index));
+  return calls.finish();
+}
+
+/**
+ * 流式响应里一次函数调用被拆成很多片：首片带 id 和函数名，之后只有 arguments 的续写，
+ * 靠 index 对上是哪一次调用。少数网关不给 index，按出现顺序兜底。
+ */
+class ToolCallCollector {
+  private readonly calls = new Map<number, { id: string; name: string; args: string }>();
+
+  add(raw: unknown, fallbackIndex: number): void {
+    if (typeof raw !== "object" || raw === null) return;
+    const part = raw as Record<string, unknown>;
+    const index = typeof part["index"] === "number" ? part["index"] : fallbackIndex;
+    const call = this.calls.get(index) ?? { id: "", name: "", args: "" };
+    if (typeof part["id"] === "string" && part["id"] !== "") call.id = part["id"];
+    const fn = typeof part["function"] === "object" && part["function"] !== null
+      ? part["function"] as Record<string, unknown>
+      : {};
+    // 函数名只在首片出现；个别网关每片都重复一遍，不能拼接
+    if (typeof fn["name"] === "string" && call.name === "") call.name = fn["name"];
+    if (typeof fn["arguments"] === "string") call.args += fn["arguments"];
+    else if (typeof fn["arguments"] === "object" && fn["arguments"] !== null) call.args = JSON.stringify(fn["arguments"]);
+    this.calls.set(index, call);
+  }
+
+  finish(): ToolCall[] {
+    return [...this.calls.entries()]
+      .sort(([a], [b]) => a - b)
+      .filter(([, call]) => call.name !== "")
+      .map(([index, call]) => ({
+        id: call.id || `call_${index}`,
+        type: "function" as const,
+        function: { name: call.name, arguments: call.args },
+      }));
+  }
+}
+
 export function parseJsonResponse<T>(content: string): T {
   const trimmed = content.trim();
   const unfenced = trimmed
@@ -379,12 +464,13 @@ async function readEventStream(
   body: ReadableStream<Uint8Array>,
   onDelta: (text: string) => void,
   idle: IdleTimer,
-): Promise<StreamResult> {
+): Promise<Omit<StreamResult, "toolsRejected">> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let content = "";
   let usage: LlmUsage = { ...emptyUsage(), requests: 1 };
+  const calls = new ToolCallCollector();
 
   const handle = (line: string): boolean => {
     if (!line.startsWith("data:")) return false;
@@ -406,6 +492,7 @@ async function readEventStream(
       content += delta;
       onDelta(delta);
     }
+    deltaToolCalls(record).forEach((part, index) => calls.add(part, index));
     if (typeof record["usage"] === "object" && record["usage"] !== null) usage = responseUsage(record);
     return false;
   };
@@ -420,12 +507,12 @@ async function readEventStream(
       while ((newline = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
-        if (handle(line)) return { content, usage };
+        if (handle(line)) return { content, usage, toolCalls: calls.finish() };
       }
     }
     buffer += decoder.decode();
     if (buffer.trim() !== "") handle(buffer.trim());
-    return { content, usage };
+    return { content, usage, toolCalls: calls.finish() };
   } finally {
     reader.releaseLock();
   }
@@ -446,6 +533,15 @@ function deltaText(chunk: Record<string, unknown>): string {
       .join("");
   }
   return "";
+}
+
+function deltaToolCalls(chunk: Record<string, unknown>): unknown[] {
+  const choices = chunk["choices"];
+  if (!Array.isArray(choices) || choices.length === 0) return [];
+  const choice = choices[0] as Record<string, unknown> | null;
+  const delta = typeof choice === "object" && choice !== null ? choice["delta"] : null;
+  const calls = typeof delta === "object" && delta !== null ? (delta as Record<string, unknown>)["tool_calls"] : null;
+  return Array.isArray(calls) ? calls : [];
 }
 
 function retryableStatus(status: number): boolean {

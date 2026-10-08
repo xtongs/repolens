@@ -106,6 +106,7 @@ export function readLlmSettings(): LlmSettings {
     envKeyPresent: envName !== "" && Boolean(process.env[envName]?.trim()),
     canSaveKey: canEncrypt(),
     configPath: globalConfigPath(),
+    webFetch: llm.webFetch,
   };
 }
 
@@ -119,6 +120,7 @@ export function parseLlmSettingsInput(value: unknown): LlmSettingsInput {
     model: text("model"),
     interactiveModel: typeof input["interactiveModel"] === "string" ? input["interactiveModel"] : null,
     requiresKey: input["requiresKey"] !== false,
+    webFetch: input["webFetch"] !== false,
     apiKey: typeof apiKey === "string" || apiKey === null ? apiKey : undefined,
   };
 }
@@ -126,7 +128,7 @@ export function parseLlmSettingsInput(value: unknown): LlmSettingsInput {
 /**
  * 服务地址和模型写进与命令行共用的全局配置；key 只加密存在桌面端自己的状态里。
  *
- * 配置文件是用户可能手写过的 JSON，只改 llm 下的这几个字段，其余原样保留。
+ * 配置文件是用户可能手写过的 JSON，只改 llm 下的这几个字段（含追问时能否抓网页），其余原样保留。
  * 文件本身解析不了时直接报错，不能拿一个空对象覆盖掉用户的内容。
  *
  * 换了服务时原来的 key（保存的和环境变量里的）一律不再使用，必须给新服务填新的，
@@ -173,6 +175,7 @@ export function writeLlmSettings(input: LlmSettingsInput): void {
       : serviceChanged || previousEnv === ""
         ? NEW_SERVICE_KEY_ENV
         : previousEnv,
+    webFetch: input.webFetch,
   };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);

@@ -3,6 +3,7 @@ import type {
   ChatContextItemDto,
   ChatDoneDto,
   ChatRequestDto,
+  ChatToolStepDto,
   FileDetailDto,
   FindingDto,
   FindingKind,
@@ -258,6 +259,7 @@ export const api = {
 export interface ChatStreamHandlers {
   onContext?: (items: ChatContextItemDto[]) => void;
   onDelta: (text: string) => void;
+  onTool?: (step: ChatToolStepDto) => void;
 }
 
 /**
@@ -290,6 +292,7 @@ async function streamChat(
     if (data.length === 0) return;
     const payload = JSON.parse(data.join("\n")) as Record<string, unknown>;
     if (event === "delta" && typeof payload["text"] === "string") handlers.onDelta(payload["text"]);
+    else if (event === "tool" && typeof payload["id"] === "string") handlers.onTool?.(payload as unknown as ChatToolStepDto);
     else if (event === "context" && Array.isArray(payload["items"])) {
       handlers.onContext?.(payload["items"] as ChatContextItemDto[]);
     } else if (event === "done") result.done = payload as unknown as ChatDoneDto;

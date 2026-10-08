@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
+import type { ChatToolStepDto } from "@repolens/core/types";
 import { useShallow } from "zustand/react/shallow";
 import { Chevron } from "../ui/Chevron";
 import { t, translateMessage, useT } from "../i18n";
@@ -243,13 +244,18 @@ function AssistantMessage({ message, last }: { message: ChatMessage; last: boole
   const streaming = message.status === "streaming";
   const canNote = !streaming && message.content.trim() !== "" && hasNoteTarget(message.id);
 
+  const lookingUp = message.tools.some((step) => step.status === "running");
+
   return (
     <div className="pl-0.5">
+      {message.tools.length > 0 && <ToolSteps steps={message.tools} streaming={streaming} />}
       {message.content === "" && streaming ? (
-        <div className="flex items-center gap-2 text-[11px] text-[var(--color-ink-faint)]">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]" />
-          {message.context ? t("正在思考…") : t("正在读取上下文…")}
-        </div>
+        lookingUp ? null : (
+          <div className="flex items-center gap-2 text-[11px] text-[var(--color-ink-faint)]">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]" />
+            {message.context ? t("正在思考…") : t("正在读取上下文…")}
+          </div>
+        )
       ) : (
         <div data-note-source={streaming ? undefined : message.id}>
           <Suspense
@@ -326,6 +332,101 @@ function AssistantMessage({ message, last }: { message: ChatMessage; last: boole
       )}
     </div>
   );
+}
+
+/**
+ * 模型为回答自己去查的步骤。回答过程中展开，让人看到它在读什么；
+ * 答完收成一行，需要核对依据时再点开。
+ */
+function ToolSteps({ steps, streaming }: { steps: ChatToolStepDto[]; streaming: boolean }) {
+  useT();
+  const [open, setOpen] = useState<boolean | null>(null);
+  const expanded = open ?? streaming;
+  return (
+    <div className="mb-1.5">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setOpen(!expanded)}
+        className="text-[10.5px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-ink-muted)]"
+      >
+        {t("查阅 {count} 次", { count: steps.length })} {expanded ? "▾" : "▸"}
+      </button>
+      {expanded && (
+        <ul className="mt-1 space-y-0.5 border-l border-[var(--color-line)] pl-2">
+          {steps.map((step) => (
+            <ToolStepRow key={step.id} step={step} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ToolStepRow({ step }: { step: ChatToolStepDto }) {
+  const openDetail = useAppStore((s) => s.openDetail);
+  const reveal = useAppStore((s) => s.reveal);
+  const nodeId = step.nodeId ?? null;
+  const target = `${step.target}${step.lines ? ` L${step.lines[0]}–${step.lines[1]}` : ""}`;
+  const error = step.error ? translateMessage(step.error) : null;
+  const targetClass = "mono min-w-0 truncate";
+
+  let targetView = target === "" ? null : <span className={`${targetClass} text-[var(--color-ink-faint)]`}>{target}</span>;
+  if (target !== "" && step.url) {
+    targetView = (
+      <a href={step.url} target="_blank" rel="noreferrer" title={step.url} className={`${targetClass} text-[var(--color-accent)] hover:underline`}>
+        {target}
+      </a>
+    );
+  } else if (target !== "" && nodeId) {
+    targetView = (
+      <button
+        type="button"
+        title={t("打开")}
+        onClick={() => {
+          // 文件直接看源码并定位到读过的行；符号、目录这类在画布上定位
+          if (nodeId.startsWith("file:") || nodeId.startsWith("raw:")) {
+            openDetail(nodeId, { tab: "source", lines: step.lines ?? null }, false);
+          } else void reveal(nodeId);
+        }}
+        className={`${targetClass} text-left text-[var(--color-ink-muted)] underline-offset-2 hover:text-[var(--color-accent)] hover:underline`}
+      >
+        {target}
+      </button>
+    );
+  }
+
+  return (
+    <li className="flex min-w-0 items-center gap-1.5 text-[10.5px]" title={error ?? undefined}>
+      <span aria-hidden="true" className="flex w-2.5 shrink-0 justify-center">
+        {step.status === "running" ? (
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-accent)]" />
+        ) : step.status === "error" ? (
+          <span className="text-[var(--color-warn)]">!</span>
+        ) : (
+          <span className="text-[var(--color-ink-faint)]">✓</span>
+        )}
+      </span>
+      <span className="shrink-0 text-[var(--color-ink-muted)]">{toolLabel(step)}</span>
+      {targetView}
+      {error && <span className="min-w-0 shrink truncate text-[var(--color-warn)]">{error}</span>}
+    </li>
+  );
+}
+
+function toolLabel(step: ChatToolStepDto): string {
+  switch (step.tool) {
+    case "list_files": return t("列出目录");
+    case "read_file": return t("读取");
+    case "search_code": return t("搜索");
+    case "find_symbols": return t("查找符号");
+    case "get_node": return t("查看节点");
+    case "git_log": return t("提交历史");
+    case "git_show": return t("查看提交");
+    case "git_blame": return t("逐行追溯");
+    case "git_diff": return t("查看改动");
+    case "fetch_url": return t("抓取网页");
+  }
 }
 
 // ---------------------------------------------------------------------------

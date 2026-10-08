@@ -25,6 +25,8 @@ export interface LlmSettings {
   canSaveKey: boolean;
   /** 服务地址和模型写在这个文件里，与命令行共用 */
   configPath: string;
+  /** 追问时允许模型抓取公开网页 */
+  webFetch: boolean;
 }
 
 export interface LlmSettingsInput {
@@ -32,6 +34,7 @@ export interface LlmSettingsInput {
   model: string;
   interactiveModel: string | null;
   requiresKey: boolean;
+  webFetch: boolean;
   /** 不传表示保留原来的 key，null 表示清除 */
   apiKey?: string | null;
 }

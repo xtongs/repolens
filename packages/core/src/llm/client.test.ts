@@ -22,6 +22,8 @@ const config: LlmConfig = {
   scanMaxCalls: 10,
   outputLanguage: "zh",
   enabled: true,
+  chatTools: true,
+  webFetch: true,
 };
 
 describe("llmUnavailableReason", () => {
@@ -106,8 +108,59 @@ describe("OpenAiCompatibleClient.streamChat", () => {
     const deltas: string[] = [];
     const result = await client.streamChat(turns, { onDelta: (text) => deltas.push(text) });
     expect(deltas).toEqual(["你", "好"]);
-    expect(result).toEqual({ content: "你好", usage: { requests: 1, inputTokens: 5, outputTokens: 2, totalTokens: 7 } });
+    expect(result).toEqual({
+      content: "你好",
+      usage: { requests: 1, inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+      toolCalls: [],
+      toolsRejected: false,
+    });
     expect(sent[0]).toMatchObject({ stream: true, stream_options: { include_usage: true }, messages: turns });
+    expect(sent[0]).not.toHaveProperty("tools");
+  });
+
+  const readFileTool = {
+    type: "function" as const,
+    function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
+  };
+
+  it("把分片到达的函数调用按 index 拼回完整参数", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return eventStream([
+        'data: {"choices":[{"delta":{"content":"先看看","tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read_file","arguments":""}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"git_log","arguments":"{}"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"\\"a.ts\\"}"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]);
+    };
+    const client = new OpenAiCompatibleClient(config, { apiKey: "k", fetch: fetch as typeof globalThis.fetch });
+    const result = await client.streamChat(turns, { onDelta: () => {}, tools: [readFileTool] });
+    expect(result.content).toBe("先看看");
+    expect(result.toolCalls).toEqual([
+      { id: "call_a", type: "function", function: { name: "read_file", arguments: '{"path":"a.ts"}' } },
+      { id: "call_b", type: "function", function: { name: "git_log", arguments: "{}" } },
+    ]);
+    expect(sent[0]).toMatchObject({ tools: [readFileTool], tool_choice: "auto" });
+  });
+
+  it("模型不支持函数调用时去掉工具重发，并告知调用方", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      if ("tools" in body) {
+        return new Response(JSON.stringify({ error: { message: "model does not support tools" } }), { status: 400 });
+      }
+      return eventStream(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"]);
+    };
+    const client = new OpenAiCompatibleClient({ ...config, maxRetries: 0 }, { apiKey: "k", fetch: fetch as typeof globalThis.fetch });
+    const result = await client.streamChat(turns, { onDelta: () => {}, tools: [readFileTool] });
+    expect(result).toMatchObject({ content: "ok", toolCalls: [], toolsRejected: true });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).not.toHaveProperty("tools");
   });
 
   it("网关忽略 stream 参数时退化为一次性 JSON", async () => {

@@ -32,6 +32,8 @@ export const DEFAULT_CONFIG: RepolensConfig = {
     scanMaxCalls: 99,
     outputLanguage: "zh",
     enabled: true,
+    chatTools: true,
+    webFetch: true,
   },
 };
 
@@ -58,13 +60,17 @@ export function loadConfig(repoRoot: string): RepolensConfig {
 /**
  * 仓库级配置随代码一起被克隆下来，不可信。允许它改服务地址或 key 的变量名，
  * 打开一个陌生仓库就可能把本机任意环境变量当成 key 发到任意地址，所以这两项只认用户级配置。
+ * 追问工具同理：仓库只能把它们关掉，不能替用户打开。
  */
 function withoutCredentialRouting(patch: unknown): unknown {
   if (typeof patch !== "object" || patch === null) return patch;
   const llm = (patch as { llm?: unknown }).llm;
   if (typeof llm !== "object" || llm === null) return patch;
-  const { baseUrl: _baseUrl, apiKeyEnv: _apiKeyEnv, ...rest } = llm as Record<string, unknown>;
-  return { ...patch, llm: rest };
+  const { baseUrl: _baseUrl, apiKeyEnv: _apiKeyEnv, chatTools, webFetch, ...rest } = llm as Record<string, unknown>;
+  return {
+    ...patch,
+    llm: { ...rest, ...(chatTools === false ? { chatTools } : {}), ...(webFetch === false ? { webFetch } : {}) },
+  };
 }
 
 /** 内置默认值叠加用户级共享配置，不含任何仓库的覆盖。桌面端的 AI 设置读写的就是这一层。 */
@@ -184,6 +190,8 @@ function normalizeLlmConfig(config: RepolensConfig["llm"]): RepolensConfig["llm"
     maxRetries: clampInt(config.maxRetries, 0, 8, 2),
     scanBatchSize: clampInt(config.scanBatchSize, 1, 20, 8),
     scanMaxCalls: clampInt(config.scanMaxCalls, 1, 99, 99),
+    chatTools: config.chatTools !== false,
+    webFetch: config.webFetch !== false,
   };
 }
 

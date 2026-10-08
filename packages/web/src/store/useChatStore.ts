@@ -1,4 +1,4 @@
-import type { ChatContextItemDto, ChatMessageDto, ChatRefDto } from "@repolens/core/types";
+import type { ChatContextItemDto, ChatMessageDto, ChatRefDto, ChatToolStepDto } from "@repolens/core/types";
 import { create } from "zustand";
 import { api } from "../api/client";
 import { t } from "../i18n";
@@ -27,6 +27,8 @@ export interface ChatMessage {
   attachments: ChatAttachment[];
   /** 服务端实际放进提示词的上下文，只有助手消息有 */
   context: ChatContextItemDto[] | null;
+  /** 回答过程中模型自己查阅的步骤，按开始的先后排 */
+  tools: ChatToolStepDto[];
   status: "streaming" | "done" | "error" | "stopped";
   error: string | null;
 }
@@ -94,6 +96,11 @@ export const useChatStore = create<ChatState>((set, get) => {
         {
           onContext: (items) => patch(assistantId, { context: items }),
           onDelta: (text) => patch(assistantId, (message) => ({ content: message.content + text })),
+          onTool: (step) => patch(assistantId, (message) => ({
+            tools: message.tools.some((item) => item.id === step.id)
+              ? message.tools.map((item) => (item.id === step.id ? step : item))
+              : [...message.tools, step],
+          })),
         },
         current.signal,
       );
@@ -159,10 +166,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (content === "" || get().streaming) return;
       const attachments = pendingAttachments(get(), useAppStore.getState());
       const user: ChatMessage = {
-        id: nextId++, role: "user", content, attachments, context: null, status: "done", error: null,
+        id: nextId++, role: "user", content, attachments, context: null, tools: [], status: "done", error: null,
       };
       const assistant: ChatMessage = {
-        id: nextId++, role: "assistant", content: "", attachments: [], context: null, status: "streaming", error: null,
+        id: nextId++, role: "assistant", content: "", attachments: [], context: null, tools: [], status: "streaming", error: null,
       };
       set((state) => ({ messages: [...state.messages, user, assistant], attachments: [], draft: "" }));
       await run(assistant.id);
@@ -175,7 +182,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     async retry() {
       const last = get().messages.at(-1);
       if (!last || last.role !== "assistant" || get().streaming) return;
-      patch(last.id, { content: "", context: null, status: "streaming", error: null });
+      patch(last.id, { content: "", context: null, tools: [], status: "streaming", error: null });
       await run(last.id);
     },
 

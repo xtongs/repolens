@@ -155,7 +155,7 @@ export function DetailDrawer() {
           <div ref={setContent} className="thin-scroll min-h-0 flex-1 overflow-y-auto">
             {isSymbol && <SymbolBody key={selected} id={selected} navigation={navigation} />}
             {isFile && <FileBody key={selected} id={selected} navigation={navigation} />}
-            {isRaw && <RawFileBody key={selected} path={selected.slice(4)} />}
+            {isRaw && <RawFileBody key={selected} path={selected.slice(4)} focus={navigation.sourceFocus} />}
             {!isSymbol && !isFile && !isRaw && <ScopeBody key={selected} id={selected} navigation={navigation} />}
           </div>
           {!isRaw && <SelectionAsk container={content} nodeId={selected} />}
@@ -797,7 +797,7 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
   );
 }
 
-function RawFileBody({ path }: { path: string }) {
+function RawFileBody({ path, focus }: { path: string; focus: SourceFocus | null }) {
   const t = useT();
   return (
     <>
@@ -805,7 +805,7 @@ function RawFileBody({ path }: { path: string }) {
         <div className="mono break-all text-[11px] text-[var(--color-ink-muted)]">{path}</div>
         <div className="mt-0.5 text-[10.5px] text-[var(--color-ink-faint)]">{t("没进索引，不参与分析，这里只显示原文")}</div>
       </div>
-      <SourcePanel fileId={`raw:${path}`} />
+      <SourcePanel fileId={`raw:${path}`} focus={focus} />
     </>
   );
 }

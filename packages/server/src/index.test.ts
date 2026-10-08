@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanRepo } from "@repolens/core";
@@ -7,6 +9,8 @@ import { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_HEADER, startServer, type RunningServ
 
 let home: string;
 let server: RunningServer | null = null;
+/** 模拟的 OpenAI 兼容模型服务 */
+let llm: Server | null = null;
 
 // 仓库清单在 ~/.repolens/repos.json，os.homedir() 在 POSIX 上读 $HOME，Windows 上读 %USERPROFILE%
 beforeEach(() => {
@@ -18,6 +22,8 @@ beforeEach(() => {
 afterEach(async () => {
   await server?.close();
   server = null;
+  await new Promise<void>((resolve) => (llm ? llm.close(() => resolve()) : resolve()));
+  llm = null;
   vi.unstubAllEnvs();
   rmSync(home, { recursive: true, force: true });
 });
@@ -148,5 +154,49 @@ describe("startServer", () => {
     const escaped = await get(`/raw?path=${encodeURIComponent("../files/src/a.ts")}`);
     expect(escaped.status).toBe(400);
     expect(await escaped.json()).toEqual({ error: "非法的路径" });
+  });
+
+  it("追问时把模型查阅的每一步作为 tool 事件流给页面", async () => {
+    const repo = join(home, "chat");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src/a.ts"), "export function a() { return 1; }\n");
+    writeFileSync(join(repo, "NOTES.txt"), "release on fridays\n");
+    await scanRepo({ root: repo });
+
+    let requests = 0;
+    llm = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        requests++;
+        const events = requests === 1
+          ? [{ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"NOTES.txt"}' } }] } }] }]
+          : [{ choices: [{ delta: { content: "周五发布。" } }] }];
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => llm!.listen(0, "127.0.0.1", resolve));
+    const configDir = join(home, ".config", "repolens");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.json"), JSON.stringify({
+      llm: { baseUrl: `http://127.0.0.1:${(llm.address() as AddressInfo).port}/v1`, apiKeyEnv: "", model: "mock", maxRetries: 0 },
+    }));
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"));
+
+    server = await startServer({ repoRoot: repo, port: 0 });
+    const response = await fetch(`${server.url}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-repolens-intent": "chat" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "什么时候发布？" }] }),
+    });
+    const events = (await response.text()).split("\n\n").filter(Boolean).map((block) => ({
+      event: /^event: (.+)$/m.exec(block)?.[1],
+      data: JSON.parse(/^data: (.+)$/m.exec(block)?.[1] ?? "null") as Record<string, unknown>,
+    }));
+    expect(events.map((item) => item.event)).toEqual(["context", "tool", "tool", "delta", "done"]);
+    expect(events[1]?.data).toMatchObject({ id: "t1", tool: "read_file", target: "NOTES.txt", status: "running" });
+    expect(events[2]?.data).toMatchObject({ id: "t1", status: "done", nodeId: expect.stringMatching(/^file:\d+$/), lines: [1, 1] });
+    expect(events[3]?.data).toEqual({ text: "周五发布。" });
+    expect(events[4]?.data).toMatchObject({ model: "mock", usage: { requests: 2 } });
   });
 });

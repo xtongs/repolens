@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../db/database.js";
-import type { ChatContextItemDto } from "../types.js";
+import type { ChatContextItemDto, ChatToolStepDto } from "../types.js";
 import { readLlmStatus } from "../db/semantic.js";
 import { buildChatContext, parseChatRequest, recordChatUsage, streamRepositoryChat } from "./chat.js";
 
@@ -184,5 +184,94 @@ describe("streamRepositoryChat", () => {
 
     recordChatUsage(db, repo, done.usage);
     expect(readLlmStatus(db)?.usage.totalTokens).toBe(108);
+  });
+
+  function sse(events: unknown[]): Response {
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  }
+
+  it("模型调工具时执行并把结果交回去，直到给出回答", async () => {
+    const { repo, db, fileId } = setupRepo();
+    writeFileSync(join(repo, "package.json"), '{ "name": "demo", "scripts": { "start": "node src/run.ts" } }\n');
+    const bodies: Array<{ messages: Array<Record<string, unknown>>; tools?: Array<{ function: { name: string } }>; tool_choice?: string }> = [];
+    vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return sse([
+          { choices: [{ delta: { content: "我先看看配置。" } }] },
+          { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"package.json"}' } }] } }] },
+          { choices: [{ delta: { tool_calls: [{ index: 1, id: "call_2", function: { name: "read_file", arguments: '{"path":"../etc/passwd"}' } }] } }] },
+          { choices: [], usage: { prompt_tokens: 50, completion_tokens: 10, total_tokens: 60 } },
+        ]);
+      }
+      return sse([
+        { choices: [{ delta: { content: "启动命令是 `node src/run.ts`。" } }] },
+        { choices: [], usage: { prompt_tokens: 80, completion_tokens: 6, total_tokens: 86 } },
+      ]);
+    });
+
+    const steps: ChatToolStepDto[] = [];
+    let answer = "";
+    const done = await streamRepositoryChat(db, repo, {
+      messages: [{ role: "user", content: "怎么启动？", refs: [{ kind: "node", id: `file:${fileId}` }] }],
+    }, {
+      onDelta: (text) => { answer += text; },
+      onTool: (step) => steps.push(step),
+    });
+
+    expect(answer).toBe("我先看看配置。\n\n启动命令是 `node src/run.ts`。");
+    expect(done.usage).toEqual({ requests: 2, inputTokens: 130, outputTokens: 16, totalTokens: 146 });
+    expect(steps.map((step) => [step.id, step.status])).toEqual([["t1", "running"], ["t1", "done"], ["t2", "running"], ["t2", "error"]]);
+    expect(steps[1]).toMatchObject({ tool: "read_file", target: "package.json", nodeId: "raw:package.json", lines: [1, 1] });
+
+    expect(bodies[0]?.tools?.map((tool) => tool.function.name)).toContain("git_log");
+    expect(bodies[0]?.tool_choice).toBe("auto");
+    expect(String(bodies[0]?.messages[0]?.["content"])).toContain("先用工具去查再作答");
+    const followUp = bodies[1]!.messages;
+    expect(followUp.at(-3)).toMatchObject({ role: "assistant", content: "我先看看配置。", tool_calls: [{ id: "call_1" }, { id: "call_2" }] });
+    expect(followUp.at(-2)).toMatchObject({ role: "tool", tool_call_id: "call_1" });
+    expect(String(followUp.at(-2)?.["content"])).toContain('1| { "name": "demo"');
+    expect(followUp.at(-1)).toEqual({ role: "tool", tool_call_id: "call_2", content: "Error: 非法的路径" });
+  });
+
+  it("用户级配置关掉追问工具后只凭初始上下文回答", async () => {
+    const { repo, db } = setupRepo();
+    const configPath = join(process.env["XDG_CONFIG_HOME"]!, "repolens/config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as { llm: Record<string, unknown> };
+    writeFileSync(configPath, JSON.stringify({ llm: { ...config.llm, chatTools: false } }));
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return sse([{ choices: [{ delta: { content: "ok" } }] }]);
+    });
+    await streamRepositoryChat(db, repo, { messages: [{ role: "user", content: "hi" }] }, { onDelta: () => {} });
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toHaveProperty("tools");
+    expect(JSON.stringify(bodies[0])).toContain("上下文里没有的信息就直说没看到");
+  });
+
+  it("仓库级配置不能替用户打开网页抓取", async () => {
+    const { repo, db } = setupRepo();
+    const configPath = join(process.env["XDG_CONFIG_HOME"]!, "repolens/config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as { llm: Record<string, unknown> };
+    writeFileSync(configPath, JSON.stringify({ llm: { ...config.llm, webFetch: false } }));
+    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({ llm: { webFetch: true, chatTools: true } }));
+    const bodies: Array<{ tools?: Array<{ function: { name: string } }> }> = [];
+    vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as (typeof bodies)[number]);
+      return sse([{ choices: [{ delta: { content: "ok" } }] }]);
+    });
+    await streamRepositoryChat(db, repo, { messages: [{ role: "user", content: "hi" }] }, { onDelta: () => {} });
+    const names = bodies[0]?.tools?.map((tool) => tool.function.name) ?? [];
+    expect(names).toContain("read_file");
+    expect(names).not.toContain("fetch_url");
   });
 });

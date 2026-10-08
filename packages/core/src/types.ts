@@ -347,6 +347,10 @@ export interface LlmConfig {
   /** 生成内容的语言 */
   outputLanguage: "zh" | "en";
   enabled: boolean;
+  /** 追问时让模型按需读文件、搜代码、看 git 历史；模型或网关不支持函数调用时自动退回 */
+  chatTools: boolean;
+  /** 追问时允许模型抓取公开网页；只能在用户级配置里打开 */
+  webFetch: boolean;
 }
 
 export interface RepolensConfig {
@@ -1094,6 +1098,35 @@ export interface ChatContextItemDto {
   detail: string;
   nodeId?: string | null;
 }
+
+/**
+ * 回答过程中模型自己去查的一步（读文件、搜代码、看提交、抓网页）。同一个 id 先以
+ * running 推一次，完成后再推一次最终状态，界面据此原地更新。
+ */
+export interface ChatToolStepDto {
+  id: string;
+  tool: ChatToolName;
+  /** 给人看的对象：路径、搜索词、提交号或网址 */
+  target: string;
+  status: "running" | "done" | "error";
+  /** 能在界面上打开的节点；没进索引的文件是 `raw:路径` */
+  nodeId?: string | null;
+  lines?: [number, number] | null;
+  url?: string | null;
+  error?: string | null;
+}
+
+export type ChatToolName =
+  | "list_files"
+  | "read_file"
+  | "search_code"
+  | "find_symbols"
+  | "get_node"
+  | "git_log"
+  | "git_show"
+  | "git_blame"
+  | "git_diff"
+  | "fetch_url";
 
 export interface ChatDoneDto {
   model: string;

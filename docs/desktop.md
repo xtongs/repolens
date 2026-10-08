@@ -149,3 +149,4 @@ Linux 同理。三个平台一起打交给 GitHub Actions。
 
 应用图标的源文件是 `packages/desktop/build/icon.svg`，改完后用
 `rsvg-convert -w 1024 -h 1024 icon.svg -o icon.png` 重新生成 `icon.png`。
+网页标签页的图标 `packages/web/public/favicon.svg` 是同一个图形，记得一起改。

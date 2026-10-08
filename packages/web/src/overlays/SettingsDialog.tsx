@@ -24,6 +24,7 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
   const [model, setModel] = useState("");
   const [interactiveModel, setInteractiveModel] = useState("");
   const [requiresKey, setRequiresKey] = useState(true);
+  const [webFetch, setWebFetch] = useState(true);
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -39,6 +40,7 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
       setModel(loaded.model);
       setInteractiveModel(loaded.interactiveModel ?? "");
       setRequiresKey(loaded.apiKeyEnv !== "");
+      setWebFetch(loaded.webFetch);
       requestAnimationFrame(() => firstField.current?.focus());
     }).catch((err: Error) => {
       if (!disposed) setError(err.message);
@@ -58,6 +60,7 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
         model: model.trim(),
         interactiveModel: interactiveModel.trim() || null,
         requiresKey,
+        webFetch,
         apiKey: apiKey.trim() || (clearKey ? null : undefined),
       });
       await useAppStore.getState().refreshOverview().catch(() => {
@@ -154,6 +157,13 @@ function SettingsForm({ bridge, onClose }: { bridge: DesktopBridge; onClose: () 
                   onToggleClear={() => setClearKey(!clearKey)}
                 />
               )}
+            </Field>
+
+            <Field label={t("追问")} hint={t("AI 会按需读仓库文件、搜代码、看 git 历史")}>
+              <label className="flex items-center gap-1.5 text-[11px] text-[var(--color-ink-muted)]">
+                <input type="checkbox" checked={webFetch} onChange={(event) => setWebFetch(event.target.checked)} />
+                {t("允许 AI 抓取公开网页（查依赖库文档、issue 等），不会访问本机和内网地址")}
+              </label>
             </Field>
 
             {error && (

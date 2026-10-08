@@ -134,7 +134,7 @@ function listDirectory(repoRoot: string, dir: string): Dirent[] {
 }
 
 /** 请求里的路径一律当仓库相对路径，归一成索引里的写法，仓库根是 "." */
-function repoRelative(path: string): string {
+export function repoRelative(path: string): string {
   const parts = path.split("/").filter((part) => part !== "" && part !== ".");
   if (parts.some((part) => part === ".." || /[\\:]/.test(part) || UNLISTED.has(part))) {
     throw new RepoFileError("非法的路径", 400);

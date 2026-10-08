@@ -214,8 +214,9 @@ export function createApi(deps: ApiDeps): Hono {
   });
 
   // 追问 AI。请求里只有问题文本和节点 id，源码由服务端按 id 现读；回答
-  // 以 SSE 流回，事件依次是 context（实际放进提示词的上下文）、若干 delta、
-  // 最后 done 或 error。读上下文用只读连接，写连接只在记账时短暂打开。
+  // 以 SSE 流回，事件依次是 context（实际放进提示词的上下文）、穿插出现的
+  // delta 和 tool（模型自己去查的每一步），最后 done 或 error。读上下文用只读
+  // 连接，写连接只在记账时短暂打开。
   app.post("/chat", async (c) => {
     if (c.req.header("x-repolens-intent") !== "chat") {
       return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
@@ -243,6 +244,7 @@ export function createApi(deps: ApiDeps): Hono {
           signal: controller.signal,
           onContext: (items) => void send("context", { items }),
           onDelta: (text) => void send("delta", { text }),
+          onTool: (step) => void send("tool", step),
         });
         await send("done", done);
         await withWritableDb(repoRoot, async (writeDb) => recordChatUsage(writeDb, repoRoot, done.usage));
