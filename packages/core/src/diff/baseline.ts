@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { join } from "node:path";
 import { getMeta, INDEX_DIR, indexPath, isIndexCurrent, openDb } from "../db/database.js";
 import { EXTRACTOR_VERSION, EXTRACTOR_VERSION_KEY, scanRepo, type ScanOptions } from "../pipeline/scan.js";
 
@@ -52,8 +52,9 @@ async function snapshotAndScan(
   root: string, top: string, commit: string, cacheDir: string, dbPath: string,
   onProgress: ScanOptions["onProgress"],
 ): Promise<void> {
-  // 扫描根可能是 monorepo 里的子目录，快照里要还原同样的相对位置
-  const prefix = relative(realpathSync(top), realpathSync(root)).split(sep).join("/");
+  // 扫描根可能是 monorepo 里的子目录，快照里要还原同样的相对位置。让 git 自己算：
+  // Windows 的临时目录常是 8.3 短路径（RUNNER~1），和 git 给出的仓库根按字符串比对不上
+  const prefix = git(root, ["rev-parse", "--show-prefix"], "没法确定扫描根在仓库里的位置").replace(/\/$/, "");
   const snapshot = mkdtempSync(join(tmpdir(), "repolens-baseline-"));
   try {
     // 子目录在那个提交里还不存在时基线就是空的，git archive 会直接报 pathspec 错
@@ -119,7 +120,8 @@ function extractCommit(top: string, commit: string, prefix: string, into: string
     const archive = spawn("git", ["-C", top, "archive", "--format=tar", commit, ...(prefix ? ["--", prefix] : [])], {
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const untar = spawn("tar", ["-x", "-f", "-", "-C", into], { stdio: ["pipe", "ignore", "pipe"] });
+    // 不用 -C：Git for Windows 自带的 GNU tar 会把 C:\ 里的冒号当成远程主机
+    const untar = spawn("tar", ["-x", "-f", "-"], { cwd: into, stdio: ["pipe", "ignore", "pipe"] });
     archive.stdout.pipe(untar.stdin);
     let stderr = "";
     archive.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });

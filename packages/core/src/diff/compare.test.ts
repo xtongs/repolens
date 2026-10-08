@@ -50,6 +50,8 @@ function repoAtBase(): string {
     "src/helpers.ts": "export function clamp(n: number) { return Math.max(0, n); }\n",
   });
   git(root, "init", "-q");
+  // Windows CI 默认开着 autocrlf：git archive 导出 CRLF，而这里直接写的是 LF，每个文件都会被判成修改
+  git(root, "config", "core.autocrlf", "false");
   git(root, "add", "-A");
   git(root, "commit", "-qm", "base");
   return root;
