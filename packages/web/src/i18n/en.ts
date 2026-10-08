@@ -170,11 +170,51 @@ export const EN: Record<string, Translation> = {
   "AI 已解释": "AI explained",
   "按代码行热力排序": "Heat by lines of code",
   "没有发现结构问题。": "No structural issues found.",
-  "当前检查项：跨文件的重复实现、同级作用域之间的循环依赖。":
-    "Current checks: duplicate implementations across files, and dependency cycles between sibling scopes.",
+  "当前检查项：跨文件的重复实现、同级作用域之间的循环依赖、读不动的过大函数和文件，以及 .repolens.json 里声明的依赖规则。":
+    "Current checks: duplicate implementations across files, dependency cycles between sibling scopes, functions and files too large to read, and the dependency rules declared in .repolens.json.",
   "全部 {count}": "All {count}",
   "重复 {count}": "Duplicates {count}",
   "循环 {count}": "Cycles {count}",
+  "违规 {count}": "Violations {count}",
+  "过大 {count}": "Oversized {count}",
+
+  // 变更
+  "变更": "Changes",
+  "对比某个提交：这次改了哪些依赖、接口和入口": "Compare with a commit: which dependencies, interfaces and entry points changed",
+  "对比": "Compare",
+  "对比中…": "Comparing…",
+  "基线提交": "Base commit",
+  "正在为基线提交建立结构索引，第一次对比某个提交需要几秒。":
+    "Indexing the base commit. The first comparison against a commit takes a few seconds.",
+  "上次扫描时的代码": "code as of the last scan",
+  "和基线相比没有结构变化。改完代码后重新扫描再对比。": "No structural changes against the base. Rescan after editing, then compare again.",
+  "另有 {count} 个测试、配置等文件的改动未列出，打开「显示噪音」可见。": (params) =>
+    `${count(params)} more ${plural(params, "change", "changes")} in tests, config and other files are hidden. Turn on "Show noise" to see them.`,
+  "改动文件": "Files",
+  "改动符号": "Symbols",
+  "依赖变化": "Deps",
+  "模块依赖": "Module dependencies",
+  "包级": "package ",
+  "仅类型": "types only",
+  "外部库": "external",
+  "入口与影响面": "Entry points and impact",
+  "走到改动：{names}": "Reaches changes: {names}",
+  "{count} 处改动": counted("change", "changes"),
+  "体检变化": "Health changes",
+  "新增": "new",
+  "消除": "resolved",
+  "对外接口变化": "Exported interface changes",
+  "逐文件": "By file",
+  "从 {path} 移动而来": "Moved from {path}",
+  "基线里有 {count} 个调用方": (params) => `${count(params)} ${plural(params, "caller", "callers")} in the base`,
+  "{count} 个调用方": counted("caller", "callers"),
+  "签名": "signature",
+  "仅格式": "format only",
+  "{count} 个文件有改动": (params) => `${count(params)} changed ${plural(params, "file", "files")}`,
+  "对比基线新增": "Added since the base",
+  "对比基线有修改": "Modified since the base",
+  "新": "new",
+  "改": "mod",
 
   // 右侧详情
   "概览": "Overview",
@@ -392,6 +432,11 @@ export const EN: Record<string, Translation> = {
   "在任何视图、任何节点类型上含义都相同": "Same meaning in every view and on every node type",
   "边的样式编码可信度：实线是解析器确定的依赖，虚线是名字匹配推断的，点线是有多个同名候选、默认不显示的。":
     "Edge style encodes confidence: solid lines are dependencies confirmed by the parser, dashed lines are inferred by name matching, and dotted lines have several same-name candidates and are hidden by default.",
+  "最细的淡色点线是纯类型依赖（import type），只在编译期存在，不算运行时依赖。":
+    " The thinnest faint dotted lines are type-only dependencies (import type): they exist only at compile time and are not runtime dependencies.",
+  "标着 HTTP 的琥珀色虚线是前端请求按 URL 对上的后端路由，同样是推断出来的。":
+    " Amber dashed lines labeled HTTP are frontend requests matched to backend routes by URL; they are inferred as well.",
+  "前端请求按 URL 对上的后端路由，没有 import 证据": "Frontend request matched to a backend route by URL, with no import evidence",
   "展开子项": "Expand children",
   "退出聚焦": "Exit focus",
   "以此为中心聚焦": "Focus on this",
@@ -473,6 +518,8 @@ export const EN: Record<string, Translation> = {
   "LLM 返回缺少 summary、shortSummary 或 pseudocode": "The LLM response is missing summary, shortSummary or pseudocode",
   "LLM 返回的链路叙述不完整": "The LLM's trace narrative is incomplete",
   "请求已取消": "Request cancelled",
+  "不是 git 仓库，没法按提交对比": "This isn't a git repository, so there's no commit to compare with",
+  "当前索引不存在或已过期，先运行一次扫描": "The index is missing or outdated. Run a scan first",
 };
 
 /** 嵌着路径、名字的报错，整句查不到时按这些模式翻译 */
@@ -490,4 +537,9 @@ export const EN_PATTERNS: Array<[RegExp, (...groups: string[]) => string]> = [
   [/^RepoLens 配置解析失败：(.+)$/s, (detail) => `Couldn't parse the RepoLens config: ${detail}`],
   [/^笔记文件无法解析：(.+)$/s, (detail) => `Couldn't parse the notes file: ${detail}`],
   [/^笔记文件格式不对：(.+)$/s, (path) => `The notes file has an invalid format: ${path}`],
+  [/^RepoLens 配置里的 rules 必须是数组：(.+)$/s, (path) => `"rules" in the RepoLens config must be an array: ${path}`],
+  [/^RepoLens 配置里第 (\d+) 条规则缺少 from 或 disallow：(.+)$/s, (n, path) => `Rule ${n} in the RepoLens config is missing "from" or "disallow": ${path}`],
+  [/^找不到提交 (.+)$/s, (ref) => `Commit not found: ${ref}`],
+  [/^不支持的提交写法：(.+)$/s, (ref) => `Unsupported commit reference: ${ref}`],
+  [/^导出提交 (\S+) 失败：(.*)$/s, (commit, detail) => `Couldn't export commit ${commit}: ${detail}`],
 ];

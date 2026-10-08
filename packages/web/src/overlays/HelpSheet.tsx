@@ -67,6 +67,8 @@ export function HelpSheet() {
 
           <div className="mt-3 border-t border-[var(--color-line)] pt-2.5 text-[10.5px] leading-relaxed text-[var(--color-ink-faint)]">
             {t("边的样式编码可信度：实线是解析器确定的依赖，虚线是名字匹配推断的，点线是有多个同名候选、默认不显示的。")}
+            {t("最细的淡色点线是纯类型依赖（import type），只在编译期存在，不算运行时依赖。")}
+            {t("标着 HTTP 的琥珀色虚线是前端请求按 URL 对上的后端路由，同样是推断出来的。")}
           </div>
         </div>
       </div>

@@ -47,7 +47,7 @@ export function analyzeTraces(db: Db): TraceAnalysisStats {
     ...registrationEntries(calls, symbols),
     ...testCallEntries(calls, symbols),
   ]);
-  const boundaries = dedupeBoundaries(calls.map(classifyBoundary).filter(isPresent));
+  const boundaries = collapseBoundaries(calls.map(classifyBoundary).filter(isPresent));
 
   const insertEntry = db.prepare(
     `INSERT INTO entry_points
@@ -305,8 +305,10 @@ function registrationEntries(calls: readonly CallRow[], symbols: readonly Symbol
     const args = parseArray(call.arguments);
 
     if (isCliRegistration(call)) {
-      const handler = resolveHandler(symbols, call.fileId, handlerIdentifier(args.at(-1) ?? ""));
-      const command = unquote(args[0]) ?? handler?.symbol.name ?? call.callee;
+      const named = resolveHandler(symbols, call.fileId, handlerIdentifier(args.at(-1) ?? ""));
+      const command = unquote(args[0])?.trim().split(/\s+/)[0] || commandFromReceiver(call.receiver)
+        || named?.symbol.name || call.callee;
+      const handler = named ?? inlineHandler(symbols, call.fileId, `CLI ${command}`, call.line);
       out.push({
         kind: "cli", framework: cliFramework(call.callee, call.receiver),
         // 注册调用所在的外层函数不是 handler；匿名闭包没有独立符号时宁可
@@ -320,12 +322,13 @@ function registrationEntries(calls: readonly CallRow[], symbols: readonly Symbol
     if (!HTTP_METHODS.has(method) || !call.receiver) continue;
     const route = unquote(args[0]);
     if (!route?.startsWith("/")) continue;
-    const handlerName = handlerIdentifier(args.at(-1) ?? "");
-    const handler = resolveHandler(symbols, call.fileId, handlerName);
+    const label = `${method === "route" || method === "all" ? "HTTP" : method.toUpperCase()} ${route}`;
+    const handler = resolveHandler(symbols, call.fileId, handlerIdentifier(args.at(-1) ?? ""))
+      ?? inlineHandler(symbols, call.fileId, label, call.line);
     const framework = httpFramework(call.receiver, call.callee, args);
     out.push({
       kind: "http", framework, symbolId: handler?.symbol.id ?? null, fileId: call.fileId, line: call.line,
-      label: `${method === "route" || method === "all" ? "HTTP" : method.toUpperCase()} ${route}`,
+      label,
       method: method === "route" || method === "all" ? null : method.toUpperCase(), route,
       confidence: handler?.confidence ?? "likely",
       evidence: `${call.receiver}.${call.callee}(route, handler) registration`,
@@ -397,7 +400,48 @@ function classifyBoundary(call: CallRow): BoundaryCandidate | null {
   }
   if (!kind) return null;
   return { kind, symbolId: call.callerId, fileId: call.fileId, callSiteId: call.id, line: call.line,
-    callee: call.receiver ? `${call.receiver}.${call.callee}` : call.callee, confidence, evidence };
+    callee: call.receiver ? `${foldArguments(call.receiver)}.${call.callee}` : call.callee, confidence, evidence };
+}
+
+/** `db.prepare("SELECT …").get` → `db.prepare(…).get`：边界标签讲的是访问方式，SQL 原文属于源码 */
+function foldArguments(receiver: string): string {
+  let out = "";
+  let depth = 0;
+  for (const ch of receiver) {
+    if (ch === "(") {
+      if (depth === 0) out += "(…";
+      depth++;
+    } else if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) out += ")";
+    } else if (depth === 0) {
+      out += ch;
+    }
+  }
+  return depth > 0 ? `${out})` : out;
+}
+
+/**
+ * 同一函数里同类 I/O 只留一个代表。链式 `db.prepare(sql).get()` 本来就是一次访问；
+ * 一个函数里连着十条查询，在链路层面也只是「这里读写数据库」——逐条成链只会把
+ * 一个入口刷出十几条几乎一样的路径。代表优先取确定的、最早的、链上最外层的那处。
+ */
+function collapseBoundaries(list: readonly BoundaryCandidate[]): BoundaryCandidate[] {
+  const groups = new Map<string, BoundaryCandidate[]>();
+  for (const boundary of list) {
+    const owner = boundary.symbolId === null ? `file:${boundary.fileId}` : `sym:${boundary.symbolId}`;
+    const key = `${owner}:${boundary.kind}`;
+    const group = groups.get(key);
+    if (group) group.push(boundary); else groups.set(key, [boundary]);
+  }
+  return [...groups.values()].map((group) => {
+    group.sort((a, b) =>
+      (a.confidence === b.confidence ? 0 : a.confidence === "exact" ? -1 : 1) ||
+      a.line - b.line || b.callee.length - a.callee.length);
+    const first = group[0] as BoundaryCandidate;
+    const sites = new Set(group.map((boundary) => boundary.line)).size;
+    return sites > 1 ? { ...first, evidence: `${first.evidence}（同一函数共 ${sites} 处）` } : first;
+  });
 }
 
 function loadEdges(db: Db): Map<number, CallEdge[]> {
@@ -423,12 +467,18 @@ function pathsToBoundaries(
   const bestDepth = new Map<number, number>([[start, 0]]);
   const out: Array<{ symbols: number[]; edges: CallEdge[]; boundary: BoundaryCandidate }> = [];
   const seenBoundary = new Set<number>();
+  // 链上某一步已经讲过「这里访问数据库」，它下游再访问数据库就不再单独成链：
+  // openDb → setMeta → getMeta 这类基础设施内部的同类 I/O 对理解入口没有增量。
+  const reachedKinds = new Map<number, Set<BoundaryKind>>();
   while (queue.length > 0 && out.length < maxPaths) {
     const path = queue.shift() as { symbols: number[]; edges: CallEdge[] };
     const current = path.symbols.at(-1) as number;
+    const covered = new Set(path.symbols.slice(0, -1).flatMap((id) => [...(reachedKinds.get(id) ?? [])]));
     for (const boundary of boundaries.get(current) ?? []) {
-      if (seenBoundary.has(boundary.callSiteId)) continue;
+      if (covered.has(boundary.kind) || seenBoundary.has(boundary.callSiteId)) continue;
       seenBoundary.add(boundary.callSiteId);
+      const kinds = reachedKinds.get(current);
+      if (kinds) kinds.add(boundary.kind); else reachedKinds.set(current, new Set([boundary.kind]));
       out.push({ ...path, boundary });
       if (out.length >= maxPaths) break;
     }
@@ -493,6 +543,27 @@ function resolveHandler(
     : null;
 }
 
+/**
+ * 解析器给注册调用里的内联回调合成了符号（名字与入口标签同规则，同名时带 ` #n`）。
+ * 回调总在注册调用那一行或之后开始，取离它最近的那个。
+ */
+function inlineHandler(
+  symbols: readonly SymbolRow[], fileId: number, name: string, line: number,
+): { symbol: SymbolRow; confidence: "exact" } | null {
+  let best: SymbolRow | null = null;
+  for (const symbol of symbols) {
+    if (symbol.fileId !== fileId || symbol.container !== null || symbol.startLine < line) continue;
+    if (symbol.name !== name && !symbol.name.startsWith(`${name} #`)) continue;
+    if (!best || symbol.startLine < best.startLine) best = symbol;
+  }
+  return best ? { symbol: best, confidence: "exact" } : null;
+}
+
+function commandFromReceiver(receiver: string | null): string | null {
+  const match = receiver?.match(/\.command\(\s*["'`]([^"'`\s]+)/);
+  return match?.[1] ?? null;
+}
+
 function handlerIdentifier(text: string): string | null {
   // Axum `.route("/x", get(handler))` 与普通 `app.get("/x", handler)`。
   const value = text.trim();
@@ -528,16 +599,14 @@ function unquote(text: string | undefined): string | null {
 }
 
 function dedupeEntries(entries: EntryCandidate[]): EntryCandidate[] {
+  // `program.command("scan").action(fn)` 在同一行产生两次注册：只有 action 那次带得出 handler
   const out = new Map<string, EntryCandidate>();
   for (const entry of entries) {
-    const key = `${entry.kind}:${entry.fileId}:${entry.line}:${entry.route ?? ""}:${entry.symbolId ?? ""}`;
-    if (!out.has(key)) out.set(key, entry);
+    const key = `${entry.kind}:${entry.fileId}:${entry.line}:${entry.route ?? ""}:${entry.label}`;
+    const existing = out.get(key);
+    if (!existing || (existing.symbolId === null && entry.symbolId !== null)) out.set(key, entry);
   }
   return [...out.values()];
-}
-
-function dedupeBoundaries(boundaries: BoundaryCandidate[]): BoundaryCandidate[] {
-  return [...new Map(boundaries.map((boundary) => [boundary.callSiteId, boundary])).values()];
 }
 
 function indexCalls(calls: readonly CallRow[]): Map<string, CallRow[]> {

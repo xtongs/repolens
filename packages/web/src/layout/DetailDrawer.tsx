@@ -326,7 +326,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
       <div className="p-3">
         <CallGraphButton detail={detail} />
         <RelationList title={t("调用它的")} items={detail.callers} />
-        <RelationList title={t("它调用的")} items={detail.callees} />
+        <RelationList title={t("它调用的")} items={detail.callees} atDefinition />
 
         {detail.externalCallees.length > 0 && (
           <div className="mt-3">
@@ -457,13 +457,20 @@ function CallGraphButton({ detail }: { detail: SymbolDetailDto }) {
   );
 }
 
+/**
+ * 调用方显示调用发生在它文件里的哪一行；被调方显示它自己定义在哪，
+ * 调用行属于当前符号的文件，和对方的文件名拼在一起是个不存在的位置。
+ */
 function RelationList({
   title,
   items,
+  atDefinition = false,
 }: {
   title: string;
   items: SymbolDetailDto["callers"];
+  atDefinition?: boolean;
 }) {
+  const t = useT();
   const select = useAppStore((s) => s.select);
   if (items.length === 0) return null;
 
@@ -481,11 +488,19 @@ function RelationList({
               className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-surface-2)]"
             >
               <span className="mono truncate text-[11.5px] text-[var(--color-ink)]">
-                {item.name}
+                {item.rendered ? `<${item.name} />` : item.name}
               </span>
+              {item.http && (
+                <span
+                  title={t("前端请求按 URL 对上的后端路由，没有 import 证据")}
+                  className="mono shrink-0 rounded border border-[var(--color-warn)]/40 px-1 text-[9.5px] text-[var(--color-warn)]"
+                >
+                  HTTP
+                </span>
+              )}
               <ConfidenceBadge value={item.confidence} />
               <span className="mono ml-auto shrink-0 text-[10px] text-[var(--color-ink-faint)]">
-                {item.path.split("/").at(-1)}:{item.line}
+                {item.path.split("/").at(-1)}:{atDefinition ? item.definedAt : item.line}
               </span>
             </button>
 

@@ -434,20 +434,16 @@ function tryPackageGraph(
 
   const edgeRows = db
     .prepare(
-      `SELECT src, dst, confidence, count FROM rollup_edges
-       WHERE level = 'package' AND type = 'imports'`,
+      `SELECT src, dst, type, confidence, count FROM rollup_edges
+       WHERE level = 'package' AND type IN ('imports', 'references', 'http')`,
     )
-    .all() as Array<{ src: string; dst: string; confidence: string; count: number }>;
+    .all() as Array<{ src: string; dst: string; type: string; confidence: string; count: number }>;
 
-  const edges: GraphEdgeDto[] = edgeRows.map((row) => ({
-    id: `pkg:${row.src}->pkg:${row.dst}`,
-    source: `pkg:${row.src}`,
-    target: `pkg:${row.dst}`,
-    type: "imports",
-    confidence: row.confidence as Confidence,
-    weight: row.count,
-    count: row.count,
-  }));
+  const merged = new Map<string, GraphEdgeDto>();
+  for (const row of edgeRows) {
+    mergeDependencyEdge(merged, `pkg:${row.src}`, `pkg:${row.dst}`, row.type, row.confidence as Confidence, row.count);
+  }
+  const edges = [...merged.values()];
 
   // scopeKey 必须是这张图真实挂载的 scope id：前端把聚合节点的 "agg:" 前缀
   // 剥掉后直接拿去请求父作用域，写成 "pkg" 会请求到一个不存在的 scope，
@@ -538,9 +534,10 @@ function directoryScopeGraph(
   // 目录级 rollup 边的端点是文件的直接父目录，需要向上归并到本层节点
   const rollups = db
     .prepare(
-      "SELECT src, dst, confidence, count FROM rollup_edges WHERE level = 'directory' AND type = 'imports'",
+      `SELECT src, dst, type, confidence, count FROM rollup_edges
+       WHERE level = 'directory' AND type IN ('imports', 'references', 'http')`,
     )
-    .all() as Array<{ src: string; dst: string; confidence: string; count: number }>;
+    .all() as Array<{ src: string; dst: string; type: string; confidence: string; count: number }>;
 
   const fileNodeByDir = new Map<string, string>();
   for (const file of looseFiles) fileNodeByDir.set(file.path, `file:${file.id}`);
@@ -561,31 +558,12 @@ function directoryScopeGraph(
   };
 
   const aggregated = new Map<string, GraphEdgeDto>();
-  const bump = (source: string, target: string, confidence: Confidence, count: number) => {
-    if (source === target) return;
-    const key = `${source}->${target}`;
-    const existing = aggregated.get(key);
-    if (existing) {
-      existing.count += count;
-      existing.weight += count;
-      return;
-    }
-    aggregated.set(key, {
-      id: key,
-      source,
-      target,
-      type: "imports",
-      confidence,
-      weight: count,
-      count,
-    });
-  };
 
   for (const row of rollups) {
     const source = resolveGroup(row.src);
     const target = resolveGroup(row.dst);
     if (source === null || target === null) continue;
-    bump(source, target, row.confidence as Confidence, row.count);
+    mergeDependencyEdge(aggregated, source, target, row.type, row.confidence as Confidence, row.count);
   }
 
   // 作用域下的散装文件之间的边要从文件级 edges 表直接取
@@ -594,17 +572,18 @@ function directoryScopeGraph(
     const inClause = ids.map(() => "?").join(",");
     const fileEdges = db
       .prepare(
-        `SELECT sf.path AS srcPath, tf.path AS dstPath, e.confidence, COUNT(*) AS count
+        `SELECT sf.path AS srcPath, tf.path AS dstPath, e.type, e.confidence, COUNT(*) AS count
          FROM edges e
          JOIN files sf ON sf.id = e.src_id
          JOIN files tf ON tf.id = e.dst_id
-         WHERE e.type = 'imports' AND e.src_kind = 'file' AND e.dst_kind = 'file'
+         WHERE e.type IN ('imports', 'references', 'http') AND e.src_kind = 'file' AND e.dst_kind = 'file'
            AND (e.src_id IN (${inClause}) OR e.dst_id IN (${inClause}))
-         GROUP BY sf.path, tf.path, e.confidence`,
+         GROUP BY sf.path, tf.path, e.type, e.confidence`,
       )
       .all(...ids, ...ids) as Array<{
       srcPath: string;
       dstPath: string;
+      type: string;
       confidence: string;
       count: number;
     }>;
@@ -613,7 +592,7 @@ function directoryScopeGraph(
       const source = fileNodeByDir.get(row.srcPath) ?? resolveGroup(dirOf(row.srcPath));
       const target = fileNodeByDir.get(row.dstPath) ?? resolveGroup(dirOf(row.dstPath));
       if (!source || !target) continue;
-      bump(source, target, row.confidence as Confidence, row.count);
+      mergeDependencyEdge(aggregated, source, target, row.type, row.confidence as Confidence, row.count);
     }
   }
 
@@ -626,6 +605,32 @@ function directoryScopeGraph(
     `dir:${scopeDir}`,
     keep,
   );
+}
+
+/**
+ * 同一对节点之间的运行时 import 与纯类型引用合并成一条边。只要有一条运行时
+ * import，这条边就是 imports；全是 `import type` 时才是 references，界面画成虚淡线。
+ * HTTP 请求是另一种依赖（推断的、跨进程的），单独成边，不并进 import。
+ */
+function mergeDependencyEdge(
+  store: Map<string, GraphEdgeDto>,
+  source: string,
+  target: string,
+  type: string,
+  confidence: Confidence,
+  count: number,
+): void {
+  if (source === target) return;
+  const edgeType = type === "http" ? "http" : type === "references" ? "references" : "imports";
+  const key = edgeType === "http" ? `${source}->${target}:http` : `${source}->${target}`;
+  const existing = store.get(key);
+  if (existing) {
+    existing.count += count;
+    existing.weight += count;
+    if (edgeType === "imports") existing.type = "imports";
+    return;
+  }
+  store.set(key, { id: key, source, target, type: edgeType, confidence, weight: count, count });
 }
 
 interface VisibleDirectoryRow {
@@ -965,11 +970,12 @@ function finalizeGraph(
       const source = foldedIds.has(edge.source) ? aggId : edge.source;
       const target = foldedIds.has(edge.target) ? aggId : edge.target;
       if (source === target) continue;
-      const key = `${source}->${target}`;
+      const key = edge.type === "http" ? `${source}->${target}:http` : `${source}->${target}`;
       const existing = remapped.get(key);
       if (existing) {
         existing.count += edge.count;
         existing.weight += edge.weight;
+        if (edge.type === "imports") existing.type = "imports";
         continue;
       }
       remapped.set(key, { ...edge, id: key, source, target });
@@ -1042,7 +1048,7 @@ function attachDetailRelationCounts(db: Db, nodes: readonly GraphNodeDto[]): voi
   const fileIncoming = groupedCounts(
     db, fileIds,
     `SELECT dst_id AS id, COUNT(DISTINCT src_id) AS n FROM edges
-     WHERE type = 'imports' AND src_kind = 'file' AND dst_kind = 'file' AND dst_id IN`,
+     WHERE type IN ('imports', 'references') AND src_kind = 'file' AND dst_kind = 'file' AND dst_id IN`,
     "GROUP BY dst_id",
   );
   const symbolOutgoing = groupedCounts(
@@ -1259,7 +1265,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
         .prepare(
           `SELECT DISTINCT sf.id, sf.path FROM edges e
            JOIN files sf ON sf.id = e.src_id
-           WHERE e.type = 'imports' AND e.dst_kind = 'file' AND e.dst_id = ?
+           WHERE e.type IN ('imports', 'references') AND e.dst_kind = 'file' AND e.dst_id = ?
            ORDER BY sf.path`,
         )
         .all(fileId) as Array<{ id: number; path: string }>
@@ -1297,12 +1303,12 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
     db
       .prepare(
         direction === "callers"
-          ? `SELECT s.id, s.name, s.kind, f.path, e.line, e.confidence, e.candidates
+          ? `SELECT s.id, s.name, s.container, s.kind, f.path, e.line, s.start_line AS defLine, e.confidence, e.candidates, e.call_kind AS callKind
              FROM edges e JOIN symbols s ON s.id = e.src_id JOIN files f ON f.id = s.file_id
              WHERE e.type = 'calls' AND e.src_kind = 'symbol'
                AND e.dst_kind = 'symbol' AND e.dst_id = ?
              ORDER BY e.weight DESC LIMIT 200`
-          : `SELECT s.id, s.name, s.kind, f.path, e.line, e.confidence, e.candidates
+          : `SELECT s.id, s.name, s.container, s.kind, f.path, e.line, s.start_line AS defLine, e.confidence, e.candidates, e.call_kind AS callKind
              FROM edges e JOIN symbols s ON s.id = e.dst_id JOIN files f ON f.id = s.file_id
              WHERE e.type = 'calls' AND e.dst_kind = 'symbol'
                AND e.src_kind = 'symbol' AND e.src_id = ?
@@ -1311,11 +1317,14 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
       .all(symbolId) as Array<{
       id: number;
       name: string;
+      container: string | null;
       kind: string;
       path: string;
       line: number | null;
+      defLine: number;
       confidence: string;
       candidates: string | null;
+      callKind: string | null;
     }>;
 
   const candidatePaths = db.prepare(
@@ -1324,10 +1333,11 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
 
   const toRelationDto = (r: ReturnType<typeof relation>[number]): RelationDto => ({
     id: `sym:${r.id}`,
-    name: r.name,
+    name: r.container !== null ? `${r.container}.${r.name}` : r.name,
     kind: r.kind as SymbolKind,
     path: r.path,
     line: r.line ?? 0,
+    definedAt: r.defLine,
     confidence: r.confidence as Confidence,
     // ambiguous 的候选必须能看到。只显示一个「猜的」目标而不给出其他可能，
     // 就把不确定性伪装成了确定性——这正是置信度分级想避免的。
@@ -1338,6 +1348,8 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
             .map((id) => candidatePaths.get(id) as { id: number; path: string } | undefined)
             .filter((c): c is { id: number; path: string } => c !== undefined)
             .map((c) => ({ id: `sym:${c.id}`, path: c.path })),
+    ...(r.callKind === "render" ? { rendered: true } : {}),
+    ...(r.callKind === "http" ? { http: true } : {}),
   });
 
   const externalCallees = db

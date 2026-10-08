@@ -93,4 +93,22 @@ describe("startServer", () => {
     expect((await remove({ "x-repolens-intent": "save-note" })).status).toBe(200);
     expect(await (await fetch(`${server.url}/api/notes`)).json()).toEqual({ notes: [] });
   });
+
+  it("变更对比要求意图标记；非 git 仓库和可疑的提交写法返回 400", async () => {
+    const repo = join(home, "plain");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src/a.ts"), "export function a() { return 1; }\n");
+    await scanRepo({ root: repo });
+    server = await startServer({ repoRoot: repo, port: 0 });
+    const compare = (base: string, headers: Record<string, string> = { "x-repolens-intent": "compare-changes" }) =>
+      fetch(`${server!.url}/api/changes?base=${encodeURIComponent(base)}`, { method: "POST", headers });
+
+    expect((await compare("HEAD", {})).status).toBe(403);
+    const plain = await compare("HEAD");
+    expect(plain.status).toBe(400);
+    expect(await plain.json()).toEqual({ error: "不是 git 仓库，没法按提交对比" });
+    const injected = await compare("--output=/tmp/x");
+    expect(injected.status).toBe(400);
+    expect(((await injected.json()) as { error: string }).error).toMatch(/^不支持的提交写法/);
+  });
 });

@@ -2,7 +2,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openDb, type Db } from "../db/database.js";
+import { indexPath, openDb, type Db } from "../db/database.js";
+import { scanRepo } from "../pipeline/scan.js";
 import { getFileDetail, getSymbolDetail, symbolKey } from "../db/queries.js";
 import { getCachedSemantic, putCachedSemantic } from "./cache.js";
 import {
@@ -304,5 +305,78 @@ describe("dropSemanticsFromOutdatedInput", () => {
     });
     dropSemanticsFromOutdatedInput(db, repo);
     expect(cache("file", "demo.ipynb")).toBe("1. 新结果");
+  });
+});
+
+describe("架构分层", () => {
+  it("分层请求带上模块间依赖方向、外部库、入口和导出；单包仓库沿 src 下钻到有分叉的一层", async () => {
+    const repo = tempDir("repolens-layers-repo-");
+    const configHome = tempDir("repolens-layers-config-");
+    const files: Record<string, string> = {
+      "package.json": JSON.stringify({ name: "app", type: "module" }),
+      "src/ui/App.tsx": 'import React from "react";\nimport { load } from "../api/client";\nexport function App() { return React.createElement("div", null, load()); }\n',
+      "src/api/client.ts": 'import type { Row } from "../db/types";\nimport { query } from "../db/store";\nexport function load(): Row[] { return query(); }\n',
+      "src/api/routes.ts": 'import { Hono } from "hono";\nimport { load } from "./client";\nconst app = new Hono();\napp.get("/rows", (c) => c.json(load()));\nexport default app;\n',
+      "src/db/store.ts": 'import Database from "better-sqlite3";\nexport function query() { new Database(":memory:"); return []; }\n',
+      "src/db/types.ts": "export type Row = { id: string };\n",
+    };
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(join(repo, path, ".."), { recursive: true });
+      writeFileSync(join(repo, path), content);
+    }
+    mkdirSync(join(configHome, "repolens"));
+    writeFileSync(join(configHome, "repolens/config.json"), JSON.stringify({
+      llm: { baseUrl: "http://llm.test/v1", model: "test-model", apiKeyEnv: "REPOLENS_LAYERS_TEST_KEY", maxRetries: 0 },
+    }));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    vi.stubEnv("REPOLENS_LAYERS_TEST_KEY", "test-secret");
+
+    let architecture: { allowedNodes: Array<Record<string, unknown>>; dependencies: unknown[] } | null = null;
+    vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      const system = body.messages.find((m) => m.role === "system")?.content ?? "";
+      const user = body.messages.find((m) => m.role === "user")?.content ?? "{}";
+      let content: unknown = { items: [] };
+      if (system.includes("代码架构分析器")) {
+        architecture = JSON.parse(user) as typeof architecture;
+        content = {
+          summary: "一个三层的小应用。",
+          layers: [
+            { name: "界面", description: "React 组件", nodeIds: ["dir:src/ui"] },
+            { name: "接口", description: "HTTP 路由", nodeIds: ["dir:src/api", "dir:nope"] },
+            { name: "存储", description: "SQLite", nodeIds: ["dir:src/db"] },
+          ],
+        };
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(content) } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    await scanRepo({ root: repo, fresh: true });
+
+    expect(architecture).not.toBeNull();
+    const nodes = architecture!.allowedNodes.map(({ id, files: count, exports, externals, entries }) => ({ id, files: count, exports, externals, entries }));
+    expect(nodes).toEqual(expect.arrayContaining([
+      { id: "dir:src/ui", files: 1, exports: ["App"], externals: ["react"], entries: expect.any(Array) },
+      { id: "dir:src/api", files: 2, exports: ["load"], externals: ["hono"], entries: expect.arrayContaining(["http"]) },
+      { id: "dir:src/db", files: 2, exports: expect.arrayContaining(["query", "Row"]), externals: ["better-sqlite3"], entries: expect.any(Array) },
+    ]));
+    expect(nodes).toHaveLength(3);
+    expect(architecture!.dependencies).toEqual(expect.arrayContaining([
+      { from: "dir:src/ui", to: "dir:src/api", count: 1, kind: "import" },
+      { from: "dir:src/api", to: "dir:src/db", count: 1, kind: "import" },
+      { from: "dir:src/api", to: "dir:src/db", count: 1, kind: "type" },
+    ]));
+    expect(architecture!.dependencies).toHaveLength(3);
+
+    db = openDb(indexPath(repo), { readonly: true });
+    const layers = db.prepare("SELECT name, members FROM layers ORDER BY ordinal").all();
+    expect(layers).toEqual([
+      { name: "界面", members: '["dir:src/ui"]' },
+      { name: "接口", members: '["dir:src/api"]' },
+      { name: "存储", members: '["dir:src/db"]' },
+    ]);
   });
 });

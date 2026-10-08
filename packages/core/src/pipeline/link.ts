@@ -1,8 +1,9 @@
 import type { Db } from "../db/database.js";
 import type { EdgeRow, IndexWriter, RollupEdgeRow, SearchRow } from "../db/writer.js";
 import { dirOf } from "../resolve/path-utils.js";
-import type { Confidence } from "../types.js";
+import type { ArchitectureRule, Confidence, HttpLinkStats } from "../types.js";
 import { type DiagnoseStats, diagnose } from "./diagnose.js";
+import { linkHttpEdges } from "./http-links.js";
 import { linkCallEdges } from "./link-calls.js";
 import { analyzeTraces, type TraceAnalysisStats } from "./trace.js";
 
@@ -11,6 +12,7 @@ export interface LinkStats {
   callsByConfidence: Record<Confidence, number>;
   findings: DiagnoseStats;
   traces: TraceAnalysisStats;
+  http: HttpLinkStats;
 }
 
 /**
@@ -20,18 +22,20 @@ export interface LinkStats {
  * 增量地维护正确性远比重算一次贵。重算的输入全在 SQLite 里，
  * 不需要重新解析源码，40 万行规模下是秒级操作。
  */
-export function linkGraph(db: Db, writer: IndexWriter): LinkStats {
+export function linkGraph(db: Db, writer: IndexWriter, rules: readonly ArchitectureRule[] = []): LinkStats {
   writer.clearDerived();
 
   linkImportEdges(db, writer);
   const calls = linkCallEdges(db, (edges) => writer.insertEdges(edges));
   linkTypeRelations(db);
   const traces = analyzeTraces(db);
+  // 路由表来自入口识别，所以排在链路分析之后；链路因此也不会跨过网络边界
+  const http = linkHttpEdges(db, writer);
   buildSearchIndex(db, writer);
   // 体检要在 rollup 边建好之后跑，环检测读的就是那张表
-  const findings = diagnose(db, writer);
+  const findings = diagnose(db, writer, rules);
 
-  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings, traces };
+  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings, traces, http };
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +53,8 @@ interface ImportEdgeSource {
   externalName: string | null;
   confidence: Confidence;
   isTypeOnly: number;
+  fileRole: string;
+  targetRole: string | null;
 }
 
 function linkImportEdges(db: Db, writer: IndexWriter): void {
@@ -57,6 +63,8 @@ function linkImportEdges(db: Db, writer: IndexWriter): void {
       `SELECT
          i.file_id        AS fileId,
          sf.path          AS filePath,
+         sf.role          AS fileRole,
+         tf.role          AS targetRole,
          sp.name          AS filePackage,
          i.target_file_id AS targetFileId,
          tf.path          AS targetPath,
@@ -79,33 +87,39 @@ function linkImportEdges(db: Db, writer: IndexWriter): void {
   const dirRollup = new Map<string, RollupEdgeRow>();
   const pkgRollup = new Map<string, RollupEdgeRow>();
 
+  // `import type` 只在编译期存在，记成 references 而不是 imports：
+  // 前端只 import 后端的类型时，架构图上不该出现一条运行时依赖，
+  // 循环检测也不该把「互相引用类型」报成模块环。
   const bumpRollup = (
     store: Map<string, RollupEdgeRow>,
     level: "directory" | "package",
     src: string,
     dst: string,
-    confidence: Confidence,
+    typeOnly: boolean,
   ) => {
     if (src === dst) return;
-    const key = `${src}\u0000${dst}\u0000${confidence}`;
+    const type = typeOnly ? "references" : "imports";
+    const key = `${src}\u0000${dst}\u0000${type}`;
     const existing = store.get(key);
     if (existing) {
       existing.count++;
       existing.weight++;
       return;
     }
-    store.set(key, { level, type: "imports", src, dst, confidence, count: 1, weight: 1 });
+    store.set(key, { level, type, src, dst, confidence: "exact", count: 1, weight: 1 });
   };
 
   for (const row of rows) {
+    const typeOnly = row.isTypeOnly === 1;
     if (row.targetFileId !== null && row.targetPath !== null) {
       const key = `${row.fileId}->${row.targetFileId}`;
       const existing = fileEdges.get(key);
       if (existing) {
         existing.weight++;
+        if (!typeOnly) existing.type = "imports";
       } else {
         fileEdges.set(key, {
-          type: "imports",
+          type: typeOnly ? "references" : "imports",
           srcKind: "file",
           srcId: row.fileId,
           dstKind: "file",
@@ -118,9 +132,13 @@ function linkImportEdges(db: Db, writer: IndexWriter): void {
           weight: 1,
         });
       }
-      bumpRollup(dirRollup, "directory", dirOf(row.filePath), dirOf(row.targetPath), "exact");
-      if (row.filePackage !== null && row.targetPackage !== null) {
-        bumpRollup(pkgRollup, "package", row.filePackage, row.targetPackage, "exact");
+      // 目录/包之间的边讲的是产品代码的架构：测试和脚本 import 被测模块，
+      // 会让架构图多出反向边、让循环检测报出不存在的模块环
+      if (row.fileRole === "source" && row.targetRole === "source") {
+        bumpRollup(dirRollup, "directory", dirOf(row.filePath), dirOf(row.targetPath), typeOnly);
+        if (row.filePackage !== null && row.targetPackage !== null) {
+          bumpRollup(pkgRollup, "package", row.filePackage, row.targetPackage, typeOnly);
+        }
       }
       continue;
     }
@@ -128,7 +146,7 @@ function linkImportEdges(db: Db, writer: IndexWriter): void {
     if (row.targetDir !== null) {
       // Go 的 import 是包级的，落在目录上；不展开成对每个文件的边，
       // 否则一个 import 会凭空产生该包文件数那么多条边。
-      bumpRollup(dirRollup, "directory", dirOf(row.filePath), row.targetDir, "exact");
+      if (row.fileRole === "source") bumpRollup(dirRollup, "directory", dirOf(row.filePath), row.targetDir, typeOnly);
       continue;
     }
 

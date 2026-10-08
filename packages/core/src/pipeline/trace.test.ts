@@ -170,7 +170,7 @@ describe("M4 trace analysis", () => {
     } finally { db.close(); }
   });
 
-  it("同一行的多个边界调用按实参区分且不会重复写步骤", async () => {
+  it("同一函数的同类边界合并成一条链路，且不会重复写步骤", async () => {
     const root = mkdtempSync(join(tmpdir(), "repolens-trace-collision-"));
     roots.push(root);
     mkdirSync(join(root, "src"));
@@ -188,11 +188,47 @@ describe("M4 trace analysis", () => {
     try {
       const entry = getEntryPoints(db).find((item) => item.label === "choose");
       const traces = getTraceSummaries(db, Number(entry?.id.split(":")[1]));
-      expect(traces).toHaveLength(2);
-      const args = traces.map((summary) =>
-        getTrace(db, Number(summary.id.split(":")[1]))?.orderedSteps.at(-1)?.arguments[0],
-      );
-      expect(args.sort()).toEqual(["\"left\"", "\"right\""]);
+      expect(traces).toHaveLength(1);
+      const trace = getTrace(db, Number(traces[0]?.id.split(":")[1]));
+      expect(trace?.orderedSteps.map((step) => step.kind)).toEqual(["entry", "boundary"]);
+      expect(trace?.orderedSteps.at(-1)?.arguments).toEqual(["\"left\""]);
+    } finally { db.close(); }
+  });
+
+  it("边界标签折叠实参；下游同类 I/O 不再单独成链", async () => {
+    const root = mkdtempSync(join(tmpdir(), "repolens-trace-noise-"));
+    roots.push(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "trace-noise", type: "module" }));
+    writeFileSync(join(root, ".repolens.json"), JSON.stringify({ llm: { enabled: false } }));
+    writeFileSync(join(root, "src/server.ts"), `
+      import { readFileSync } from "node:fs";
+      const app = { get(path: string, handler: unknown): void {} };
+      const db = { prepare(sql: string) { return { get(...a: unknown[]) { return a; }, run(...a: unknown[]) { return a; } }; } };
+
+      function getMeta(key: string) { return db.prepare("SELECT value FROM meta WHERE key = ?").get(key); }
+      function openDb() {
+        db.prepare("PRAGMA journal_mode = WAL").run();
+        return getMeta("schema_version");
+      }
+      function overview() {
+        openDb();
+        const files = db.prepare("SELECT COUNT(*) FROM files").get();
+        const symbols = db.prepare("SELECT COUNT(*) FROM symbols").get();
+        return [files, symbols, readFileSync("README.md", "utf8")];
+      }
+      app.get("/overview", overview);
+    `);
+
+    await scanRepo({ root, fresh: true });
+    const db = openDb(indexPath(root), { readonly: true });
+    try {
+      const entry = getEntryPoints(db).find((item) => item.label === "GET /overview");
+      const labels = getTraceSummaries(db, Number(entry?.id.split(":")[1])).map((summary) => summary.label).sort();
+      expect(labels).toEqual([
+        "GET /overview → 数据库 · db.prepare(…).get",
+        "GET /overview → 文件系统 · readFileSync",
+      ]);
     } finally { db.close(); }
   });
 
@@ -223,6 +259,60 @@ describe("M4 trace analysis", () => {
         .toEqual(["publicTask"]);
       expect(entries.filter((entry) => entry.kind === "cli").map((entry) => entry.label))
         .toEqual(["CLI serve"]);
+    } finally { db.close(); }
+  });
+
+  it("内联路由 / CLI 回调合成独立符号，入口能追出链路", async () => {
+    const root = mkdtempSync(join(tmpdir(), "repolens-trace-inline-"));
+    roots.push(root);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "trace-inline", type: "module" }));
+    writeFileSync(join(root, ".repolens.json"), JSON.stringify({ llm: { enabled: false } }));
+    writeFileSync(join(root, "src/api.ts"), `
+      import { Hono } from "hono";
+      import { Command } from "commander";
+      import { readFileSync } from "node:fs";
+
+      function loadReport(id: string): string { return readFileSync(id, "utf8"); }
+
+      export function createApi() {
+        const app = new Hono();
+        app.get("/reports/:id", (c) => {
+          return c.json(loadReport(c.req.param("id")));
+        });
+        app.post("/reports", async (c) => c.json(await c.req.json()));
+        return app;
+      }
+
+      const program = new Command();
+      program
+        .command("dump [path]")
+        .option("-q, --quiet", "quiet", false)
+        .action(async (path: string) => {
+          loadReport(path);
+        });
+    `);
+
+    await scanRepo({ root, fresh: true });
+    const db = openDb(indexPath(root), { readonly: true });
+    try {
+      const names = (db.prepare("SELECT name FROM symbols ORDER BY start_line").all() as { name: string }[])
+        .map((row) => row.name);
+      expect(names).toEqual(["loadReport", "createApi", "GET /reports/:id", "POST /reports", "program", "CLI dump"]);
+
+      const entries = getEntryPoints(db);
+      const get = entries.find((entry) => entry.label === "GET /reports/:id");
+      expect(get).toMatchObject({ kind: "http", confidence: "exact", traceCount: 1 });
+      expect(entries.filter((entry) => entry.kind === "cli")).toEqual([
+        expect.objectContaining({ label: "CLI dump", confidence: "exact", traceCount: 1 }),
+      ]);
+
+      const trace = getTrace(db, Number(getTraceSummaries(db, Number(get?.id.split(":")[1]))[0]?.id.split(":")[1]));
+      expect(trace?.orderedSteps.map((step) => [step.kind, step.label])).toEqual([
+        ["entry", "GET /reports/:id"],
+        ["call", "loadReport"],
+        ["boundary", "文件系统 · readFileSync"],
+      ]);
     } finally { db.close(); }
   });
 });

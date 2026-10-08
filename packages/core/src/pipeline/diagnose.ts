@@ -1,5 +1,7 @@
 import type { Db } from "../db/database.js";
 import type { FindingRow, IndexWriter } from "../db/writer.js";
+import type { ArchitectureRule } from "../types.js";
+import { evaluateRules, type RuleViolation } from "./rules.js";
 
 /**
  * 架构体检：从已链接的图里找出结构上可疑的地方。
@@ -18,16 +20,20 @@ import type { FindingRow, IndexWriter } from "../db/writer.js";
 export interface DiagnoseStats {
   duplicate: number;
   cycle: number;
+  violation: number;
+  oversized: number;
 }
 
-export function diagnose(db: Db, writer: IndexWriter): DiagnoseStats {
+export function diagnose(db: Db, writer: IndexWriter, rules: readonly ArchitectureRule[] = []): DiagnoseStats {
   const findings: FindingRow[] = [];
 
   const duplicate = detectDuplicates(db, findings);
   const cycle = detectCycles(db, findings);
+  const violation = detectViolations(db, rules, findings);
+  const oversized = detectOversized(db, findings);
 
   writer.insertFindings(findings);
-  return { duplicate, cycle };
+  return { duplicate, cycle, violation, oversized };
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +161,7 @@ function detectCycles(db: Db, out: FindingRow[]): number {
       .prepare(
         `SELECT a.src AS src, a.dst AS dst, a.count AS forward, b.count AS backward
          FROM rollup_edges a
-         JOIN rollup_edges b ON a.src = b.dst AND a.dst = b.src AND b.level = a.level
+         JOIN rollup_edges b ON a.src = b.dst AND a.dst = b.src AND b.level = a.level AND b.type = a.type
          WHERE a.level = ? AND a.type = 'imports' AND a.src < a.dst`,
       )
       .all(level) as Array<{ src: string; dst: string; forward: number; backward: number }>;
@@ -192,6 +198,144 @@ function detectCycles(db: Db, out: FindingRow[]): number {
   }
 
   return count;
+}
+
+// ---------------------------------------------------------------------------
+// 架构规则
+// ---------------------------------------------------------------------------
+
+/**
+ * 违反 `.repolens.json` 里依赖禁令的 import，每个违规文件一条。
+ *
+ * 按文件而不是按 import 挂：一个文件往往连着好几处越界引用，改的时候也是
+ * 一起改；上卷之后在包级就能看出越界集中在哪一块。
+ */
+function detectViolations(db: Db, rules: readonly ArchitectureRule[], out: FindingRow[]): number {
+  let count = 0;
+  for (const report of evaluateRules(db, rules)) {
+    const byFile = new Map<number, RuleViolation[]>();
+    for (const violation of report.violations) {
+      const bucket = byFile.get(violation.fileId);
+      if (bucket) bucket.push(violation);
+      else byFile.set(violation.fileId, [violation]);
+    }
+
+    for (const [fileId, violations] of byFile) {
+      const first = violations[0]!;
+      const targets = [...new Set(violations.map((v) => v.target))];
+      const lines = violations.map((v) => `${v.filePath}:${v.line} → ${v.target}${v.typeOnly ? "（仅类型）" : ""}`);
+      const related = [
+        `file:${fileId}`,
+        ...new Set(violations.flatMap((v) => (v.targetFileId === null ? [] : [`file:${v.targetFileId}`]))),
+      ];
+      count++;
+      out.push({
+        kind: "violation",
+        severity: report.rule.severity,
+        scopeKind: "file",
+        scopeKey: `file:${fileId}`,
+        path: first.filePath,
+        title: targets.length > 1
+          ? `违反「${report.label}」：依赖 ${targets[0]} 等 ${targets.length} 个目标`
+          : `违反「${report.label}」：依赖 ${targets[0]}`,
+        detail: [report.rule.reason, ...lines].filter(Boolean).join("\n"),
+        related,
+        groupKey: `rule:${report.label}\u0000${first.filePath}`,
+      });
+    }
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// 过大的函数和文件
+// ---------------------------------------------------------------------------
+
+/**
+ * 读不动的函数和文件：人审 AI 生成的代码时，最先失控的就是这些地方。
+ *
+ * 判据依次排除：
+ * - 只长不绕的函数——纯布局的组件、一长串字段映射，行数多但一眼能读完。
+ *   所以长度要和复杂度一起看，单看行数时 RepoLens 自己会多报一批表单组件
+ * - 嵌套函数撑大的外层——复杂度只算函数自己那部分（见 excludeNestedComplexity），
+ *   否则一个挂满内联路由的 createApi 会因为 handler 的分支被报成巨石
+ * - 类型声明、词典这种大文件——文件要同时够长、函数的总复杂度够高才算
+ *
+ * 阈值按 RepoLens 自身（1153 个函数）校准：报出 9 个函数、1 个文件，
+ * 都是人读起来确实要停下来的地方。
+ */
+const COMPLEX_FUNCTION = 25;
+const LONG_FUNCTION_LINES = 200;
+const LONG_FUNCTION_MIN_COMPLEXITY = 10;
+const LARGE_FILE_LOC = 1000;
+const LARGE_FILE_MIN_COMPLEXITY = 100;
+
+function detectOversized(db: Db, out: FindingRow[]): number {
+  const functions = db
+    .prepare(
+      `SELECT s.id, s.name, s.container, s.complexity, s.start_line AS line,
+              (s.end_line - s.start_line + 1) AS lines, f.path
+       FROM symbols s JOIN files f ON f.id = s.file_id
+       WHERE f.role = 'source'
+         AND s.kind IN ('function', 'method')
+         AND (s.complexity >= ${COMPLEX_FUNCTION}
+              OR ((s.end_line - s.start_line + 1) >= ${LONG_FUNCTION_LINES}
+                  AND s.complexity >= ${LONG_FUNCTION_MIN_COMPLEXITY}))`,
+    )
+    .all() as Array<{ id: number; name: string; container: string | null; complexity: number; line: number; lines: number; path: string }>;
+
+  for (const fn of functions) {
+    const name = `${fn.container ? `${fn.container}.` : ""}${fn.name}`;
+    const complex = fn.complexity >= COMPLEX_FUNCTION;
+    out.push({
+      kind: "oversized",
+      severity: fn.complexity >= COMPLEX_FUNCTION * 2 || fn.lines >= LONG_FUNCTION_LINES * 2 ? "medium" : "low",
+      scopeKind: "symbol",
+      scopeKey: `sym:${fn.id}`,
+      path: fn.path,
+      title: complex
+        ? `${name}() 分支过多：复杂度 ${fn.complexity}，${fn.lines} 行`
+        : `${name}() 过长：${fn.lines} 行，复杂度 ${fn.complexity}`,
+      detail: `${fn.path}:${fn.line}\n` + (complex
+        ? `分支越多越难一眼看懂、也越难测全。按分支把逻辑拆成几个命名清楚的小函数，读的时候只需要看名字。`
+        : `一个函数里装了太多步骤。按步骤拆开，每一步的名字就是这段流程的目录。`),
+      related: [`sym:${fn.id}`],
+      groupKey: `oversized:${fn.path}\u0000${name}`,
+    });
+  }
+
+  // 只累加函数：每个类型声明、常量也各算 1，按文件合计的话一千个 type 就能凑够阈值
+  const files = db
+    .prepare(
+      `SELECT f.id, f.path, f.loc, COUNT(s.id) AS functions, SUM(s.complexity) AS complexity
+       FROM files f JOIN symbols s ON s.file_id = f.id AND s.kind IN ('function', 'method')
+       WHERE f.role = 'source' AND f.loc >= ${LARGE_FILE_LOC}
+       GROUP BY f.id
+       HAVING SUM(s.complexity) >= ${LARGE_FILE_MIN_COMPLEXITY}`,
+    )
+    .all() as Array<{ id: number; path: string; loc: number; functions: number; complexity: number }>;
+  const largest = db.prepare(
+    `SELECT name, container, (end_line - start_line + 1) AS lines FROM symbols
+     WHERE file_id = ? AND kind IN ('function', 'method') ORDER BY lines DESC LIMIT 5`,
+  );
+
+  for (const file of files) {
+    const top = largest.all(file.id) as Array<{ name: string; container: string | null; lines: number }>;
+    out.push({
+      kind: "oversized",
+      severity: "low",
+      scopeKind: "file",
+      scopeKey: `file:${file.id}`,
+      path: file.path,
+      title: `文件过大：${file.loc} 行代码，${file.functions} 个函数，总复杂度 ${file.complexity}`,
+      detail: `最长的几个函数，通常就是拆分的切口：\n` +
+        top.map((s) => `${s.container ? `${s.container}.` : ""}${s.name}（${s.lines} 行）`).join("\n"),
+      related: [`file:${file.id}`],
+      groupKey: `oversized:${file.path}`,
+    });
+  }
+
+  return functions.length + files.length;
 }
 
 /** a 是否为 b 的祖先目录，或反之 */

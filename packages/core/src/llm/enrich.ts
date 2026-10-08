@@ -73,6 +73,7 @@ const traceInflight = new Map<string, Promise<TraceNarrativeResultDto>>();
 /** 发给模型的源码形式变了就加一，由 dropSemanticsFromOutdatedInput 清掉受影响的缓存 */
 const SEMANTIC_INPUT_VERSION = "2";
 const SEMANTIC_INPUT_VERSION_KEY = "semantic_input_version";
+const MAX_ARCHITECTURE_DEPENDENCIES = 150;
 
 export function semanticInputOutdated(db: Db): boolean {
   return getMeta(db, SEMANTIC_INPUT_VERSION_KEY) !== SEMANTIC_INPUT_VERSION;
@@ -151,8 +152,8 @@ export async function enrichRepository(db: Db, root: string, config: LlmConfig):
   // 缓存有效性只由结构指纹决定，与本次有没有 key 无关。先清过期内容，
   // 否则断网扫描后 UI 仍会展示已经与源码不一致的旧解释。
   const repoHash = repositoryHash(db);
-  const architectureNodes = architectureCandidates(db);
-  const architectureHash = digest([repoHash, architectureNodes, config.outputLanguage, config.model]);
+  const architecture = architectureInput(db);
+  const architectureHash = digest([repoHash, architecture, config.outputLanguage, config.model]);
   const cachedRepo = getCachedSemantic(
     db, "repo", ".", "summary", config.outputLanguage, repoHash, config.model,
   );
@@ -203,12 +204,13 @@ export async function enrichRepository(db: Db, root: string, config: LlmConfig):
           architectureSystem(config.outputLanguage),
           JSON.stringify({
             repository: repositoryContext(db),
-            allowedNodes: architectureNodes,
+            allowedNodes: withCachedSummaries(db, architecture.nodes, config.outputLanguage),
+            dependencies: architecture.dependencies.slice(0, MAX_ARCHITECTURE_DEPENDENCIES),
           }),
         );
         addUsage(stats, result.usage);
         const summary = cleanText(result.data.summary, 2_000);
-        const layers = cleanLayers(result.data.layers, new Set(architectureNodes.map((n) => n.id)));
+        const layers = cleanLayers(result.data.layers, new Set(architecture.nodes.map((n) => n.id)));
         transact(db, () => {
           if (summary !== null) {
             putCachedSemantic(db, {
@@ -701,16 +703,147 @@ function repositoryContext(db: Db): Record<string, unknown> {
   return { name: getMeta(db, "repo_name"), totals, languages, packages };
 }
 
-function architectureCandidates(db: Db): Array<{ id: string; label: string; path: string }> {
+interface ArchitectureNode {
+  id: string;
+  label: string;
+  path: string;
+  files: number;
+  loc: number;
+  /** 被调用最多的导出符号：这一块对外提供什么 */
+  exports: string[];
+  /** 用到的外部库：react 之于界面、better-sqlite3 之于存储，是判断职责最直接的证据 */
+  externals: string[];
+  /** 承载的入口类型：http / cli / main / public-api */
+  entries: string[];
+}
+
+type DependencyKind = "import" | "type" | "http";
+
+interface ArchitectureInput {
+  nodes: ArchitectureNode[];
+  /** from 依赖 to：import 是运行时依赖，type 只引用类型，http 是前端按 URL 请求后端路由 */
+  dependencies: Array<{ from: string; to: string; count: number; kind: DependencyKind }>;
+}
+
+/**
+ * 分层的输入。只给名字和路径时，模型只能按目录名猜；这里把能说明职责和
+ * 上下位置的确定性证据一起给它：模块之间谁依赖谁、各自用了哪些外部库、
+ * 承载了哪些入口、对外提供哪些函数。
+ */
+function architectureInput(db: Db): ArchitectureInput {
+  const candidates = architectureCandidates(db);
+  const byId = new Map(candidates.map((c) => [c.id, { ...c, files: 0, loc: 0, exports: [] as string[], externals: [] as string[], entries: [] as string[] }]));
+  const ownerOfFile = new Map<number, string>();
+  const byPackage = new Map(candidates.flatMap((c) => (c.packageId === undefined ? [] : [[c.packageId, c.id] as const])));
+  const byPath = candidates.filter((c) => c.packageId === undefined).sort((a, b) => b.path.length - a.path.length);
+
+  for (const file of db.prepare("SELECT id, path, loc, package_id AS packageId FROM files WHERE role = 'source'").all() as Array<{
+    id: number; path: string; loc: number; packageId: number | null;
+  }>) {
+    const owner = byPackage.size > 0
+      ? (file.packageId === null ? undefined : byPackage.get(file.packageId))
+      : byPath.find((c) => file.path.startsWith(`${c.path}/`))?.id;
+    if (owner === undefined) continue;
+    ownerOfFile.set(file.id, owner);
+    const node = byId.get(owner)!;
+    node.files++;
+    node.loc += file.loc;
+  }
+
+  const deps = new Map<string, ArchitectureInput["dependencies"][number]>();
+  const externals = new Map<string, Map<string, number>>();
+  for (const edge of db.prepare(
+    `SELECT src_id AS src, dst_id AS dst, dst_kind AS dstKind, dst_name AS name, type, weight FROM edges
+     WHERE src_kind = 'file' AND ((dst_kind = 'file' AND type IN ('imports', 'references', 'http')) OR dst_kind = 'external')`,
+  ).all() as Array<{ src: number; dst: number | null; dstKind: string; name: string | null; type: string; weight: number }>) {
+    const from = ownerOfFile.get(edge.src);
+    if (from === undefined) continue;
+    if (edge.dstKind === "external") {
+      if (edge.name === null) continue;
+      const counts = externals.get(from) ?? new Map<string, number>();
+      counts.set(edge.name, (counts.get(edge.name) ?? 0) + edge.weight);
+      externals.set(from, counts);
+      continue;
+    }
+    const to = edge.dst === null ? undefined : ownerOfFile.get(edge.dst);
+    if (to === undefined || to === from) continue;
+    const kind: DependencyKind = edge.type === "references" ? "type" : edge.type === "http" ? "http" : "import";
+    const key = `${from}\u0000${to}\u0000${kind}`;
+    const existing = deps.get(key);
+    if (existing) existing.count += edge.weight;
+    else deps.set(key, { from, to, count: edge.weight, kind });
+  }
+  for (const [id, counts] of externals) {
+    byId.get(id)!.externals = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name]) => name);
+  }
+
+  for (const entry of db.prepare("SELECT DISTINCT file_id AS fileId, kind FROM entry_points WHERE kind != 'test'").all() as Array<{ fileId: number; kind: string }>) {
+    const owner = ownerOfFile.get(entry.fileId);
+    const node = owner === undefined ? undefined : byId.get(owner);
+    if (node && !node.entries.includes(entry.kind)) node.entries.push(entry.kind);
+  }
+
+  for (const symbol of db.prepare(
+    `SELECT s.name, s.file_id AS fileId, COUNT(e.id) AS callers FROM symbols s
+     LEFT JOIN edges e ON e.type = 'calls' AND e.dst_kind = 'symbol' AND e.dst_id = s.id
+     WHERE s.exported = 1 GROUP BY s.id ORDER BY callers DESC, s.name`,
+  ).all() as Array<{ name: string; fileId: number }>) {
+    const owner = ownerOfFile.get(symbol.fileId);
+    const node = owner === undefined ? undefined : byId.get(owner);
+    if (node && node.exports.length < 8 && !node.exports.includes(symbol.name)) node.exports.push(symbol.name);
+  }
+
+  return {
+    nodes: [...byId.values()].map(({ packageId: _packageId, ...node }) => node),
+    dependencies: [...deps.values()].sort((a, b) => b.count - a.count),
+  };
+}
+
+/**
+ * 分层的候选模块：多包仓库按包；单包按目录。单包仓库常见的形状是根目录下
+ * 只有一个 src/，按第一层目录分只会得到一个候选，所以沿着「只有一个子目录
+ * 装着全部源码」的链往下走，直到出现分叉。
+ */
+function architectureCandidates(db: Db): Array<{ id: string; label: string; path: string; packageId?: number }> {
   const packages = db.prepare(
-    `SELECT p.name, p.dir, COUNT(f.id) AS files FROM packages p
+    `SELECT p.id, p.name, p.dir, COUNT(f.id) AS files FROM packages p
      LEFT JOIN files f ON f.package_id = p.id AND f.role = 'source'
      GROUP BY p.id HAVING files > 0 ORDER BY files DESC`,
-  ).all() as Array<{ name: string; dir: string; files: number }>;
-  if (packages.length >= 2) return packages.map((p) => ({ id: `pkg:${p.name}`, label: p.name, path: p.dir }));
-  return (db.prepare(
-    "SELECT path, name AS label FROM directories WHERE depth = 1 AND file_count > 0 ORDER BY loc DESC LIMIT 100",
-  ).all() as Array<{ path: string; label: string }>).map((d) => ({ id: `dir:${d.path}`, label: d.label, path: d.path }));
+  ).all() as Array<{ id: number; name: string; dir: string; files: number }>;
+  if (packages.length >= 2) {
+    return packages.map((p) => ({ id: `pkg:${p.name}`, label: p.name, path: p.dir, packageId: p.id }));
+  }
+
+  const children = db.prepare("SELECT path, name FROM directories WHERE parent_path = ? ORDER BY loc DESC");
+  const sourceUnder = db.prepare(
+    "SELECT COUNT(*) AS n FROM files WHERE role = 'source' AND (dir_path = ? OR path LIKE ? || '/%')",
+  );
+  const sourceDirectlyIn = db.prepare("SELECT COUNT(*) AS n FROM files WHERE role = 'source' AND dir_path = ?");
+  let current = ".";
+  for (let depth = 0; depth < 8; depth++) {
+    const kids = (children.all(current) as Array<{ path: string; name: string }>)
+      .filter((dir) => (sourceUnder.get(dir.path, dir.path) as { n: number }).n > 0);
+    if (kids.length === 1 && (sourceDirectlyIn.get(current) as { n: number }).n === 0) {
+      current = kids[0]!.path;
+      continue;
+    }
+    return kids.slice(0, 100).map((dir) => ({ id: `dir:${dir.path}`, label: dir.name, path: dir.path }));
+  }
+  return [];
+}
+
+/** 已有的包/目录一句话摘要只放进提示，不进缓存指纹：它们晚一轮才生成，算进去每次扫描都会让分层白白重算 */
+function withCachedSummaries(db: Db, nodes: readonly ArchitectureNode[], lang: string): Array<ArchitectureNode & { summary?: string }> {
+  const lookup = db.prepare(
+    `SELECT content FROM summaries WHERE target_kind = ? AND target_key = ? AND flavor = 'summary' AND lang = ?
+     ORDER BY created_at DESC LIMIT 1`,
+  );
+  return nodes.map((node) => {
+    const kind = node.id.startsWith("pkg:") ? "package" : "directory";
+    const key = node.id.startsWith("pkg:") ? node.label : node.path;
+    const row = lookup.get(kind, key, lang) as { content: string } | undefined;
+    return row ? { ...node, summary: row.content } : node;
+  });
 }
 
 function layersAreFresh(db: Db, hash: string): boolean {
@@ -811,6 +944,12 @@ function languageName(lang: "zh" | "en"): string {
 
 function architectureSystem(lang: "zh" | "en"): string {
   return `你是代码架构分析器。只依据输入的确定性结构数据归纳语义，不得编造调用关系。用${languageName(lang)}输出。` +
+    `allowedNodes 是候选模块：exports 是被调用最多的导出符号，externals 是它用到的外部库，entries 是它承载的入口` +
+    `（http 路由、cli 命令、main、public-api），summary 是已有的一句话说明（可能缺失）。` +
+    `dependencies 是模块之间的依赖，from 依赖 to，count 是引用次数；kind 为 import 是运行时依赖，` +
+    `type 只引用类型、不构成运行时依赖，http 是 from 按 URL 请求 to 里的后端路由（前端在上、后端在下）。` +
+    `按依赖方向分层：承载入口或界面、很少被别人依赖的在上层，被多数模块依赖而自身少依赖的在下层；` +
+    `layers 按从上到下的顺序排列。层名说明职责，不要照抄目录名。` +
     `只返回 JSON：{"summary":"仓库概览（2-4句）","layers":[{"name":"层名","description":"一句说明","nodeIds":["只能来自 allowedNodes.id"]}]}。` +
     `每个节点最多属于一个主层；无法判断的节点可不分层。`;
 }

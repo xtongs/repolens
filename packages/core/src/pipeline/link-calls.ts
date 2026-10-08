@@ -1,6 +1,7 @@
 import type { Db } from "../db/database.js";
 import type { EdgeRow } from "../db/writer.js";
-import type { Confidence } from "../types.js";
+import { resolverFamily, type ResolverFamily } from "../discovery/language.js";
+import type { Confidence, Language } from "../types.js";
 
 /**
  * 调用点 → 符号级调用边。
@@ -9,10 +10,15 @@ import type { Confidence } from "../types.js";
  * 带上置信度，而且判定顺序是从「语言语义能证明的」逐级降到「靠名字猜的」：
  *
  *   exact      同文件定义 / this.x 命中同一个类 / import 链能一路走到定义
- *   likely     全局唯一的同名候选（自由函数只认导出的，方法只认方法）
+ *   likely     有文件级证据但没有符号级证据（Go 同包、Python/Rust 通配导入、
+ *              import 指到了文件但对方没有显式导出这个名字）
  *   ambiguous  同名候选不止一个，候选 id 一并存下来交给界面
  *   external   调用目标来自第三方或标准库
  *   unresolved 什么都没匹配上，不产生边
+ *
+ * 「全仓唯一同名」只在没有模块解析器的语言里兜底。TS/JS、Python、Rust 的
+ * 跨文件调用必须经过 import，没有 import 证据的同名命中几乎全是巧合——
+ * 局部变量 `run()` 会被连到另一个包里恰好导出的 `run`，而且跨越了架构边界。
  *
  * unresolved 不落边是有意的：`console.log` 这类占了调用点的大头，
  * 把它们画进图里只会淹没真正的结构。统计数字仍然会报出来。
@@ -57,6 +63,8 @@ const BUILTIN_RECEIVERS = new Set([
 interface Binding {
   /** import 解析到的目标文件；Go 的包级 import 没有文件粒度，为 null */
   targetFileId: number | null;
+  /** Go 包级 import 落在的目录 */
+  targetDir: string | null;
   externalName: string | null;
   /** 在目标模块里的原名，与本地别名区分 */
   imported: string;
@@ -64,12 +72,16 @@ interface Binding {
 }
 
 interface FileScope {
+  family: ResolverFamily | undefined;
+  dir: string;
   /** 本文件顶层定义：名字 → 符号 id */
   locals: Map<string, number[]>;
   /** 本文件的成员：`容器.名字` → 符号 id */
   members: Map<string, number[]>;
   /** import 的本地名 → 绑定 */
   bindings: Map<string, Binding>;
+  /** `export * from` / `from x import *` / `use x::*` 指向的文件 */
+  stars: number[];
   /** 本文件能看见的类型名：本地声明的 + import 进来的 */
   visibleTypes: Set<string>;
 }
@@ -189,24 +201,33 @@ function resolveCall(
 
     const head = receiver.split(".")[0] as string;
     if (BUILTIN_RECEIVERS.has(head)) {
-      return { confidence: "external", symbolId: null, externalName: head, candidates: null };
+      return external(head);
     }
 
-    // 命名空间导入：import * as fs → fs.readFile()
-    const binding = scope?.bindings.get(head);
+    // 命名空间导入：import * as fs → fs.readFile()；Go 的 pkg.Func()；
+    // Python 的 `import a.b` 绑定的是完整点分名
+    const binding = scope?.bindings.get(receiver) ?? scope?.bindings.get(head);
     if (binding?.isNamespace) {
-      if (binding.externalName !== null) {
-        return {
-          confidence: "external",
-          symbolId: null,
-          externalName: binding.externalName,
-          candidates: null,
-        };
-      }
+      if (binding.externalName !== null) return external(binding.externalName);
       if (binding.targetFileId !== null) {
-        const hit = index.exportsOf.get(binding.targetFileId)?.get(row.callee);
-        if (hit !== undefined) return exact(hit);
+        const hit = resolveImported(index, binding.targetFileId, row.callee);
+        if (hit) return hit;
       }
+      if (binding.targetDir !== null) {
+        const hit = byPackage(index.topLevelByDir.get(binding.targetDir)?.get(row.callee), "exact");
+        if (hit) return hit;
+      }
+    }
+
+    // 接收者就是成员的宿主：本文件的 `api.load()` / `Foo.create()`，
+    // 或者 `import { api } from "./client"` 之后的 `api.load()`
+    if (scope && !receiver.includes(".")) {
+      const hit = binding
+        ? binding.isNamespace || binding.targetFileId === null
+          ? null
+          : resolveMember(index, binding.targetFileId, binding.imported, row.callee, new Set())
+        : uniqueOf(scope.members.get(`${receiver}.${row.callee}`));
+      if (hit !== null) return exact(hit);
     }
 
     // 接收者是个普通变量，类型未知。候选池要同时满足两个条件：是方法，
@@ -218,33 +239,138 @@ function resolveCall(
 
   // ---- 普通函数调用 ----
 
-  if (scope) {
-    const local = scope.locals.get(row.callee);
-    if (local && local.length === 1) return exact(local[0] as number);
-    if (local && local.length > 1) {
-      return { confidence: "ambiguous", symbolId: local[0] as number, externalName: null, candidates: local };
-    }
+  if (!scope) return byName(index.exportedByName.get(row.callee));
 
-    const binding = scope.bindings.get(row.callee);
-    if (binding) {
-      if (binding.externalName !== null) {
-        return {
-          confidence: "external",
-          symbolId: null,
-          externalName: binding.externalName,
-          candidates: null,
-        };
-      }
-      if (binding.targetFileId !== null) {
-        const hit = index.exportsOf.get(binding.targetFileId)?.get(binding.imported);
-        if (hit !== undefined) return exact(hit);
-        // import 指到了文件但找不到这个导出：多半是 `export * from`
-        // 的转发链，降级成全局匹配而不是硬说它 exact
-      }
+  const local = scope.locals.get(row.callee);
+  if (local && local.length === 1) return exact(local[0] as number);
+  if (local && local.length > 1) {
+    return { confidence: "ambiguous", symbolId: local[0] as number, externalName: null, candidates: local };
+  }
+
+  const binding = scope.bindings.get(row.callee);
+  if (binding) {
+    if (binding.externalName !== null) return external(binding.externalName);
+    if (binding.targetFileId !== null) {
+      const name = binding.isNamespace ? row.callee : binding.imported;
+      const hit = resolveImported(index, binding.targetFileId, name, row.callee);
+      if (hit) return hit;
     }
   }
 
-  return byName(index.exportedByName.get(row.callee));
+  switch (scope.family) {
+    case "ts":
+      // 没有 import 就不可能调用到别的文件里的函数
+      return UNRESOLVED;
+    case "python":
+    case "rust":
+      return fromStars(index, scope, row.callee);
+    case "go": {
+      // Go 裸调用只可能落在同包（同目录）或点导入的包里
+      const samePackage = index.topLevelByDir.get(scope.dir)?.get(row.callee);
+      const hit = byPackage(samePackage, "likely");
+      if (hit) return hit;
+      const dot = scope.bindings.get(".");
+      if (dot?.targetDir) {
+        return byPackage(index.topLevelByDir.get(dot.targetDir)?.get(row.callee), "likely") ?? UNRESOLVED;
+      }
+      return UNRESOLVED;
+    }
+    default:
+      return byName(index.exportedByName.get(row.callee));
+  }
+}
+
+/**
+ * import 指到了具体文件：沿导出、`export { a } from`、`export * from` 追到定义。
+ * 追不到但目标文件顶层恰好有这个名字（CommonJS 的 `module.exports = { foo }`、
+ * 抽取器没认出的导出形式）时给 likely——文件关系已被 import 证明，符号关系没有。
+ */
+function resolveImported(
+  index: RepoIndex,
+  targetFileId: number,
+  name: string,
+  localName?: string,
+): Resolution | null {
+  const hit = resolveExport(index, targetFileId, name, new Set());
+  if (hit !== null) return exact(hit);
+  const locals = index.scopes.get(targetFileId)?.locals;
+  const fallback = locals?.get(name === "default" ? (localName ?? name) : name);
+  if (fallback && fallback.length === 1) return likely(fallback[0] as number);
+  return null;
+}
+
+function resolveExport(index: RepoIndex, fileId: number, name: string, seen: Set<number>): number | null {
+  if (seen.has(fileId) || seen.size > 24) return null;
+  seen.add(fileId);
+
+  const direct = name === "default" ? index.defaultExportOf.get(fileId) : index.exportsOf.get(fileId)?.get(name);
+  if (direct !== undefined) return direct;
+
+  const scope = index.scopes.get(fileId);
+  if (!scope) return null;
+  // 桶文件的 `export { a as b } from "./x"`，以及 Python `__init__.py` 里的
+  // `from .impl import foo` 都表现为本文件的一条 import 绑定
+  const binding = scope.bindings.get(name);
+  if (binding && !binding.isNamespace && binding.targetFileId !== null) {
+    const hit = resolveExport(index, binding.targetFileId, binding.imported, seen);
+    if (hit !== null) return hit;
+  }
+  for (const target of scope.stars) {
+    const hit = resolveExport(index, target, name, seen);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+/** 沿 import / re-export 找到定义 `owner` 的文件，取它的成员 */
+function resolveMember(index: RepoIndex, fileId: number, owner: string, member: string, seen: Set<number>): number | null {
+  if (seen.has(fileId) || seen.size > 24) return null;
+  seen.add(fileId);
+  const scope = index.scopes.get(fileId);
+  if (!scope) return null;
+  const direct = uniqueOf(scope.members.get(`${owner}.${member}`));
+  if (direct !== null) return direct;
+  const binding = scope.bindings.get(owner);
+  if (binding && !binding.isNamespace && binding.targetFileId !== null) {
+    const hit = resolveMember(index, binding.targetFileId, binding.imported, member, seen);
+    if (hit !== null) return hit;
+  }
+  for (const target of scope.stars) {
+    const hit = resolveMember(index, target, owner, member, seen);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+function uniqueOf(ids: number[] | undefined): number | null {
+  return ids?.length === 1 ? (ids[0] as number) : null;
+}
+
+function fromStars(index: RepoIndex, scope: FileScope, name: string): Resolution {
+  const hits = [...new Set(
+    scope.stars
+      .map((target) => resolveExport(index, target, name, new Set()))
+      .filter((id): id is number => id !== null),
+  )];
+  if (hits.length === 1) return likely(hits[0] as number);
+  if (hits.length > 1) {
+    return { confidence: "ambiguous", symbolId: hits[0] as number, externalName: null, candidates: hits.slice(0, 16) };
+  }
+  return UNRESOLVED;
+}
+
+/** 同一个包里的候选。Go 编译器保证包内顶层名唯一，多个候选只会来自构建标签。 */
+function byPackage(candidates: number[] | undefined, single: "exact" | "likely"): Resolution | null {
+  if (!candidates || candidates.length === 0) return null;
+  if (candidates.length === 1) {
+    return single === "exact" ? exact(candidates[0] as number) : likely(candidates[0] as number);
+  }
+  return {
+    confidence: "ambiguous",
+    symbolId: candidates[0] as number,
+    externalName: null,
+    candidates: candidates.slice(0, 16),
+  };
 }
 
 /**
@@ -271,11 +397,17 @@ function exact(symbolId: number): Resolution {
   return { confidence: "exact", symbolId, externalName: null, candidates: null };
 }
 
+function likely(symbolId: number): Resolution {
+  return { confidence: "likely", symbolId, externalName: null, candidates: null };
+}
+
+function external(name: string): Resolution {
+  return { confidence: "external", symbolId: null, externalName: name, candidates: null };
+}
+
 function byName(candidates: number[] | undefined): Resolution {
   if (!candidates || candidates.length === 0) return UNRESOLVED;
-  if (candidates.length === 1) {
-    return { confidence: "likely", symbolId: candidates[0] as number, externalName: null, candidates: null };
-  }
+  if (candidates.length === 1) return likely(candidates[0] as number);
   // 候选全存下来，界面上可以让人自己挑，而不是替他猜一个
   return {
     confidence: "ambiguous",
@@ -293,8 +425,12 @@ interface RepoIndex {
   scopes: Map<number, FileScope>;
   /** 文件 → 导出名 → 符号 id */
   exportsOf: Map<number, Map<string, number>>;
-  /** 导出的顶层符号，按名字 */
+  /** 文件 → 默认导出的符号 id */
+  defaultExportOf: Map<number, number>;
+  /** 导出的顶层符号，按名字；只给没有模块解析器的语言兜底 */
   exportedByName: Map<string, number[]>;
+  /** Go：目录 → 顶层名 → 符号 id（包内可见性不看大小写） */
+  topLevelByDir: Map<string, Map<string, number[]>>;
   /** 带容器的符号（方法/字段），按名字 */
   methodsByName: Map<string, number[]>;
   /** 符号 id → 它所属的容器名 */
@@ -304,28 +440,42 @@ interface RepoIndex {
 function buildIndex(db: Db): RepoIndex {
   const scopes = new Map<number, FileScope>();
   const exportsOf = new Map<number, Map<string, number>>();
+  const defaultExportOf = new Map<number, number>();
   const exportedByName = new Map<string, number[]>();
+  const topLevelByDir = new Map<string, Map<string, number[]>>();
   const methodsByName = new Map<string, number[]>();
   const containerOf = new Map<number, string>();
 
-  const scopeOf = (fileId: number): FileScope => {
-    let scope = scopes.get(fileId);
-    if (!scope) {
-      scope = {
-        locals: new Map(),
-        members: new Map(),
-        bindings: new Map(),
-        visibleTypes: new Set(),
-      };
-      scopes.set(fileId, scope);
-    }
-    return scope;
-  };
+  const files = db.prepare("SELECT id, language, dir_path AS dir FROM files").all() as Array<{
+    id: number;
+    language: Language;
+    dir: string;
+  }>;
+  for (const file of files) {
+    scopes.set(file.id, {
+      family: resolverFamily(file.language),
+      dir: file.dir,
+      locals: new Map(),
+      members: new Map(),
+      bindings: new Map(),
+      stars: [],
+      visibleTypes: new Set(),
+    });
+  }
+  const scopeOf = (fileId: number): FileScope => scopes.get(fileId) as FileScope;
 
   const push = (map: Map<string, number[]>, key: string, id: number) => {
     const bucket = map.get(key);
     if (bucket) bucket.push(id);
     else map.set(key, [id]);
+  };
+  const exportTable = (fileId: number): Map<string, number> => {
+    let table = exportsOf.get(fileId);
+    if (!table) {
+      table = new Map();
+      exportsOf.set(fileId, table);
+    }
+    return table;
   };
 
   // 只索引可调用的符号。把 interface / type 放进候选池会让
@@ -344,16 +494,22 @@ function buildIndex(db: Db): RepoIndex {
     exported: number;
   }>;
 
+  const callable = new Set<number>();
   for (const sym of symbols) {
+    callable.add(sym.id);
     const scope = scopeOf(sym.fileId);
     if (sym.container === null) {
       push(scope.locals, sym.name, sym.id);
-      if (sym.exported === 1) {
-        let table = exportsOf.get(sym.fileId);
+      if (scope.family === "go") {
+        let table = topLevelByDir.get(scope.dir);
         if (!table) {
           table = new Map();
-          exportsOf.set(sym.fileId, table);
+          topLevelByDir.set(scope.dir, table);
         }
+        push(table, sym.name, sym.id);
+      }
+      if (sym.exported === 1) {
+        const table = exportTable(sym.fileId);
         if (!table.has(sym.name)) table.set(sym.name, sym.id);
         push(exportedByName, sym.name, sym.id);
       }
@@ -362,6 +518,21 @@ function buildIndex(db: Db): RepoIndex {
       push(methodsByName, sym.name, sym.id);
       containerOf.set(sym.id, sym.container);
     }
+  }
+
+  // `export { foo as bar }`、`export default foo` 这类导出名和声明名不一致，
+  // 或者声明本身没带 export 关键字，只能从导出表补上
+  const exportRows = db
+    .prepare("SELECT file_id AS fileId, name, kind, symbol_id AS symbolId FROM exports WHERE symbol_id IS NOT NULL")
+    .all() as Array<{ fileId: number; name: string; kind: string; symbolId: number }>;
+  for (const row of exportRows) {
+    if (!callable.has(row.symbolId)) continue;
+    if (row.kind === "default") {
+      defaultExportOf.set(row.fileId, row.symbolId);
+      continue;
+    }
+    const table = exportTable(row.fileId);
+    if (!table.has(row.name)) table.set(row.name, row.symbolId);
   }
 
   // 类型名单独查一次：上面的候选池只要可调用符号，但判断「这个类在本文件
@@ -376,7 +547,7 @@ function buildIndex(db: Db): RepoIndex {
 
   const specs = db
     .prepare(
-      `SELECT i.file_id AS fileId, i.target_file_id AS targetFileId,
+      `SELECT i.file_id AS fileId, i.target_file_id AS targetFileId, i.target_dir AS targetDir,
               i.external_name AS externalName, s.imported, s.local,
               s.is_namespace AS isNamespace
        FROM import_specifiers s JOIN imports i ON i.id = s.import_id`,
@@ -384,6 +555,7 @@ function buildIndex(db: Db): RepoIndex {
     .all() as Array<{
     fileId: number;
     targetFileId: number | null;
+    targetDir: string | null;
     externalName: string | null;
     imported: string;
     local: string;
@@ -392,8 +564,13 @@ function buildIndex(db: Db): RepoIndex {
 
   for (const spec of specs) {
     const scope = scopeOf(spec.fileId);
+    if (spec.imported === "*" && spec.local === "*") {
+      if (spec.targetFileId !== null) scope.stars.push(spec.targetFileId);
+      continue;
+    }
     scope.bindings.set(spec.local, {
       targetFileId: spec.targetFileId,
+      targetDir: spec.targetDir,
       externalName: spec.externalName,
       imported: spec.imported,
       isNamespace: spec.isNamespace === 1,
@@ -401,5 +578,5 @@ function buildIndex(db: Db): RepoIndex {
     scope.visibleTypes.add(spec.local);
   }
 
-  return { scopes, exportsOf, exportedByName, methodsByName, containerOf };
+  return { scopes, exportsOf, defaultExportOf, exportedByName, topLevelByDir, methodsByName, containerOf };
 }

@@ -67,7 +67,7 @@ export interface CallGraphMode {
   direction: "callers" | "callees" | "both";
 }
 
-export type PanelTab = "tree" | "findings" | "traces";
+export type PanelTab = "tree" | "findings" | "traces" | "changes";
 
 export interface DetailRequest {
   nodeId: string;

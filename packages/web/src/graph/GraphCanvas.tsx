@@ -167,19 +167,32 @@ function CanvasInner() {
         const active = highlight?.edges.has(edge.id) ?? false;
         const dimmed = highlight !== null && !active;
         const isUncertain = edge.confidence === "ambiguous" || edge.confidence === "likely";
-        const color = active ? "var(--color-accent)" : "var(--color-line-strong)";
+        const typeOnly = edge.type === "references";
+        const http = edge.type === "http";
+        const color = active ? "var(--color-accent)" : http ? "var(--color-warn)" : "var(--color-line-strong)";
         return {
           id: edge.id,
           source: edge.source,
           target: edge.target,
           animated: false,
+          // 跨进程的请求没有 import 可看，不标出来会被当成一条普通依赖
+          ...(http
+            ? {
+                label: "HTTP",
+                labelStyle: { fontSize: 9, fill: "var(--color-warn)", fontFamily: "var(--font-mono, monospace)" },
+                labelBgStyle: { fill: "var(--color-canvas)", fillOpacity: 0.85 },
+                labelBgPadding: [3, 1] as [number, number],
+              }
+            : {}),
           style: {
-            // 边宽编码依赖强度，最细也要 1px 否则在暗色背景上会消失
-            strokeWidth: 1 + edge.weight * 2.4,
+            // 边宽编码依赖强度，最细也要 1px 否则在暗色背景上会消失；
+            // 纯类型依赖不参与运行时，固定最细
+            strokeWidth: typeOnly ? 1 : 1 + edge.weight * 2.4,
             stroke: color,
-            strokeDasharray:
-              edge.confidence === "ambiguous" ? "2 4" : edge.confidence === "likely" ? "6 4" : undefined,
-            opacity: dimmed ? 0.2 : isUncertain ? 0.7 : 0.95,
+            strokeDasharray: typeOnly
+              ? "1 5"
+              : edge.confidence === "ambiguous" ? "2 4" : edge.confidence === "likely" ? "6 4" : undefined,
+            opacity: dimmed ? 0.2 : typeOnly ? 0.45 : isUncertain ? 0.7 : 0.95,
             strokeLinecap: "round",
             transition: "opacity 140ms ease, stroke 140ms ease",
           },

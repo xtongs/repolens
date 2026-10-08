@@ -1,9 +1,10 @@
-import type { EntryPointDto, FindingDto, TraceSummaryDto, TreeNodeDto } from "@repolens/core/types";
+import type { EntryPointDto, FindingDto, FindingKind, TraceSummaryDto, TreeNodeDto } from "@repolens/core/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type FindingsResponse, api } from "../api/client";
 import { useT } from "../i18n";
 import { formatCount, languageColor } from "../lib/visual";
 import { ALL_VISIBLE_ROLES, SOURCE_ONLY_ROLES, useAppStore } from "../store/useAppStore";
+import { ChangesBody } from "./ChangesPanel";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 import { TabStrip } from "./TabStrip";
 
@@ -51,6 +52,7 @@ export function TreePanel() {
           <PanelTab active={tab === "tree"} onClick={() => setTab("tree")} label={t("结构")} />
           <PanelTab active={tab === "findings"} onClick={() => setTab("findings")} label={t("体检")} />
           <PanelTab active={tab === "traces"} onClick={() => setTab("traces")} label={t("链路")} />
+          <PanelTab active={tab === "changes"} onClick={() => setTab("changes")} label={t("变更")} />
         </TabStrip>
         <button
           type="button"
@@ -65,6 +67,8 @@ export function TreePanel() {
         <TreeBody key={`tree:${repoId ?? ""}:${repoRevision}`} />
       ) : tab === "findings" ? (
         <FindingsBody key={`findings:${repoId ?? ""}:${repoRevision}`} />
+      ) : tab === "changes" ? (
+        <ChangesBody key={`changes:${repoId ?? ""}:${repoRevision}`} />
       ) : (
         <TracesBody key={`traces:${repoId ?? ""}:${repoRevision}`} />
       )}
@@ -451,7 +455,7 @@ function FindingsBody() {
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
   const [data, setData] = useState<FindingsResponse | null>(null);
-  const [kind, setKind] = useState<"all" | "duplicate" | "cycle">("all");
+  const [kind, setKind] = useState<"all" | FindingKind>("all");
   const reveal = useAppStore((s) => s.reveal);
   const selected = useAppStore((s) => s.selected);
 
@@ -480,7 +484,7 @@ function FindingsBody() {
       <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
         {t("没有发现结构问题。")}
         <br />
-        {t("当前检查项：跨文件的重复实现、同级作用域之间的循环依赖。")}
+        {t("当前检查项：跨文件的重复实现、同级作用域之间的循环依赖、读不动的过大函数和文件，以及 .repolens.json 里声明的依赖规则。")}
       </div>
     );
   }
@@ -497,6 +501,16 @@ function FindingsBody() {
         <FilterChip active={kind === "cycle"} onClick={() => setKind("cycle")}>
           {t("循环 {count}", { count: data.summary.byKind["cycle"] ?? 0 })}
         </FilterChip>
+        {(data.summary.byKind["oversized"] ?? 0) > 0 && (
+          <FilterChip active={kind === "oversized"} onClick={() => setKind("oversized")}>
+            {t("过大 {count}", { count: data.summary.byKind["oversized"] ?? 0 })}
+          </FilterChip>
+        )}
+        {(data.summary.byKind["violation"] ?? 0) > 0 && (
+          <FilterChip active={kind === "violation"} onClick={() => setKind("violation")}>
+            {t("违规 {count}", { count: data.summary.byKind["violation"] ?? 0 })}
+          </FilterChip>
+        )}
       </div>
 
       <div className="thin-scroll flex-1 overflow-y-auto py-1">

@@ -25,6 +25,15 @@ export function formatScanReport(root: string, stats: ScanStats): string {
     ),
   );
   lines.push(row("调用点", `${formatNumber(stats.calls)}${callBreakdown(stats)}`));
+  if (stats.http && stats.http.linked > 0) {
+    const { routes, linked, ambiguous } = stats.http;
+    lines.push(
+      row(
+        "HTTP",
+        `${linked} 处前端请求按 URL 对上后端路由（共 ${routes} 个路由${ambiguous > 0 ? `，多义 ${ambiguous}` : ""}）`,
+      ),
+    );
+  }
   if (stats.parseErrors > 0) {
     lines.push(row("语法警告", `${stats.parseErrors} 个文件含无法解析的节点`));
   }

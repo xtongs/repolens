@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "../config.js";
-import { indexPath, openDb, setMeta, setMetaJson, transact, type Db } from "../db/database.js";
+import { getMeta, indexPath, openDb, setMeta, setMetaJson, transact, type Db } from "../db/database.js";
 import { IndexWriter, type CallSiteRow, type ImportRow, type TypeRelationRow } from "../db/writer.js";
 import { isAnalyzable } from "../discovery/language.js";
 import { hashContent, walkRepo } from "../discovery/walk.js";
@@ -24,14 +24,23 @@ import type {
   ScanStats,
 } from "../types.js";
 import { linkGraph } from "./link.js";
-import { countLoc } from "./metrics.js";
+import { countLoc, excludeNestedComplexity } from "./metrics.js";
 
 export type { ScanPhase } from "../types.js";
+
+/**
+ * 抽取器产物的形状或语义变了就加一。内容没变的文件也会整体重新解析，
+ * 而不是像 schema 版本那样重建整个库——那会连带清掉 LLM 缓存。
+ */
+export const EXTRACTOR_VERSION = "7";
+export const EXTRACTOR_VERSION_KEY = "extractor_version";
 
 export interface ScanOptions {
   root: string;
   /** 忽略已有索引，全量重建 */
   fresh?: boolean;
+  /** 只建结构索引、不调用模型，不管仓库配置怎么写（变更对比的基线快照用） */
+  structureOnly?: boolean;
   onProgress?: (phase: ScanPhase, done: number, total: number) => void;
 }
 
@@ -56,7 +65,8 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
   const { root } = options;
   const report = options.onProgress ?? (() => {});
 
-  const config = loadConfig(root);
+  const loaded = loadConfig(root);
+  const config = options.structureOnly ? { ...loaded, llm: { ...loaded.llm, enabled: false } } : loaded;
 
   report("discover", 0, 1);
   const packages = discoverPackages(root);
@@ -71,6 +81,9 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
   stats.packages = packages.length;
 
   const previous = loadPreviousFiles(db);
+  if (getMeta(db, EXTRACTOR_VERSION_KEY) !== EXTRACTOR_VERSION) {
+    for (const prev of previous.values()) prev.parsed = 0;
+  }
   const discoveredPaths = new Set(walked.files.map((f) => f.path));
 
   const fileIdByPath = transact(db, () => {
@@ -170,11 +183,13 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
 
   pool.dispose();
   stats.filesParsed = toParse.length;
+  setMeta(db, EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION);
 
   report("link", 0, 1);
-  const linkStats = transact(db, () => linkGraph(db, writer));
+  const linkStats = transact(db, () => linkGraph(db, writer, config.rules));
   stats.calls = linkStats.calls;
   stats.callsByConfidence = linkStats.callsByConfidence;
+  stats.http = linkStats.http;
   report("link", 1, 1);
 
   report("rollup", 0, 1);
@@ -262,7 +277,7 @@ async function parseFile(
     // 形状指纹在这里统一算，而不是散到四个抽取器里去——它只依赖 AST，
     // 和语言无关，而这里是唯一同时握有语法树和符号表的地方。
     attachShapes(tree.rootNode, parsed.symbols);
-    return parsed;
+    return { ...parsed, symbols: excludeNestedComplexity(parsed.symbols) };
   } catch (err) {
     // 单个文件的抽取失败不该中断整次扫描，把错误留在 files.parse_error 里
     return {

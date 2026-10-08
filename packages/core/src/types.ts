@@ -114,7 +114,9 @@ export type EdgeType =
   | "implements"
   | "embeds"
   | "instantiates"
-  | "references";
+  | "references"
+  /** 前端请求按 URL 对上后端路由：没有 import，靠字面量推断，始终是 likely */
+  | "http";
 
 /**
  * 调用/引用边的置信度。语义见 docs/ARCHITECTURE.md#调用边置信度模型。
@@ -134,7 +136,8 @@ export type PackageManager = "pnpm" | "npm" | "yarn" | "go" | "cargo" | "python"
 
 export type ImportKind = "static" | "dynamic" | "require" | "side-effect" | "re-export" | "module-decl";
 
-export type CallKind = "call" | "method" | "new" | "macro";
+/** render：JSX 元素 `<Comp/>`，语义上是对组件函数的调用 */
+export type CallKind = "call" | "method" | "new" | "macro" | "render";
 
 // ---------------------------------------------------------------------------
 // 抽取器契约 —— 每种语言的 extractor 必须产出下面这些结构
@@ -198,6 +201,8 @@ export interface ParsedExport {
   kind: "named" | "default" | "star" | "star-as";
   /** re-export 的来源说明符 */
   source?: string | undefined;
+  /** 导出名背后的本地声明名：`export default foo`、`export { foo as bar }` */
+  local?: string | undefined;
   line: number;
 }
 
@@ -357,12 +362,41 @@ export interface RepolensConfig {
   maxNodesPerView: number;
   /** 默认参与图谱的文件角色 */
   defaultRoles: FileRole[];
+  /** 仓库声明的依赖禁令，违反的 import 进体检 */
+  rules: ArchitectureRule[];
   llm: LlmConfig;
+}
+
+/**
+ * 一条依赖禁令：`from` 里的源码文件不许 import `disallow` 命中的目标。
+ * 目标既可以是仓库内路径 glob，也可以是外部包名（`electron`、`node:fs`、`@nestjs/*`）。
+ */
+export interface ArchitectureRule {
+  /** 体检标题里的简称；缺省为「from ↛ disallow」 */
+  name: string | null;
+  from: string[];
+  disallow: string[];
+  /** 命中 disallow 但仍放行的例外 */
+  allow: string[];
+  /** 纯类型 import 默认不算违规：共享 DTO 类型不构成运行时耦合 */
+  includeTypeOnly: boolean;
+  severity: FindingSeverity;
+  /** 为什么有这条规则，显示在体检详情里 */
+  reason: string | null;
 }
 
 // ---------------------------------------------------------------------------
 // 扫描结果统计
 // ---------------------------------------------------------------------------
+
+/** 前端请求按 URL 推断到后端路由的连线 */
+export interface HttpLinkStats {
+  /** 代码里注册的后端路由数；为 0 时不做匹配 */
+  routes: number;
+  /** 连上的「调用方 → 路由」对，含多义的 */
+  linked: number;
+  ambiguous: number;
+}
 
 export interface ScanStats {
   durationMs: number;
@@ -377,6 +411,8 @@ export interface ScanStats {
   importsUnresolved: number;
   calls: number;
   callsByConfidence: Record<Confidence, number>;
+  /** 旧版本写进索引的 stats 没有这一项 */
+  http?: HttpLinkStats | undefined;
   parseErrors: number;
   packages: number;
   loc: number;
@@ -418,7 +454,8 @@ export interface NodeMetrics {
   outDegree: number;
 }
 
-export type FindingKind = "duplicate" | "cycle";
+export type FindingKind = "duplicate" | "cycle" | "violation" | "oversized";
+export const FINDING_KINDS: readonly FindingKind[] = ["duplicate", "cycle", "violation", "oversized"];
 export type FindingSeverity = "high" | "medium" | "low";
 
 export interface FindingDto {
@@ -718,11 +755,19 @@ export interface RelationDto {
   id: string;
   name: string;
   kind: SymbolKind;
+  /** 对方符号所在文件 */
   path: string;
+  /** 调用发生的行，在调用方的文件里 */
   line: number;
+  /** 对方符号的定义行，在 path 里 */
+  definedAt: number;
   confidence: Confidence;
   /** ambiguous 时的同名候选 */
   candidates?: Array<{ id: string; path: string }> | null;
+  /** 关系来自 JSX `<Comp/>` 而非函数调用 */
+  rendered?: boolean;
+  /** 关系来自前端请求按 URL 对上的后端路由，没有 import 证据 */
+  http?: boolean;
 }
 
 export interface SymbolDetailDto {
@@ -884,6 +929,94 @@ export interface TraceNarrativeResultDto {
   cacheHit: boolean;
   model: string;
   usage: LlmUsage;
+}
+
+// ---------------------------------------------------------------------------
+// 变更视角：两份索引之间的结构差异
+// ---------------------------------------------------------------------------
+
+export type ChangeStatus = "added" | "removed" | "modified";
+
+export interface FileChangeDto {
+  status: ChangeStatus | "moved";
+  path: string;
+  /** moved 时的旧路径 */
+  from?: string | null;
+  /** head 里的文件节点 id；removed 时为 null */
+  id: string | null;
+  role: FileRole;
+  language: Language;
+  loc: number;
+  locBefore: number;
+}
+
+export interface SymbolChangeDto {
+  status: ChangeStatus;
+  /** head 里的符号节点 id；removed 时为 null */
+  id: string | null;
+  name: string;
+  container: string | null;
+  kind: SymbolKind;
+  path: string;
+  line: number;
+  exported: boolean;
+  role: FileRole;
+  complexity: number;
+  complexityBefore: number | null;
+  signature: string | null;
+  signatureBefore: string | null;
+  /** modified 时 AST 形状是否变了；false 说明只动了命名、字面量或格式 */
+  shapeChanged: boolean;
+  /** 直接调用方数量：removed 取基线里的，其余取当前的 */
+  callers: number;
+}
+
+export interface DependencyChangeDto {
+  status: "added" | "removed";
+  level: "package" | "directory";
+  source: string;
+  target: string;
+  type: "imports" | "references" | "http";
+  count: number;
+}
+
+export interface FindingChangeDto {
+  status: "added" | "resolved";
+  kind: FindingKind;
+  severity: FindingSeverity;
+  title: string;
+  detail: string;
+  scopeKey: string;
+  path: string;
+}
+
+export interface EntryChangeDto {
+  /** affected：入口本身还在，但它能走到的代码变了 */
+  status: "added" | "removed" | "affected";
+  /** head 里的入口 id；removed 时为 null */
+  id: string | null;
+  /** head 里入口对应的处理函数 */
+  symbolId: string | null;
+  kind: EntryPointKind;
+  label: string;
+  path: string;
+  /** 从入口出发能走到的已变更符号，按调用深度排序 */
+  via: Array<{ id: string; name: string; depth: number }>;
+}
+
+export interface ChangeReportDto {
+  base: { ref: string; commit: string };
+  /** head 为 null 表示工作区（含未提交改动） */
+  head: { ref: string; commit: string } | null;
+  /** 对比用的当前索引是什么时候扫描的：工作区对比只反映那一刻的代码 */
+  headIndexedAt: string | null;
+  generatedAt: string;
+  files: FileChangeDto[];
+  symbols: SymbolChangeDto[];
+  dependencies: DependencyChangeDto[];
+  externals: { added: string[]; removed: string[] };
+  findings: FindingChangeDto[];
+  entries: EntryChangeDto[];
 }
 
 // ---------------------------------------------------------------------------

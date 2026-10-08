@@ -2,7 +2,8 @@ import type { GraphNodeDto } from "@repolens/core/types";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { memo } from "react";
 import { useT } from "../../i18n";
-import type { MetricKey } from "../../store/useAppStore";
+import { useAppStore, type MetricKey } from "../../store/useAppStore";
+import { changeMarkOf, useChangesStore } from "../../store/useChangesStore";
 import { formatCount, metricValue, nodeAccent, symbolGlyph } from "../../lib/visual";
 import { CONTAINER_HEADER } from "../layout/useElkLayout";
 
@@ -80,6 +81,7 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
           <span className="truncate text-[13px] font-medium text-[var(--color-ink)]">
             {label}
           </span>
+          <ChangeBadge dto={dto} />
           <FindingsBadge dto={dto} inline />
           <span className="ml-auto shrink-0 text-[11px] text-[var(--color-ink-faint)]">
             {formatCount(value)}
@@ -168,9 +170,12 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
         <FindingsBadge dto={dto} />
 
         {lowDetail ? (
-          <span className="truncate text-[15px] font-semibold" style={{ color: accent }}>
-            {label.slice(0, 2)}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[15px] font-semibold" style={{ color: accent }}>
+              {label.slice(0, 2)}
+            </span>
+            <ChangeBadge dto={dto} />
+          </div>
         ) : (
           <>
             <div className="flex items-baseline gap-1.5">
@@ -182,6 +187,7 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
               <span className="truncate text-[13px] font-medium text-[var(--color-ink)]">
                 {label}
               </span>
+              <ChangeBadge dto={dto} />
             </div>
             <div className="flex min-w-0 flex-nowrap items-center gap-2 whitespace-nowrap text-[10.5px] text-[var(--color-ink-faint)]">
               <span className="shrink-0">{formatCount(value)}</span>
@@ -216,6 +222,36 @@ function stackLayers(dto: GraphNodeDto): number {
   if (dto.childCount >= 4) return 2;
   if (dto.childCount >= 1) return 1;
   return 0;
+}
+
+/**
+ * 变更角标：只在「变更」页签做过一次对比之后出现。文件和符号标新增/修改，
+ * 目录和包标下面有几个文件改过——在顶层就能看出改动落在哪几块。
+ */
+function ChangeBadge({ dto }: { dto: GraphNodeDto }) {
+  const t = useT();
+  const showNoise = useAppStore((s) => s.showNoise);
+  const change = useChangesStore((s) => {
+    const found = changeMarkOf(s.index, dto, showNoise);
+    return found ? `${found.mark}:${found.count}` : null;
+  });
+  if (change === null) return null;
+  const [mark, raw] = change.split(":") as ["added" | "modified", string];
+  const count = Number(raw);
+  const color = mark === "added" ? "var(--color-success)" : "var(--color-accent)";
+  const container = dto.kind === "directory" || dto.kind === "package";
+
+  return (
+    <span
+      className="shrink-0 rounded-full px-1 text-[9.5px] font-medium tabular-nums"
+      style={{ background: `color-mix(in srgb, ${color} 20%, transparent)`, color }}
+      title={container
+        ? t("{count} 个文件有改动", { count })
+        : mark === "added" ? t("对比基线新增") : t("对比基线有修改")}
+    >
+      {container ? `Δ${count}` : mark === "added" ? t("新") : t("改")}
+    </span>
+  );
 }
 
 /**

@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 import {
+  BaselineError,
+  buildChangeReport,
+  evaluateRules,
   indexPath,
   isIndexCurrent,
+  loadConfig,
   openDb,
   getOverview,
   rememberRepo,
   scanRepo,
+  type ArchitectureRule,
   type ScanPhase,
 } from "@repolens/core";
 import { DEFAULT_PORT, startServer } from "@repolens/server";
@@ -13,6 +18,8 @@ import { Command } from "commander";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import open from "open";
+import { formatRuleReports, RULES_HINT, rulesFailed } from "./check-report.js";
+import { formatChangeReport } from "./diff-report.js";
 import { formatOverview, formatScanReport, progressBar } from "./report.js";
 import { locateWebDist, webAssetsHint } from "./web-assets.js";
 
@@ -123,6 +130,58 @@ program
     const db = openDb(dbPath, { readonly: true });
     process.stdout.write(formatOverview(getOverview(db)));
     db.close();
+  });
+
+program
+  .command("diff")
+  .description("对比基线提交与当前代码的结构差异：依赖、对外接口、入口影响面、体检")
+  .argument("[path]", "仓库路径", ".")
+  .option("-b, --base <ref>", "基线提交：分支、tag、HEAD~n 或 sha", "HEAD")
+  .option("--head <ref>", "对比到另一个提交；缺省为工作区（含未提交改动）")
+  .option("--json", "输出完整 JSON", false)
+  .action(async (path: string, opts: { base: string; head?: string; json: boolean }) => {
+    const root = resolve(path);
+    assertDirectory(root);
+    const progress = opts.json ? undefined : reportProgress;
+    try {
+      // 只刷新结构，不在对比时顺带花 token；已有的语义缓存照常保留
+      if (!opts.head) await scanRepo({ root, structureOnly: true, onProgress: progress });
+      const report = await buildChangeReport(root, { base: opts.base, head: opts.head, onProgress: progress });
+      if (progress) process.stderr.write("\n");
+      process.stdout.write(opts.json ? `${JSON.stringify(report, null, 2)}\n` : formatChangeReport(report));
+    } catch (err) {
+      if (!(err instanceof BaselineError)) throw err;
+      process.stderr.write(`\n${err.message}\n`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("check")
+  .description("按 .repolens.json 的 rules 检查依赖有没有越界；不通过时退出码为 1，可直接放进 CI 或提交钩子")
+  .argument("[path]", "仓库路径", ".")
+  .option("--json", "输出完整 JSON", false)
+  .action(async (path: string, opts: { json: boolean }) => {
+    const root = resolve(path);
+    assertDirectory(root);
+    let rules: ArchitectureRule[];
+    try {
+      rules = loadConfig(root).rules;
+    } catch (err) {
+      process.stderr.write(`${(err as Error).message}\n`);
+      process.exit(2);
+    }
+    if (rules.length === 0) {
+      process.stdout.write(opts.json ? "[]\n" : RULES_HINT);
+      return;
+    }
+    await scanRepo({ root, structureOnly: true, onProgress: opts.json ? undefined : reportProgress });
+    if (!opts.json) process.stderr.write("\n");
+    const db = openDb(indexPath(root), { readonly: true });
+    const reports = evaluateRules(db, rules);
+    db.close();
+    process.stdout.write(opts.json ? `${JSON.stringify(reports, null, 2)}\n` : formatRuleReports(reports));
+    if (rulesFailed(reports)) process.exitCode = 1;
   });
 
 const PHASE_LABELS: Record<ScanPhase, string> = {

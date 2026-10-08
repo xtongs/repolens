@@ -2,6 +2,8 @@ import type {
   Confidence,
   DiscoveredPackage,
   EdgeType,
+  FindingKind,
+  FindingSeverity,
   ParsedExport,
   ParsedEntryHint,
   ParsedSymbol,
@@ -21,8 +23,8 @@ export interface FileRow {
 }
 
 export interface FindingRow {
-  kind: "duplicate" | "cycle";
-  severity: "high" | "medium" | "low";
+  kind: FindingKind;
+  severity: FindingSeverity;
   scopeKind: "package" | "directory" | "file" | "symbol";
   /** 图节点 id */
   scopeKey: string;
@@ -420,7 +422,7 @@ export class IndexWriter {
         name: exp.name,
         kind: exp.kind,
         source: exp.source ?? null,
-        symbolId: symbolIdByName.get(exp.name) ?? null,
+        symbolId: exp.source ? null : (symbolIdByName.get(exp.local ?? exp.name) ?? null),
         line: exp.line,
       });
     }

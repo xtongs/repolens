@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { FileRole, RepolensConfig } from "./types.js";
+import type { ArchitectureRule, FileRole, RepolensConfig } from "./types.js";
 
 export const CONFIG_FILENAME = ".repolens.json";
 export const GLOBAL_CONFIG_DIR = "repolens";
@@ -16,6 +16,7 @@ export const DEFAULT_CONFIG: RepolensConfig = {
   maxFileBytes: 1_500_000,
   maxNodesPerView: 30,
   defaultRoles: DEFAULT_ROLES,
+  rules: [],
   llm: {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
@@ -74,11 +75,16 @@ export function loadGlobalConfig(): RepolensConfig {
 }
 
 function readConfig(path: string): unknown {
+  let parsed: unknown;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as unknown;
+    parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
   } catch (err) {
     throw new Error(`RepoLens 配置解析失败：${path}：${(err as Error).message}`);
   }
+  if (typeof parsed === "object" && parsed !== null && "rules" in parsed) {
+    (parsed as { rules: unknown }).rules = normalizeRules((parsed as { rules: unknown }).rules, path);
+  }
+  return parsed;
 }
 
 function mergeConfig(base: RepolensConfig, patch: unknown): RepolensConfig {
@@ -91,8 +97,47 @@ function mergeConfig(base: RepolensConfig, patch: unknown): RepolensConfig {
     maxFileBytes: p.maxFileBytes ?? base.maxFileBytes,
     maxNodesPerView: p.maxNodesPerView ?? base.maxNodesPerView,
     defaultRoles: p.defaultRoles ?? base.defaultRoles,
+    rules: p.rules ?? base.rules,
     llm: normalizeLlmConfig({ ...base.llm, ...(p.llm ?? {}) }),
   };
+}
+
+/**
+ * 写错的规则直接报错而不是跳过：静默丢掉一条禁令，体检就会一直显示「没有违规」，
+ * 人会以为架构守住了。
+ */
+function normalizeRules(value: unknown, path: string): ArchitectureRule[] {
+  if (!Array.isArray(value)) throw new Error(`RepoLens 配置里的 rules 必须是数组：${path}`);
+  return value.map((raw, index) => {
+    const rule = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    const from = globList(rule["from"]);
+    const disallow = globList(rule["disallow"]);
+    if (from.length === 0 || disallow.length === 0) {
+      throw new Error(`RepoLens 配置里第 ${index + 1} 条规则缺少 from 或 disallow：${path}`);
+    }
+    const severity = rule["severity"];
+    return {
+      name: nonEmpty(rule["name"]),
+      from,
+      disallow,
+      allow: globList(rule["allow"]),
+      includeTypeOnly: rule["includeTypeOnly"] === true,
+      severity: severity === "medium" || severity === "low" ? severity : "high",
+      reason: nonEmpty(rule["reason"]),
+    };
+  });
+}
+
+function globList(value: unknown): string[] {
+  const list = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  return list
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().replace(/^\.\//, ""))
+    .filter((item) => item !== "");
+}
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 const FILE_ROLES = new Set<FileRole>([

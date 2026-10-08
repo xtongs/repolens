@@ -1,4 +1,7 @@
 import {
+  BaselineError,
+  FINDING_KINDS,
+  buildChangeReport,
   currentLlmStatus,
   getCallGraph,
   getEntryPoints,
@@ -84,7 +87,7 @@ export function createApi(deps: ApiDeps): Hono {
     return c.json({
       summary: getFindingSummary(db),
       items: getFindings(db, {
-        kind: kind === "duplicate" || kind === "cycle" ? kind : undefined,
+        kind: FINDING_KINDS.find((known) => known === kind),
         scope: c.req.query("scope"),
         limit: clampInt(c.req.query("limit"), 200, 1, 1000),
       }),
@@ -277,6 +280,19 @@ export function createApi(deps: ApiDeps): Hono {
         : c.json({ error: "笔记不存在" }, 404);
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  // 变更对比要导出基线快照、写 .repolens/baselines，按写操作要求本地意图标记。
+  // 对比的是当前索引（上次扫描时的代码），不在这里顺带重扫。
+  app.post("/changes", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "compare-changes") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    try {
+      return c.json(await buildChangeReport(repoRoot, { base: c.req.query("base")?.trim() || "HEAD" }));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, err instanceof BaselineError ? 400 : 500);
     }
   });
 

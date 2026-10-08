@@ -6,6 +6,10 @@
 源码 → 更多 grammar → 语言插件”的顺序持续扩展语言覆盖。
 目标规模：1400 文件 / 40 万行量级的 monorepo（参照 [earendil-works/pi](https://github.com/earendil-works/pi)）
 
+M4 之后的「AI 代码可读性优化」（调用边可信度、变更视角、架构规则、前后端连线等）
+已全部交付，内容和验证结果记录在 [OPTIMIZATION-PLAN.md](./OPTIMIZATION-PLAN.md)，
+设计细节见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
+
 ---
 
 ## M1 · 结构骨架（确定性，零 LLM 依赖）
@@ -222,6 +226,32 @@ AI 写出来的架构，更是**判断它合不合理**。而判断的第一步�
 
 ---
 
+## AI 代码可读性优化（M4 之后）
+
+出发点：AI 生成的代码越来越多，负责它的人要能一眼看清工程架构和实现逻辑，不能看错、不能看漏。
+逐项内容见 [OPTIMIZATION-PLAN.md](./OPTIMIZATION-PLAN.md)。
+
+### 交付内容
+
+- [x] 调用边可信度：显式 import 语言不再做无证据的跨文件同名兜底；`export *` 传递闭包；Go 限定同包
+- [x] `import type` 记为 `references`，不进运行时依赖、不参与模块环检测；汇总边只算源码到源码
+- [x] 解析器补出 AI 常写的形态：内联路由 / CLI handler、JSX 组件组合、对象方法、`memo` / `create` 包装函数
+- [x] 关键链路降噪：同类边界去重、标签裁剪、入口排序
+- [x] 变更视角：`repolens diff` 与 Web「变更」页签，基线按 git 提交建索引，图节点带变更角标
+- [x] 架构规则：`.repolens.json` 的 `rules` → 违规体检 + `repolens check`（CI 可用）
+- [x] 巨石函数 / 文件体检；复杂度只算函数自身
+- [x] AI 架构分层的输入带上模块间依赖方向、外部库、入口、导出和已有摘要
+- [x] 前后端 HTTP 连线：前端请求 URL ↔ 后端路由 handler，作为推断边单独标注
+
+### 验收标准
+
+- [x] 自扫 RepoLens：前端 `api/client.ts` 的 28 个请求全部唯一、方法正确地连到后端路由，无误连
+- [x] 自扫的模块环只剩真实的环，测试文件的反向引用不再制造假环
+- [x] `repolens check` 对 RepoLens 自己声明的 3 条分层规则全部通过
+- [x] `repolens diff` 能列出本轮新增的模块依赖、对外接口和受影响的入口
+
+---
+
 ## M5+ · 候选项（未承诺）
 
 按用户明确要求暂缓，等基础功能扎实后再评估：
@@ -232,5 +262,4 @@ AI 写出来的架构，更是**判断它合不合理**。而判断的第一步�
 - 导出：Mermaid / SVG / 静态 HTML 报告
 - MCP server，让 Cursor 里的 AI 直接查询仓库结构
 - watch 模式增量刷新
-- 版本对比：两个 commit 的架构差异
 - 远程仓库 URL 直接分析

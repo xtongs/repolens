@@ -1,9 +1,11 @@
 import type {
+  ChangeReportDto,
   ChatContextItemDto,
   ChatDoneDto,
   ChatRequestDto,
   FileDetailDto,
   FindingDto,
+  FindingKind,
   FindingSummaryDto,
   GraphDto,
   NoteDto,
@@ -170,7 +172,7 @@ export const api = {
     if (!response.ok) throw await toError(response);
   },
 
-  findings: (kind?: "duplicate" | "cycle", scope?: string) =>
+  findings: (kind?: FindingKind, scope?: string) =>
     get<FindingsResponse>("/findings", { kind, scope }),
 
   revealChain: (nodeId: string) =>
@@ -202,6 +204,9 @@ export const api = {
     }),
 
   entries: () => get<EntryPointDto[]>("/entries"),
+
+  /** 首次对比某个提交要导出快照并建基线索引，可能要几秒 */
+  changes: (base: string) => post<ChangeReportDto>("/changes", { base }, "compare-changes"),
 
   traces: (entryId?: string) =>
     get<TraceSummaryDto[]>("/traces", { entry: entryId }),

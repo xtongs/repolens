@@ -7,6 +7,7 @@ import { writePref } from "../lib/prefs";
 import { modKey } from "../lib/shortcut";
 import { METRIC_LABELS } from "../lib/visual";
 import { useAppStore, type MetricKey } from "../store/useAppStore";
+import { changedFileCount, useChangesStore } from "../store/useChangesStore";
 import { useChatStore } from "../store/useChatStore";
 import { RepoPicker } from "./RepoPicker";
 import { measureSidebarAnchors } from "./ResizablePanelHandle";
@@ -64,6 +65,7 @@ export function TopBar() {
 
         <FindingsPill />
         <TracePill />
+        <ChangesPill />
         <LlmPill />
       </div>
 
@@ -621,6 +623,22 @@ function TracePill() {
       style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
       title={t("入口到 I/O 边界的关键链路")} aria-label={t("链路")}>
       ⇢<span data-topbar-optional="2">{t("链路")}</span>
+    </button>
+  );
+}
+
+function ChangesPill() {
+  const t = useT();
+  const store = useAppStore();
+  const changed = useChangesStore((s) => changedFileCount(s.index, store.showNoise));
+  const open = store.treeOpen && store.panelTab === "changes";
+  return (
+    <button type="button" onClick={() => { store.setPanelTab("changes"); store.setTreeOpen(!open); }}
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors"
+      style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
+      title={t("对比某个提交：这次改了哪些依赖、接口和入口")} aria-label={t("变更")}>
+      Δ<span data-topbar-optional="2">{t("变更")}</span>
+      {changed > 0 && <span className="tabular-nums">{changed}</span>}
     </button>
   );
 }

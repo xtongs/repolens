@@ -21,6 +21,8 @@ RepoLens 是一个本地运行的代码仓库理解工具：CLI 扫描仓库产�
 | import 语句、导出符号 | tree-sitter AST | 否 |
 | import 目标文件 | 各语言模块解析器 | 可解析失败，但不会猜 |
 | 调用边 | AST 调用点 + 解析器 | 分四档置信度，见下 |
+| 前后端 HTTP 连线 | 前端请求 URL 字面量 × 后端路由注册，按路径段推断 | 是，一律 `likely` / `ambiguous`，UI 标 `HTTP` |
+| 架构规则违规 | 仓库声明的规则 × 已解析到确定目标的 import | 判据不误报，只会因 import 未解析而漏报 |
 | 摘要、伪代码、架构分层命名 | LLM | 是，UI 明确标注为 AI 生成 |
 
 参考实现 [Understand Anything](https://github.com/Egonex-AI/Understand-Anything) 的做法是：
@@ -34,12 +36,45 @@ RepoLens 把这一步做成确定性的，代价是每种语言要写一个模�
 
 | 档位 | 判定条件 | UI 呈现 | 默认可见 |
 | --- | --- | --- | --- |
-| `exact` | 同文件内唯一定义，或通过 import 唯一解析到目标文件的导出符号 | 实线 | 是 |
-| `likely` | 全局符号名匹配且候选唯一（无 import 证据，如 Go 同包、Python 通配导入） | 虚线 | 是 |
+| `exact` | 同文件定义；`this.x` 命中同一个类；import 链（含 re-export、`export *` 传递闭包）一路走到定义；`api.load()` 沿 import 绑定解析到对象方法 `api.load` | 实线 | 是 |
+| `likely` | 有文件级证据但没有符号级证据（Go 同包、Python/Rust 通配导入、import 指到了文件但对方没有显式导出这个名字）；前后端 HTTP 连线 | 虚线 | 是 |
 | `ambiguous` | 同名候选多个，全部记录在 `candidates` 里 | 点线 + 角标数字 | 否，需手动打开 |
 | `external` | 解析到第三方依赖或语言内置 | 聚合进单个 external 节点 | 折叠 |
 
 `ambiguous` 默认隐藏是刻意的：宁可少画一条边，也不画一条错边。
+
+「全仓唯一同名」只在没有模块解析器的语言里兜底。TS/JS、Python、Rust 的跨文件调用
+必须经过 import——没有 import 证据的同名命中几乎全是巧合，局部变量 `run()` 会被连到
+另一个包里恰好导出的 `run`，而且跨越了架构边界。Go 的无 import 调用只在同包目录内找。
+
+## 边的种类
+
+| 层级 | 类型 | 含义 |
+| --- | --- | --- |
+| 符号 | `calls` + `call_kind = call / method / new` | 普通调用、方法调用、构造 |
+| 符号 | `calls` + `call_kind = render` | JSX `<Comp/>`：前端组件树靠它连起来 |
+| 符号 | `calls` + `call_kind = http` | 前端请求 → 后端路由 handler，按 URL 推断 |
+| 文件 | `imports` | 运行时依赖 |
+| 文件 | `references` | 只有 `import type`：共享类型不构成运行时耦合 |
+| 文件 | `http` | 只有 HTTP 推断边、没有 import 的前后端文件对 |
+
+目录级、包级的汇总边（`rollup_edges`）按同样三类分开聚合，且**只统计源码到源码**：
+测试反向引用被测模块是常态，算进来会在架构图上凭空多出依赖和环。模块环检测只看
+`imports` 汇总边，类型引用和 HTTP 推断都不构成环。
+
+### 解析器补出来的符号
+
+AI 写的代码里大量逻辑不在「具名函数声明」里，不补这些，图上就是空白：
+
+- **内联 handler**：`app.get("/x", (c) => …)` 的匿名函数合成为 `GET /x`，
+  commander 的 `.command("scan").action(() => …)` 合成为 `CLI scan`，成为可追踪的入口
+- **对象方法**：顶层常量对象里直接写的函数成为方法符号，`export const api = { load: () => … }`
+  → `api.load`；`() => import(...)` 这类懒加载器和非标识符的键（翻译表）不算
+- **包装函数**：顶层 `const X = memo(function X() {…})`、`forwardRef(…)`、`lazy(…)`、
+  zustand 的 `create(…)` 成为函数符号；`map` / `then` 这类数据回调不算
+
+复杂度只算函数自身的分支，嵌套函数各算各的（与 ESLint `complexity` 同口径），
+否则外层函数会因为里面写了几个回调就被判成巨石。
 
 ## 包结构
 
@@ -64,10 +99,11 @@ core/src/
 ├── config.ts             RepolensConfig 与 .repolens.json 加载
 ├── registry.ts           扫过的仓库清单（~/.repolens/repos.json）
 ├── db/
-│   ├── schema.sql        DDL
+│   ├── schema.ts         DDL
 │   ├── database.ts       打开 / 迁移 / WAL / 事务
 │   ├── writer.ts         批量写入
-│   └── queries.ts        读查询（server 消费）
+│   ├── queries.ts        读查询（server 消费）
+│   └── traces.ts         入口与链路的读查询
 ├── discovery/
 │   ├── ignore.ts         .gitignore + 默认忽略规则
 │   ├── language.ts       语言注册表：扩展名 / grammar / extractor / resolver
@@ -79,10 +115,18 @@ core/src/
 │   └── extractors/       每语言一个：符号 / import / 导出 / 调用点
 ├── resolve/              每语言一个模块解析器：import 说明符 → 文件 → 符号
 ├── pipeline/
-│   ├── scan.ts           扫描编排
-│   ├── fingerprint.ts    内容指纹与增量判定
-│   ├── metrics.ts        LOC / 圈复杂度
-│   └── rollup.ts         文件边 → 目录边 → 包边聚合
+│   ├── scan.ts           扫描编排：发现 → 内容指纹增量 → 解析 → 链接 → 语义
+│   ├── link.ts           链接阶段编排：import 边与目录/包汇总、类型关系，再依次调下面几步
+│   ├── link-calls.ts     调用点 → 符号级调用边，打置信度
+│   ├── trace.ts          入口识别与关键链路
+│   ├── http-links.ts     前端请求 URL ↔ 后端路由的推断边
+│   ├── diagnose.ts       体检：重复实现、模块环、巨石函数/文件、规则违规
+│   ├── rules.ts          .repolens.json 依赖规则的核对
+│   └── metrics.ts        LOC / 圈复杂度
+├── diff/
+│   ├── baseline.ts       git 提交 → 基线索引（按 commit 缓存）
+│   ├── compare.ts        两份索引的结构差异
+│   └── report.ts         基线 + 当前索引 → 变更报告
 └── llm/                  可插拔 OpenAI 兼容客户端 + prompt + 缓存
 ```
 
@@ -93,12 +137,55 @@ core/src/
 2. fingerprint 计算内容哈希，与上次扫描比对，得出 changed / unchanged / deleted
 3. parse       对 changed 文件跑 tree-sitter，提取符号、import、导出、调用点
 4. resolve     import 说明符 → 目标文件 id；导入名 → 目标符号 id（构建符号索引）
-5. link        调用点 → 目标符号 id，打 confidence 标签
-6. rollup      文件级 import/calls 边按目录、包聚合，算权重
-7. enrich      （M3）LLM 生成仓库总览、包摘要；函数级摘要与伪代码按需生成
+5. link        整体重算派生数据，顺序固定：
+                 import 边与目录/包汇总 → 调用边（打 confidence）→ 类型关系
+                 → 入口与关键链路 → HTTP 推断边 → 搜索索引 → 体检
+6. rollup      目录级行数、复杂度等指标汇总
+7. enrich      （M3）LLM 生成仓库总览、包摘要和架构分层；函数级摘要与伪代码按需生成
 ```
 
 第 3-5 步是纯函数式的，输入相同必然输出相同，这是增量更新和结果可复现的基础。
+
+关键链路在 HTTP 连线之前算，所以链路不跨网络边界：前端一条、后端一条，
+各自从入口走到 I/O。HTTP 边让两段在图上接得上，但不冒充一条连续的执行轨迹。
+
+AI 架构分层的输入不只是目录名：每个候选模块带上行数、对外导出（按被调用次数排）、
+用到的外部库、入口，以及模块之间按 `import` / `type` / `http` 区分的依赖方向和次数，
+已有的模块摘要一并给出。模型据此按依赖方向自上而下命名分层，只能用给定的模块 id，
+编出来的 id 会被丢掉。
+
+## 变更视角
+
+```
+git 提交 ──git archive──▶ 临时快照 ──scanRepo(仅结构)──▶ .repolens/baselines/<commit>.db
+                                                              │
+工作区（或另一个提交）的索引 ─────────────────────────────────┤
+                                                              ▼
+                                         diffIndexes：文件 / 符号 / 模块依赖 / 外部库
+                                                      / 体检 / 入口与影响面
+                                                              │
+                                    ┌─────────────────────────┴───────────┐
+                              repolens diff                       POST /changes
+                              （终端报告 / --json）          → 左侧「变更」页 + 图节点角标
+```
+
+- 用 `git archive` 而不是 checkout / worktree：不碰用户的工作区和 git 元数据，
+  未提交的改动也不会被卷进基线。提交内容不可变，基线按 commit 缓存，只有解析器升级时才重建。
+- 基线用当前版本的解析器重扫，两边口径一致：差异里不会混进「解析器升级了」带来的假变化。
+- 文件按路径配对，内容哈希相同的「删除 + 新增」认作移动；符号按「文件 + 容器.名字 + 类型」
+  配对，同名的按出现顺序，再比内容哈希。
+- 影响面：从每个入口沿调用边往下最多走几跳，碰到改过的符号就记下来，回答「哪些入口会走到这次改的代码」。
+- 全程不经过模型。审 AI 写的代码时最需要的是一份不会被「解释」掉的客观变化清单。
+
+## 架构规则
+
+`.repolens.json` 的 `rules` 声明哪些模块不许依赖哪些（仓库内路径 glob、外部包名都可以），
+`diagnose` 阶段逐条核对已解析到确定目标的 import，违规作为 `violation` 体检落库，
+和其他体检一样挂在节点上；`repolens check` 复用同一份核对，不通过时退出码为 1。
+
+- 只约束源码文件，测试跨层引用被测对象是常态
+- `import type` 默认不算违规（共享 DTO 类型不构成运行时耦合），`includeTypeOnly: true` 可以打开
+- 报告里给出每条规则命中的文件数：为 0 多半是 glob 写错了，规则等于没生效
 
 ### 语言能力分层
 
