@@ -103,7 +103,9 @@ core/src/
 │   ├── database.ts       打开 / 迁移 / WAL / 事务
 │   ├── writer.ts         批量写入
 │   ├── queries.ts        读查询（server 消费）
-│   └── traces.ts         入口与链路的读查询
+│   ├── traces.ts         入口与链路的读查询
+│   ├── semantic.ts       AI 生成内容的存取（summaries 表、输出语言、AI 状态）
+│   └── semantic-format.ts AI 内容的存储格式：写入和读出时共用的规整与解析
 ├── discovery/
 │   ├── ignore.ts         .gitignore + 默认忽略规则
 │   ├── language.ts       语言注册表：扩展名 / grammar / extractor / resolver
@@ -127,8 +129,11 @@ core/src/
 │   ├── baseline.ts       git 提交 → 基线索引（按 commit 缓存）
 │   ├── compare.ts        两份索引的结构差异
 │   └── report.ts         基线 + 当前索引 → 变更报告
-└── llm/                  可插拔 OpenAI 兼容客户端 + prompt + 缓存
+└── llm/                  可插拔 OpenAI 兼容客户端、prompt 与生成编排、AI 状态
 ```
+
+`db` 不依赖 `llm`：AI 内容的存取和格式属于持久层，`llm` 负责生成后经它写入，
+`queries.ts` 读出时不必知道内容是怎么生成的。
 
 ## 解析流水线
 

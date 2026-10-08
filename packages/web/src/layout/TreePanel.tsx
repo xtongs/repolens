@@ -2,7 +2,7 @@ import type { EntryPointDto, FindingDto, FindingKind, TraceSummaryDto, TreeNodeD
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type FindingsResponse, api } from "../api/client";
 import { useT } from "../i18n";
-import { formatCount, languageColor } from "../lib/visual";
+import { formatCount, languageColor } from "../ui/visual";
 import { ALL_VISIBLE_ROLES, SOURCE_ONLY_ROLES, useAppStore } from "../store/useAppStore";
 import { ChangesBody } from "./ChangesPanel";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";

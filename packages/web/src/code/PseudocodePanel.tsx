@@ -2,7 +2,7 @@ import type { PseudocodeStepDto } from "@repolens/core/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../i18n";
-import { CodeBlock } from "./CodeLines";
+import { CodeBlock } from "../ui/CodeLines";
 import { useSource, type LoadedSource } from "./useSource";
 
 /** 悬停超过这个时长才浮出源码，扫过列表时不闪 */

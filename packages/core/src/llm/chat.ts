@@ -22,9 +22,10 @@ import type {
   LlmUsage,
   RelationDto,
 } from "../types.js";
-import { mergeLlmStatusUsage } from "./cache.js";
+import { pseudocodeStepsToText } from "../db/semantic-format.js";
 import { OpenAiCompatibleClient, type ChatTurn, type LlmClientOptions } from "./client.js";
-import { hasElidedLines, numberSourceLines, pseudocodeStepsToText } from "./format.js";
+import { hasElidedLines, numberSourceLines } from "./source-lines.js";
+import { mergeLlmStatusUsage } from "./status.js";
 
 const MAX_MESSAGES = 24;
 const MAX_MESSAGE_CHARS = 8_000;

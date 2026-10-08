@@ -17,21 +17,20 @@ import { addUsage, emptyUsage, LlmUnavailableError, OpenAiCompatibleClient } fro
 import {
   cleanSingleLine,
   cleanText,
-  MAX_SOURCE_LINE_CHARS,
   normalizePseudocodeSteps,
   normalizeSummary,
-  numberSourceLines,
   parsePseudocodeSteps,
   parsePseudocodeText,
   pseudocodeStepsToText,
-} from "./format.js";
+} from "../db/semantic-format.js";
 import {
   getCachedSemantic,
   invalidateCachedSemantic,
-  mergeLlmStatusUsage,
   putCachedSemantic,
   type SemanticTargetKind,
-} from "./cache.js";
+} from "../db/semantic.js";
+import { MAX_SOURCE_LINE_CHARS, numberSourceLines } from "./source-lines.js";
+import { mergeLlmStatusUsage } from "./status.js";
 
 interface SemanticTarget {
   kind: "package" | "directory";

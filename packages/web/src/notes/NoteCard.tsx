@@ -3,7 +3,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { intlLocale, t, useT } from "../i18n";
 import { formatLines, openNote, useNotesStore } from "../store/useNotesStore";
 
-const ChatMarkdown = lazy(() => import("../chat/ChatMarkdown").then((module) => ({ default: module.ChatMarkdown })));
+const ChatMarkdown = lazy(() => import("../ui/ChatMarkdown").then((module) => ({ default: module.ChatMarkdown })));
 
 /** 超过这么多字先折起来，列表里一条长回答不至于把其余笔记挤出视野 */
 const COLLAPSE_CHARS = 280;

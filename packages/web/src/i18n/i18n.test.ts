@@ -14,7 +14,7 @@ const ALLOWED: Record<string, readonly string[] | "*"> = {
   "../graph/layout/engine.ts": "*",
   "../layout/TopBar.tsx": ["中", "切换到中文", "界面语言"],
   // 除第一项外都出自解析模型输出的正则
-  "../overlays/HoverCard.tsx": ["语义结果不完整", "用途", "：", "。！？"],
+  "../graph/HoverCard.tsx": ["语义结果不完整", "用途", "：", "。！？"],
 };
 
 const LITERAL = /\b(?:t|msg)\("((?:[^"\\]|\\.)*)"/g;

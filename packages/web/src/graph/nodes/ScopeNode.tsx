@@ -4,7 +4,7 @@ import { memo } from "react";
 import { useT } from "../../i18n";
 import { useAppStore, type MetricKey } from "../../store/useAppStore";
 import { changeMarkOf, useChangesStore } from "../../store/useChangesStore";
-import { formatCount, metricValue, nodeAccent, symbolGlyph } from "../../lib/visual";
+import { formatCount, metricValue, nodeAccent, symbolGlyph } from "../../ui/visual";
 import { CONTAINER_HEADER } from "../layout/useElkLayout";
 
 export interface ScopeNodeData extends Record<string, unknown> {

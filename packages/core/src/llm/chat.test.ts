@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../db/database.js";
 import type { ChatContextItemDto } from "../types.js";
-import { readLlmStatus } from "./cache.js";
+import { readLlmStatus } from "../db/semantic.js";
 import { buildChatContext, parseChatRequest, recordChatUsage, streamRepositoryChat } from "./chat.js";
 
 let db: Db | null = null;

@@ -9,7 +9,7 @@ import {
   type PointerEvent,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { Chevron } from "../code/Chevron";
+import { Chevron } from "../ui/Chevron";
 import { t, translateMessage, useT } from "../i18n";
 import { desktop } from "../lib/desktop";
 import { readPref, writePref } from "../lib/prefs";
@@ -24,7 +24,7 @@ import {
 } from "../store/useChatStore";
 
 // Markdown 解析只在第一次出现回答时才需要，不进首屏包
-const ChatMarkdown = lazy(() => import("./ChatMarkdown").then((module) => ({ default: module.ChatMarkdown })));
+const ChatMarkdown = lazy(() => import("../ui/ChatMarkdown").then((module) => ({ default: module.ChatMarkdown })));
 
 const HEIGHT_STORAGE_KEY = "repolens:chat-height";
 const DEFAULT_HEIGHT = 340;

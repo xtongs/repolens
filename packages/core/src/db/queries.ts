@@ -33,13 +33,13 @@ import type {
   LlmStatusDto,
 } from "../types.js";
 import { getMeta, getMetaJson, type Db } from "./database.js";
-import { readLlmStatus, semanticLanguage } from "../llm/cache.js";
+import { readLlmStatus, semanticLanguage } from "./semantic.js";
 import {
   normalizeSemanticContent,
   parsePseudocodeSteps,
   parsePseudocodeText,
   type SemanticTextFlavor,
-} from "../llm/format.js";
+} from "./semantic-format.js";
 
 export const EXTERNAL_NODE_ID = "external";
 

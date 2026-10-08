@@ -5,7 +5,7 @@ import { msg, translateMessage, useLocale, useLocaleStore, useT } from "../i18n"
 import { desktop } from "../lib/desktop";
 import { writePref } from "../lib/prefs";
 import { modKey } from "../lib/shortcut";
-import { METRIC_LABELS } from "../lib/visual";
+import { METRIC_LABELS } from "../ui/visual";
 import { useAppStore, type MetricKey } from "../store/useAppStore";
 import { changedFileCount, useChangesStore } from "../store/useChangesStore";
 import { useChatStore } from "../store/useChatStore";

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { indexPath, openDb, type Db } from "../db/database.js";
 import { scanRepo } from "../pipeline/scan.js";
 import { getFileDetail, getSymbolDetail, symbolKey } from "../db/queries.js";
-import { getCachedSemantic, putCachedSemantic } from "./cache.js";
+import { getCachedSemantic, putCachedSemantic } from "../db/semantic.js";
 import {
   dropSemanticsFromOutdatedInput,
   generateFileSummary,

@@ -1,7 +1,7 @@
 import { memo, useEffect, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { CodeLine } from "../code/CodeLines";
+import { CodeLine } from "./CodeLines";
 import { useT } from "../i18n";
 import { shikiLanguage, useHighlightedLines } from "../lib/highlight";
 import { useAppStore } from "../store/useAppStore";

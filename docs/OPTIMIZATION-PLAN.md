@@ -79,6 +79,19 @@ RepoLens 要让人**一眼看清工程架构和实现逻辑**，细节可以不�
   `README.md`（`diff` / `check` 用法与 `rules` 格式）、`INTERACTION.md`（版本对比移出「不做的功能」、
   变更页与边样式）、`ROADMAP.md`（本计划的交付内容与验收）
 
+## 后续：拆除自扫发现的 4 个模块环
+
+收尾验证时剩下的 4 个环都是真实的双向运行时依赖，原因都是一个目录里混着两层东西：
+
+| 环 | 原因 | 拆法 |
+| --- | --- | --- |
+| `core/db ⇄ core/llm` | 查询层要读 AI 内容，借用了 `llm` 里的缓存读写和格式解析 | `summaries` 表和 meta 的存取移到 `db/semantic.ts`，内容格式移到 `db/semantic-format.ts`；AI 状态的判断留在 `llm/status.ts`，提示词用的源码行号工具改为 `llm/source-lines.ts` |
+| `web/chat ⇄ web/notes` | 笔记卡片借用了聊天目录里的 Markdown 渲染 | 共用的展示件 `ChatMarkdown`、`CodeLines`、`Chevron` 移到新目录 `ui/` |
+| `web/graph ⇄ web/overlays` | 悬停卡和右键菜单只被画布用，却放在 `overlays`，又反过来调画布的 `findNode` | 两者移进 `graph/`；`overlays` 只留应用级浮层（命令面板、帮助、设置） |
+| `web/i18n ⇄ web/lib` | `lib` 里最底层的 `prefs` 和依赖翻译的 `visual` 放在一起 | `visual.ts` 移到 `ui/`，`lib` 不再依赖任何内部目录 |
+
+复扫后模块环为 0，没有新增；符号数和确定调用边数不变，只是挪了位置。
+
 ## 已知限制（不在本计划内）
 
 - 体检标题由服务端用中文生成，英文界面下不翻译（健康面板原本就是这样）

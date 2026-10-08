@@ -11,7 +11,7 @@ import { msg, useT } from "../i18n";
 import { SelectionAsk } from "../chat/SelectionAsk";
 import { PseudocodePanel, stepMarkerWidth, type StepQuote } from "../code/PseudocodePanel";
 import { SourcePanel, type SourceFocus } from "../code/SourcePanel";
-import { formatCount, languageColor, symbolGlyph } from "../lib/visual";
+import { formatCount, languageColor, symbolGlyph } from "../ui/visual";
 import { NoteList } from "../notes/NoteCard";
 import { useAppStore } from "../store/useAppStore";
 import { useChatStore } from "../store/useChatStore";

@@ -13,12 +13,12 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useT } from "../i18n";
-import { HoverCard } from "../overlays/HoverCard";
-import { NodeContextMenu, type ContextMenuState } from "../overlays/NodeContextMenu";
+import { HoverCard } from "./HoverCard";
+import { NodeContextMenu, type ContextMenuState } from "./NodeContextMenu";
 import { useAppStore, useGraphSlice, type MetricKey } from "../store/useAppStore";
-import { displayLabels, metricValue, nodeAccent } from "../lib/visual";
+import { displayLabels, metricValue, nodeAccent } from "../ui/visual";
 import { applyFocus, flattenGraph, incidentEdgeIds, neighborIds } from "./model";
-import { nodeSize } from "../lib/visual";
+import { nodeSize } from "../ui/visual";
 import { ScopeNode, type ScopeNodeType } from "./nodes/ScopeNode";
 import { useElkLayout, type PositionedNode } from "./layout/useElkLayout";
 

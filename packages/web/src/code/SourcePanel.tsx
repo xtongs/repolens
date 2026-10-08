@@ -4,8 +4,8 @@ import { useT } from "../i18n";
 import { readPref, writePref } from "../lib/prefs";
 import { NoteCard } from "../notes/NoteCard";
 import { formatLines } from "../store/useNotesStore";
-import { Chevron } from "./Chevron";
-import { CodeLine } from "./CodeLines";
+import { Chevron } from "../ui/Chevron";
+import { CodeLine } from "../ui/CodeLines";
 import { hasLines } from "./PseudocodePanel";
 import { useSource } from "./useSource";
 

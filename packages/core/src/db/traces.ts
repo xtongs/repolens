@@ -2,7 +2,7 @@ import type {
   BoundaryDto, BoundaryKind, EntryPointDto, ParamDto, TraceDto, TraceNarrativeDto,
   TraceStepDto, TraceSummaryDto, TraceTypeFlowDto,
 } from "../types.js";
-import { semanticLanguage } from "../llm/cache.js";
+import { semanticLanguage } from "./semantic.js";
 import type { Db } from "./database.js";
 
 interface EntryRow {

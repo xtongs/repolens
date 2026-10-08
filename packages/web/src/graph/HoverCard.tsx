@@ -1,10 +1,10 @@
 import type { GraphNodeDto, SemanticResultDto } from "@repolens/core/types";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import { findNode } from "../graph/model";
+import { findNode } from "./model";
 import { useT } from "../i18n";
 import { ALT_KEY } from "../lib/shortcut";
-import { formatCount, kindLabel, nodeAccent } from "../lib/visual";
+import { formatCount, kindLabel, nodeAccent } from "../ui/visual";
 import { useAppStore } from "../store/useAppStore";
 
 const CARD_WIDTH = 440;

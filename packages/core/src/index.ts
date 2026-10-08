@@ -78,7 +78,7 @@ export {
   OpenAiCompatibleClient,
   llmUnavailableReason,
 } from "./llm/client.js";
-export { currentLlmStatus } from "./llm/cache.js";
+export { currentLlmStatus } from "./llm/status.js";
 export {
   buildChatContext,
   parseChatRequest,
