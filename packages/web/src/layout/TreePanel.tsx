@@ -1,9 +1,17 @@
-import type { EntryPointDto, FindingDto, FindingKind, TraceSummaryDto, TreeNodeDto } from "@repolens/core/types";
+import type {
+  EntryPointDto,
+  ExclusionReason,
+  FileRole,
+  FindingDto,
+  FindingKind,
+  TraceSummaryDto,
+  TreeNodeDto,
+} from "@repolens/core/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type FindingsResponse, api } from "../api/client";
-import { useT } from "../i18n";
+import { msg, t, useT } from "../i18n";
 import { formatCount, languageColor } from "../ui/visual";
-import { ALL_VISIBLE_ROLES, SOURCE_ONLY_ROLES, useAppStore } from "../store/useAppStore";
+import { useAppStore } from "../store/useAppStore";
 import { ChangesBody } from "./ChangesPanel";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 import { TabStrip } from "./TabStrip";
@@ -284,20 +292,23 @@ function PanelTab({
   );
 }
 
+/**
+ * 结构树列出仓库里的全部文件，不跟噪音开关走：画布回答「主干是什么」，
+ * 结构树回答「仓库里有什么」。不参与分析的置灰，点开照样能看源码。
+ */
 function TreeBody() {
   const t = useT();
-  const showNoise = useAppStore((s) => s.showNoise);
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
+  const select = useAppStore((s) => s.select);
   const [root, setRoot] = useState<TreeNodeDto | null>(null);
-
-  const roles = (showNoise ? ALL_VISIBLE_ROLES : SOURCE_ONLY_ROLES).join(",");
+  const rootSelected = useAppStore((s) => root !== null && s.selected === root.id);
 
   useEffect(() => {
     let cancelled = false;
     setRoot(null);
     void api
-      .tree(".", 1, roles)
+      .files(".")
       .then((tree) => {
         if (!cancelled) setRoot(tree);
       })
@@ -307,33 +318,78 @@ function TreeBody() {
     return () => {
       cancelled = true;
     };
-  }, [repoId, repoRevision, roles]);
+  }, [repoId, repoRevision]);
 
   return (
     <>
+      {/* 仓库根在画布上没有节点，仓库级的 AI 概览和根目录 README 从这里进 */}
+      {root && (
+        <button
+          type="button"
+          onClick={() => select(root.id)}
+          title={t("查看仓库概览和 README")}
+          className={`flex shrink-0 items-center gap-1.5 border-b border-[var(--color-line)] px-3 py-1.5 text-left text-[12px] transition-colors ${
+            rootSelected ? "bg-[var(--color-surface-3)]" : "hover:bg-[var(--color-surface-2)]"
+          }`}
+        >
+          <FolderIcon open />
+          <span className="truncate font-medium text-[var(--color-ink)]">{root.name}</span>
+          <span className="ml-auto shrink-0 tabular-nums text-[10px] text-[var(--color-ink-faint)]">
+            {formatCount(root.loc)}
+          </span>
+        </button>
+      )}
       <div className="shrink-0 px-3 pt-2 text-[10.5px] text-[var(--color-ink-faint)]">
-        {t("按代码行热力排序")}
+        {t("按代码行热力排序 · 灰色的不参与分析")}
       </div>
       <div className="thin-scroll flex-1 overflow-y-auto py-1">
         {root === null ? (
           <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>
         ) : (
-          (root.children ?? []).map((child) => (
-            <TreeRow key={child.id} node={child} depth={0} roles={roles} />
-          ))
+          (root.children ?? []).map((child) => <TreeRow key={child.id} node={child} depth={0} />)
         )}
       </div>
     </>
   );
 }
 
-function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; roles: string }) {
+const ROLE_LABELS: Record<FileRole, string> = {
+  source: msg("源码"),
+  test: msg("测试"),
+  config: msg("配置"),
+  generated: msg("生成代码"),
+  types: msg("类型声明"),
+  docs: msg("文档"),
+  asset: msg("资源文件"),
+  vendor: msg("第三方代码"),
+};
+
+const EXCLUSION_HINTS: Record<ExclusionReason, string> = {
+  builtin: msg("依赖或构建目录，固定不扫描"),
+  ignored: msg("被 .gitignore、.repolensignore 或 exclude 规则排除"),
+  vendor: msg("第三方代码，不扫描"),
+  "too-large": msg("文件超过扫描大小上限"),
+  symlink: msg("软链接，不跟随"),
+  unscanned: msg("上次扫描之后新增，重新扫描后纳入"),
+};
+
+function statusHint(node: TreeNodeDto): string | undefined {
+  if (node.status === "excluded") {
+    return t("没进索引：{reason}", { reason: t(EXCLUSION_HINTS[node.excludedBy ?? "unscanned"]) });
+  }
+  if (node.status !== "noise") return undefined;
+  return node.role ? t("不参与分析：{role}", { role: t(ROLE_LABELS[node.role]) }) : t("目录里没有参与分析的源码");
+}
+
+function TreeRow({ node, depth }: { node: TreeNodeDto; depth: number }) {
   const t = useT();
   const select = useAppStore((s) => s.select);
+  const openDetail = useAppStore((s) => s.openDetail);
   const selected = useAppStore((s) => s.selected === node.id);
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<TreeNodeDto[] | null>(node.children ?? null);
   const [loading, setLoading] = useState(false);
+  const muted = node.status === "noise" || node.status === "excluded";
 
   const toggle = useCallback(async () => {
     if (node.kind === "file") return;
@@ -345,12 +401,19 @@ function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; rol
     if (children !== null) return;
     setLoading(true);
     try {
-      const sub = await api.tree(node.path, 1, roles);
+      const sub = await api.files(node.path);
       setChildren(sub.children ?? []);
     } finally {
       setLoading(false);
     }
-  }, [expanded, children, node.kind, node.path, roles]);
+  }, [expanded, children, node.kind, node.path]);
+
+  // 灰色目录不在画布上、没有概览可看，单击直接展开；灰色文件直接看源码
+  const open = () => {
+    if (muted && node.kind === "directory") void toggle();
+    else if (node.status === "noise") openDetail(node.id, { tab: "source", lines: null }, false);
+    else select(node.id);
+  };
 
   return (
     <>
@@ -358,10 +421,11 @@ function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; rol
         role="treeitem"
         aria-expanded={node.kind === "directory" ? expanded : undefined}
         tabIndex={0}
-        onClick={() => select(node.id)}
-        onDoubleClick={() => void toggle()}
+        title={statusHint(node)}
+        onClick={open}
+        onDoubleClick={muted ? undefined : () => void toggle()}
         onKeyDown={(event) => {
-          if (event.key === "Enter") select(node.id);
+          if (event.key === "Enter") open();
           if (event.key === " ") {
             event.preventDefault();
             void toggle();
@@ -369,31 +433,37 @@ function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; rol
         }}
         className={`group relative flex cursor-pointer items-center gap-1.5 py-[3px] pr-3 text-[12px] transition-colors ${
           selected ? "bg-[var(--color-surface-3)]" : "hover:bg-[var(--color-surface-2)]"
-        }`}
+        } ${node.status === "excluded" ? "opacity-60" : ""}`}
         style={{ paddingLeft: 13 + depth * 13 }}
       >
         {/* 热力条：宽度即该项在同级中的相对体量，不占额外的行 */}
-        <span
-          className="pointer-events-none absolute inset-y-0 left-0 bg-[var(--color-accent)]/8"
-          style={{ width: `${Math.max(2, node.heat * 100)}%` }}
-        />
+        {!muted && (
+          <span
+            className="pointer-events-none absolute inset-y-0 left-0 bg-[var(--color-accent)]/8"
+            style={{ width: `${Math.max(2, node.heat * 100)}%` }}
+          />
+        )}
 
         {node.kind === "directory" ? (
-          <FolderIcon open={expanded} />
+          <FolderIcon open={expanded} muted={muted} />
         ) : (
           <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
             <span
               className="h-1.5 w-1.5 rounded-full"
-              style={{ background: languageColor(node.language) }}
+              style={{ background: languageColor(node.language), opacity: muted ? 0.4 : 1 }}
             />
           </span>
         )}
 
-        <span className="relative truncate text-[var(--color-ink)]">{node.name}</span>
-
-        <span className="relative ml-auto shrink-0 tabular-nums text-[10px] text-[var(--color-ink-faint)]">
-          {formatCount(node.loc)}
+        <span className={`relative truncate ${muted ? "text-[var(--color-ink-faint)]" : "text-[var(--color-ink)]"}`}>
+          {node.name}
         </span>
+
+        {(!muted || node.loc > 0) && (
+          <span className="relative ml-auto shrink-0 tabular-nums text-[10px] text-[var(--color-ink-faint)]">
+            {formatCount(node.loc)}
+          </span>
+        )}
       </div>
 
       {expanded && loading && (
@@ -405,10 +475,7 @@ function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; rol
         </div>
       )}
 
-      {expanded &&
-        children?.map((child) => (
-          <TreeRow key={child.id} node={child} depth={depth + 1} roles={roles} />
-        ))}
+      {expanded && children?.map((child) => <TreeRow key={child.id} node={child} depth={depth + 1} />)}
     </>
   );
 }
@@ -417,12 +484,12 @@ function TreeRow({ node, depth, roles }: { node: TreeNodeDto; depth: number; rol
  * 目录使用明确的文件夹图标，而不是中性圆点。圆点在结构树中只表示文件语言，
  * 避免用户把目录的灰点误解成一种语言；文件夹自身的开合形态表达展开状态。
  */
-function FolderIcon({ open }: { open: boolean }) {
+function FolderIcon({ open, muted = false }: { open: boolean; muted?: boolean }) {
   return (
     <svg
       aria-hidden="true"
       viewBox="0 0 16 16"
-      className="relative h-3.5 w-3.5 shrink-0 text-[var(--color-ink-muted)]"
+      className={`relative h-3.5 w-3.5 shrink-0 ${muted ? "text-[var(--color-ink-faint)]" : "text-[var(--color-ink-muted)]"}`}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.35"

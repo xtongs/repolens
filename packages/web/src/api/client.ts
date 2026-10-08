@@ -12,6 +12,7 @@ import type {
   NoteInputDto,
   OverviewDto,
   PickRepoResultDto,
+  ReadmeDto,
   RepoScanTaskDto,
   ReposDto,
   SearchHitDto,
@@ -186,6 +187,9 @@ export const api = {
   tree: (path: string, depth = 1, roles?: string) =>
     get<TreeNodeDto>("/tree", { path, depth, roles }),
 
+  /** 结构树的一层：磁盘上的全部条目，每项带 status 说明是否参与分析 */
+  files: (path: string) => get<TreeNodeDto>("/files", { path }),
+
   graph: (params: GraphParams) =>
     get<GraphDto>("/graph", {
       scope: params.scope,
@@ -232,6 +236,12 @@ export const api = {
 
   source: (fileId: string, from?: number, to?: number) =>
     get<SourceSliceDto>(`/source/${stripPrefix(fileId)}`, { from, to }),
+
+  /** 没进索引的文件按仓库相对路径读原文 */
+  rawSource: (path: string) => get<SourceSliceDto>("/raw", { path }),
+
+  /** 包 / 目录这一层的 README，没有时是 null */
+  readme: (nodeId: string) => get<ReadmeDto | null>("/readme", { node: nodeId }),
 
   search: (q: string, limit = 30, roles?: string) =>
     get<SearchHitDto[]>("/search", { q, limit, roles }),

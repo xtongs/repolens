@@ -33,6 +33,7 @@ export {
   getFileDetail,
   getOverview,
   getScopeGraph,
+  getScopeReadme,
   getSource,
   getSymbolDetail,
   getTree,
@@ -40,6 +41,8 @@ export {
   symbolKey,
   type GraphOptions,
 } from "./db/queries.js";
+
+export { getFileTree, readRepoFile, RepoFileError } from "./db/file-tree.js";
 
 export { getEntryPoints, getTrace, getTraceSummaries } from "./db/traces.js";
 

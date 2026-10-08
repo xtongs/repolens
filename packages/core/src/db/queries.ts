@@ -22,6 +22,7 @@ import type {
   OverviewDto,
   ParamDto,
   PseudocodeStepDto,
+  ReadmeDto,
   RelationDto,
   ScanStats,
   SearchHitDto,
@@ -1502,6 +1503,57 @@ export function getSource(
     endLine: to,
     code: lines.slice(from - 1, to).join("\n"),
   };
+}
+
+/** README 读这么多字节就够看清意图了；再长的多是 API 手册，进源码页看 */
+const README_MAX_BYTES = 64 * 1024;
+
+/** README、README.md、README.zh-CN.md、readme_cn.txt 这类；readme-utils.ts 不算 */
+const README_NAME = /^readme(?:[._-][a-z]{2}(?:[-_][a-z]{2,4})?(?=\.))?(?:\.(md|mdx|markdown|rst|txt))?$/i;
+
+/**
+ * 包 / 目录自己的 README：只认直接放在这一层的，子目录里的归子目录。
+ * 同层有好几份时，README.md 优先，其次其他 markdown（多语言版本），再次无扩展名，最后 rst / txt。
+ */
+export function getScopeReadme(db: Db, repoRoot: string, scopeId: string): ReadmeDto | null {
+  const dir = scopeId.startsWith("pkg:")
+    ? packageDir(db, scopeId.slice(4))
+    : scopeId.startsWith("dir:") ? scopeId.slice(4) : null;
+  if (dir === null) return null;
+
+  const rows = db
+    .prepare("SELECT id, path, name FROM files WHERE dir_path = ? AND name LIKE 'readme%'")
+    .all(dir) as Array<{ id: number; path: string; name: string }>;
+  const candidates = rows.flatMap((row) => {
+    const match = README_NAME.exec(row.name);
+    return match ? [{ ...row, ext: match[1]?.toLowerCase() }] : [];
+  });
+  const rank = (row: { name: string; ext: string | undefined }) =>
+    row.name.toLowerCase() === "readme.md" ? 0
+      : row.ext === "md" || row.ext === "mdx" || row.ext === "markdown" ? 1
+        : row.ext === undefined ? 2 : 3;
+  candidates.sort((a, b) => rank(a) - rank(b) || a.name.length - b.name.length || a.name.localeCompare(b.name));
+
+  for (const pick of candidates) {
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(join(repoRoot, pick.path));
+    } catch {
+      continue;
+    }
+    const truncated = bytes.length > README_MAX_BYTES;
+    let content = bytes.subarray(0, README_MAX_BYTES).toString("utf8");
+    // 截断点可能落在多字节字符或一行中间，退回到上一个整行
+    if (truncated) content = content.slice(0, Math.max(0, content.lastIndexOf("\n")));
+    return {
+      fileId: `file:${pick.id}`,
+      path: pick.path,
+      format: pick.ext === "rst" || pick.ext === "txt" || pick.ext === undefined ? "text" : "markdown",
+      content,
+      truncated,
+    };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

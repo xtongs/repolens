@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "./database.js";
-import { getScopeGraph, getTree } from "./queries.js";
+import { getScopeGraph, getScopeReadme, getTree } from "./queries.js";
 
 const roots: string[] = [];
 
@@ -25,6 +25,57 @@ describe("目录角色过滤", () => {
         .toEqual(["dir:.cursor", "dir:src"]);
       expect(getTree(db, ".", 1, [...roles]).children?.map((n) => n.id).sort())
         .toEqual(["dir:.cursor", "dir:src"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("getScopeReadme", () => {
+  it("取这一层自己的 README，README.md 优先，同名的代码文件不算", () => {
+    const root = mkdtempSync(join(tmpdir(), "repolens-readme-"));
+    roots.push(root);
+    mkdirSync(join(root, "packages/core/src"), { recursive: true });
+    const files: Array<[string, string]> = [
+      ["README.zh-CN.md", "# 中文说明"],
+      ["README.md", "# Repo\n\nWhat it does."],
+      ["readme-utils.ts", "export {};"],
+      ["packages/core/README", "plain text readme"],
+      ["packages/core/src/main.ts", "export {};"],
+    ];
+    const db = openDb(join(root, "index.db"));
+    try {
+      for (const [path, content] of files) {
+        writeFileSync(join(root, path), content);
+        const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".";
+        insertFile(db, path, dir, path.split("/").at(-1)!, "markdown", "docs");
+      }
+      db.prepare("INSERT INTO packages (name, dir, manager) VALUES (?, ?, ?)").run("@demo/core", "packages/core", "pnpm");
+
+      expect(getScopeReadme(db, root, "dir:.")).toMatchObject({
+        path: "README.md", format: "markdown", content: "# Repo\n\nWhat it does.", truncated: false,
+      });
+      expect(getScopeReadme(db, root, "pkg:@demo/core")).toMatchObject({
+        path: "packages/core/README", format: "text",
+      });
+      expect(getScopeReadme(db, root, "dir:packages/core/src")).toBeNull();
+      expect(getScopeReadme(db, root, "sym:1")).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("超长的 README 截在整行处并标记", () => {
+    const root = mkdtempSync(join(tmpdir(), "repolens-readme-"));
+    roots.push(root);
+    writeFileSync(join(root, "README.md"), "一行说明文字\n".repeat(10_000));
+    const db = openDb(join(root, "index.db"));
+    try {
+      insertFile(db, "README.md", ".", "README.md", "markdown", "docs");
+      const readme = getScopeReadme(db, root, "dir:.")!;
+      expect(readme.truncated).toBe(true);
+      expect(readme.content.length).toBeLessThan(64 * 1024);
+      expect(readme.content.split("\n").every((line) => line === "一行说明文字")).toBe(true);
     } finally {
       db.close();
     }

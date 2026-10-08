@@ -111,4 +111,42 @@ describe("startServer", () => {
     expect(injected.status).toBe(400);
     expect(((await injected.json()) as { error: string }).error).toMatch(/^不支持的提交写法/);
   });
+
+  it("README 跟着扫描入索引，按包或目录读回；没有时返回 null", async () => {
+    const repo = join(home, "readme");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "README.md"), "# Demo\n\nWhy this repo exists.\n");
+    writeFileSync(join(repo, "src/a.ts"), "export function a() { return 1; }\n");
+    await scanRepo({ root: repo });
+    server = await startServer({ repoRoot: repo, port: 0 });
+    const readme = (node: string) =>
+      fetch(`${server!.url}/api/readme?node=${encodeURIComponent(node)}`).then((response) => response.json());
+
+    expect(await readme("dir:.")).toMatchObject({
+      path: "README.md", format: "markdown", content: "# Demo\n\nWhy this repo exists.\n", truncated: false,
+    });
+    expect(await readme("dir:src")).toBeNull();
+  });
+
+  it("结构树按磁盘列出没进索引的文件，原文可读；越界路径返回 400", async () => {
+    const repo = join(home, "files");
+    mkdirSync(join(repo, "dist"), { recursive: true });
+    mkdirSync(join(repo, "src"));
+    writeFileSync(join(repo, ".gitignore"), "dist/\n");
+    writeFileSync(join(repo, "dist/out.js"), "console.log(1);\n");
+    writeFileSync(join(repo, "src/a.ts"), "export function a() { return 1; }\n");
+    await scanRepo({ root: repo });
+    server = await startServer({ repoRoot: repo, port: 0 });
+    const get = (path: string) => fetch(`${server!.url}/api${path}`);
+
+    const tree = (await (await get("/files?path=.")).json()) as { children: Array<Record<string, unknown>> };
+    expect(tree.children.find((node) => node.name === "src")).toMatchObject({ status: "analyzed" });
+    expect(tree.children.find((node) => node.name === "dist")).toMatchObject({
+      id: "raw:dist", status: "excluded", excludedBy: "ignored",
+    });
+    expect(await (await get("/raw?path=dist/out.js")).json()).toMatchObject({ code: "console.log(1);\n" });
+    const escaped = await get(`/raw?path=${encodeURIComponent("../files/src/a.ts")}`);
+    expect(escaped.status).toBe(400);
+    expect(await escaped.json()).toEqual({ error: "非法的路径" });
+  });
 });

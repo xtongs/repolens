@@ -22,7 +22,8 @@ const SLICE_CACHE_SIZE = 16;
 function loadSlice(key: string, fileId: string, from?: number, to?: number): Promise<SourceSliceDto> {
   const cached = sliceCache.get(key);
   if (cached) return cached;
-  const task = api.source(fileId, from, to);
+  // 没进索引的文件没有数字 id，节点 id 是 raw:<仓库相对路径>
+  const task = fileId.startsWith("raw:") ? api.rawSource(fileId.slice(4)) : api.source(fileId, from, to);
   sliceCache.set(key, task);
   task.catch(() => sliceCache.delete(key));
   if (sliceCache.size > SLICE_CACHE_SIZE) {

@@ -43,6 +43,32 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   );
 });
 
+/**
+ * 仓库里的 markdown 文档（README）。和 AI 回答共用排版，但链接只放行站外地址：
+ * 相对路径在这里没有可跳的页面；图片一律不加载，只留替代文字——相对路径取不到，
+ * 站外的徽章图会向第三方发请求。
+ */
+export const DocMarkdown = memo(function DocMarkdown({ content }: { content: string }) {
+  return (
+    <div className="chat-markdown doc-markdown text-[12px] leading-relaxed text-[var(--color-ink)]">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeStripHtml]} components={DOC_COMPONENTS}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
+/** react-markdown 默认把内嵌 HTML 当文字原样显示；README 里的居中标题、<br> 只留下文字 */
+function rehypeStripHtml() {
+  const strip = (node: HastNode): void => {
+    node.children?.forEach((child, index) => {
+      if (child.type === "raw") node.children![index] = { type: "text", value: (child.value ?? "").replace(/<[^>]*>/g, "") };
+      else strip(child);
+    });
+  };
+  return strip;
+}
+
 function urlTransform(url: string): string {
   return url.startsWith("node:") ? url : defaultUrlTransform(url);
 }
@@ -50,12 +76,16 @@ function urlTransform(url: string): string {
 // 两套组件共用同一个 a / code，流式结束切换时节点链接不会整体重新挂载
 const link: Components["a"] = ({ href, children }) => {
   if (href?.startsWith("node:")) return <NodeLink id={href.slice(5)}>{children}</NodeLink>;
+  return <ExternalLink href={href}>{children}</ExternalLink>;
+};
+
+function ExternalLink({ href, children }: { href: string | undefined; children: ReactNode }) {
   return (
     <a href={href} target="_blank" rel="noreferrer" className="text-[var(--color-accent)] underline-offset-2 hover:underline">
       {children}
     </a>
   );
-};
+}
 
 const inlineCode: Components["code"] = ({ children }) => (
   <code className="mono rounded bg-[var(--color-surface-3)] px-1 py-px text-[0.92em] text-[var(--color-ink)]">
@@ -83,6 +113,15 @@ function buildComponents(streaming: boolean): Components {
 const COMPONENTS = buildComponents(false);
 /** 流式输出时代码块每个字都在变，先按纯文本渲染，写完再高亮 */
 const STREAMING_COMPONENTS = buildComponents(true);
+
+const DOC_COMPONENTS: Components = {
+  ...COMPONENTS,
+  a: ({ href, children }) =>
+    href && /^(?:https?:|mailto:)/i.test(href)
+      ? <ExternalLink href={href}>{children}</ExternalLink>
+      : <span title={href}>{children}</span>,
+  img: ({ alt }) => (alt ? <span className="text-[var(--color-ink-faint)]">[{alt}]</span> : null),
+};
 
 function textOf(node: HastNode): string {
   if (node.type === "text") return node.value ?? "";

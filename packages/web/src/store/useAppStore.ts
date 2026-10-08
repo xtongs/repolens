@@ -154,7 +154,8 @@ export interface AppState {
   clearRevealed: () => void;
   /** 定位到节点，并让详情打开指定的页签（有行号时滚到那几行）。详情消费后清空 */
   detailRequest: DetailRequest | null;
-  openDetail: (nodeId: string, request: Omit<DetailRequest, "nodeId">) => void;
+  /** reveal 为 false 时只打开详情，画布不动：画布上本来就不显示的文件没必要去找 */
+  openDetail: (nodeId: string, request: Omit<DetailRequest, "nodeId">, reveal?: boolean) => void;
   clearDetailRequest: () => void;
   hover: (nodeId: string | null, anchor?: { x: number; y: number }) => void;
   setFocus: (nodeId: string | null, depth?: number) => void;
@@ -514,9 +515,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ revealed: null });
   },
 
-  openDetail(nodeId, request) {
+  openDetail(nodeId, request, reveal = true) {
     set({ detailRequest: { nodeId, ...request } });
-    void get().reveal(nodeId);
+    if (reveal) void get().reveal(nodeId);
+    else get().select(nodeId);
   },
 
   clearDetailRequest() {

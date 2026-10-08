@@ -1,5 +1,5 @@
 import type { NoteDto, PseudocodeStepDto } from "@repolens/core/types";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../i18n";
 import { readPref, writePref } from "../lib/prefs";
 import { NoteCard } from "../notes/NoteCard";
@@ -9,7 +9,10 @@ import { CodeLine } from "../ui/CodeLines";
 import { hasLines } from "./PseudocodePanel";
 import { useSource } from "./useSource";
 
+const DocMarkdown = lazy(() => import("../ui/ChatMarkdown").then((module) => ({ default: module.DocMarkdown })));
+
 const ANNOTATION_STORAGE_KEY = "repolens:source-annotations";
+const PREVIEW_STORAGE_KEY = "repolens:markdown-preview";
 const STEP_COLOR = "color-mix(in srgb, var(--color-accent) 55%, transparent)";
 const TOP_STEP_BACKGROUND = "color-mix(in srgb, var(--color-accent) 10%, transparent)";
 const CHILD_STEP_BACKGROUND = "color-mix(in srgb, var(--color-accent) 5%, transparent)";
@@ -56,6 +59,8 @@ export function SourcePanel({
   const { source, error } = useSource(fileId, from, to);
   const annotatable = hasLines(steps);
   const [annotate, setAnnotate] = useState(readAnnotationPreference);
+  // 带着行号跳进来就是要看那几行，先给源码
+  const [preview, setPreview] = useState(() => !focus && readPreviewPreference());
   const [folded, setFolded] = useState<ReadonlySet<number>>(new Set());
   const [marked, setMarked] = useState<[number, number] | null>(null);
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
@@ -111,8 +116,15 @@ export function SourcePanel({
   }, [source, notes]);
 
   const loaded = source !== null;
+  const markdown = source !== null && isMarkdown(source.slice.language, source.slice.path);
+  const previewing = markdown && preview;
+
   useEffect(() => {
-    if (!focus || !loaded) return;
+    if (focus) setPreview(false);
+  }, [focus]);
+
+  useEffect(() => {
+    if (!focus || !loaded || previewing) return;
     setMarked(focus.lines);
     setFolded((current) => {
       const next = new Set(current);
@@ -125,7 +137,7 @@ export function SourcePanel({
       lineRefs.current.get(focus.lines[0])?.scrollIntoView({ block: "center", behavior: "smooth" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [focus, loaded, topSteps]);
+  }, [focus, loaded, topSteps, previewing]);
 
   if (error) return <div className="p-3 text-[11.5px] text-[var(--color-ink-faint)]">{error}</div>;
   if (!source) return <SourceSkeleton />;
@@ -212,9 +224,32 @@ export function SourcePanel({
         <span className="mono truncate tabular-nums">
           L{source.slice.startLine}–{source.slice.endLine} · {t("{count} 行", { count: source.lines.length })}
         </span>
-        {annotatable && (
+        {(markdown || annotatable) && (
           <div className="ml-auto flex shrink-0 items-center gap-1">
-            {showAnnotations && (
+            {markdown && (
+              <div className="flex overflow-hidden rounded border border-[var(--color-line)]">
+                {([[true, t("预览")], [false, t("源码")]] as const).map(([value, label]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    aria-pressed={preview === value}
+                    onClick={() => {
+                      setPreview(value);
+                      writePref(PREVIEW_STORAGE_KEY, value ? "on" : "off");
+                    }}
+                    className={`px-1.5 py-0.5 transition-colors ${
+                      preview === value
+                        ? "bg-[var(--color-surface-3)] text-[var(--color-ink)]"
+                        : "hover:text-[var(--color-ink-muted)]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* 伪代码注解只对源码有意义，预览时一起收起 */}
+            {!previewing && showAnnotations && (
               <button
                 type="button"
                 onClick={() =>
@@ -225,31 +260,45 @@ export function SourcePanel({
                 {allFolded ? t("全部展开") : t("全部折叠")}
               </button>
             )}
-            <button
-              type="button"
-              aria-pressed={annotate}
-              onClick={() => {
-                const next = !annotate;
-                setAnnotate(next);
-                writeAnnotationPreference(next);
-              }}
-              title={t("在源码中穿插 AI 伪代码步骤")}
-              className={`rounded border px-1.5 py-0.5 transition-colors ${
-                annotate
-                  ? "border-[var(--color-accent)]/50 text-[var(--color-accent)]"
-                  : "border-[var(--color-line)] hover:text-[var(--color-ink-muted)]"
-              }`}
-            >
-              {t("伪代码注解")}
-            </button>
+            {!previewing && annotatable && (
+              <button
+                type="button"
+                aria-pressed={annotate}
+                onClick={() => {
+                  const next = !annotate;
+                  setAnnotate(next);
+                  writeAnnotationPreference(next);
+                }}
+                title={t("在源码中穿插 AI 伪代码步骤")}
+                className={`rounded border px-1.5 py-0.5 transition-colors ${
+                  annotate
+                    ? "border-[var(--color-accent)]/50 text-[var(--color-accent)]"
+                    : "border-[var(--color-line)] hover:text-[var(--color-ink-muted)]"
+                }`}
+              >
+                {t("伪代码注解")}
+              </button>
+            )}
           </div>
         )}
       </div>
-      <div ref={setScroller} className="thin-scroll flex-1 overflow-x-auto">
-        <div className="w-max min-w-full py-2">{rows}</div>
-      </div>
+      {previewing ? (
+        <div className="px-4 py-3">
+          <Suspense fallback={<SourceSkeleton />}>
+            <DocMarkdown content={source.slice.code} />
+          </Suspense>
+        </div>
+      ) : (
+        <div ref={setScroller} className="thin-scroll flex-1 overflow-x-auto">
+          <div className="w-max min-w-full py-2">{rows}</div>
+        </div>
+      )}
     </div>
   );
+}
+
+function isMarkdown(language: string, path: string): boolean {
+  return language === "markdown" || /\.(?:md|mdx|markdown)$/i.test(path);
 }
 
 /**
@@ -409,4 +458,9 @@ function readAnnotationPreference(): boolean {
 
 function writeAnnotationPreference(value: boolean): void {
   writePref(ANNOTATION_STORAGE_KEY, value ? "on" : "off");
+}
+
+/** markdown 默认看渲染结果，和在代码托管平台上打开文档一致 */
+function readPreviewPreference(): boolean {
+  return readPref(PREVIEW_STORAGE_KEY) !== "off";
 }

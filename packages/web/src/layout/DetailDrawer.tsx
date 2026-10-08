@@ -2,9 +2,10 @@ import type {
   FileDetailDto,
   NoteDto,
   PseudocodeStepDto,
+  ReadmeDto,
   SymbolDetailDto,
 } from "@repolens/core/types";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { ChatDock } from "../chat/ChatDock";
 import { msg, useT } from "../i18n";
@@ -18,6 +19,8 @@ import { useChatStore } from "../store/useChatStore";
 import { notesInRange, notesOnFile, notesOnScope, useNotes } from "../store/useNotesStore";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 import { TabStrip } from "./TabStrip";
+
+const DocMarkdown = lazy(() => import("../ui/ChatMarkdown").then((module) => ({ default: module.DocMarkdown })));
 
 type Tab = "overview" | "params" | "pseudocode" | "source" | "relations" | "notes";
 
@@ -72,7 +75,7 @@ export function DetailDrawer() {
   };
 
   useEffect(() => {
-    setTab("overview");
+    setTab(selected?.startsWith("raw:") ? "source" : "overview");
     setSourceFocus(null);
     setNoteCount(0);
   }, [selected]);
@@ -89,11 +92,15 @@ export function DetailDrawer() {
 
   const isSymbol = selected?.startsWith("sym:") ?? false;
   const isFile = selected?.startsWith("file:") ?? false;
+  // 没进索引的文件：没有符号、摘要和关系，只有原文
+  const isRaw = selected?.startsWith("raw:") ?? false;
   const availableTabs: Tab[] = isSymbol
     ? ["overview", "params", "pseudocode", "source", "relations", "notes"]
     : isFile
       ? ["overview", "pseudocode", "source", "relations", "notes"]
-      : /^(?:dir|pkg):/.test(selected ?? "") ? ["overview", "notes"] : ["overview"];
+      : isRaw
+        ? ["source"]
+        : /^(?:dir|pkg):/.test(selected ?? "") ? ["overview", "notes"] : ["overview"];
 
   const navigation: TabNavigation = { tab, setTab, sourceFocus, jumpToSource, setNoteCount };
 
@@ -148,9 +155,10 @@ export function DetailDrawer() {
           <div ref={setContent} className="thin-scroll min-h-0 flex-1 overflow-y-auto">
             {isSymbol && <SymbolBody key={selected} id={selected} navigation={navigation} />}
             {isFile && <FileBody key={selected} id={selected} navigation={navigation} />}
-            {!isSymbol && !isFile && <ScopeBody id={selected} navigation={navigation} />}
+            {isRaw && <RawFileBody key={selected} path={selected.slice(4)} />}
+            {!isSymbol && !isFile && !isRaw && <ScopeBody key={selected} id={selected} navigation={navigation} />}
           </div>
-          <SelectionAsk container={content} nodeId={selected} />
+          {!isRaw && <SelectionAsk container={content} nodeId={selected} />}
         </>
       )}
       <ChatDock detailVisible={detailVisible} />
@@ -609,9 +617,10 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
   };
 
   // 文件语义是一个整体：摘要、Tooltip 单句和文件伪代码缺一项都补齐。
+  // 不参与分析的文件（测试、配置、文档等）多半只是来看原文，等用户要了再生成。
   useEffect(() => {
     if (
-      detail === null ||
+      detail === null || detail.role !== "source" ||
       detail.bytes === 0 || semanticSkipReason === "empty-file" ||
       (detail.summary && detail.shortSummary && detail.pseudocode) ||
       semanticLoading || semanticError
@@ -732,6 +741,13 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
           )}
           <PseudocodeLink steps={detail.pseudocodeSteps} onOpen={() => navigation.setTab("pseudocode")} />
         </div>
+      ) : detail.role !== "source" && !semanticLoading && !semanticError ? (
+        <div className="mt-2.5 rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5">
+          <p className="text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
+            {t("这个文件不参与分析，需要时再让 AI 解读。")}
+          </p>
+          <RetryButton onClick={generateSummary}>{t("生成 AI 摘要与伪代码")}</RetryButton>
+        </div>
       ) : semanticLoading || !semanticError ? (
         <SemanticLoading label={t("正在生成文件摘要与伪代码…")} />
       ) : semanticError ? (
@@ -781,6 +797,19 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
   );
 }
 
+function RawFileBody({ path }: { path: string }) {
+  const t = useT();
+  return (
+    <>
+      <div className="border-b border-[var(--color-line)] px-3 py-2">
+        <div className="mono break-all text-[11px] text-[var(--color-ink-muted)]">{path}</div>
+        <div className="mt-0.5 text-[10.5px] text-[var(--color-ink-faint)]">{t("没进索引，不参与分析，这里只显示原文")}</div>
+      </div>
+      <SourcePanel fileId={`raw:${path}`} />
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 包 / 目录 / 聚合
 // ---------------------------------------------------------------------------
@@ -791,6 +820,7 @@ function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }
   const allNotes = useNotes();
   const notes = useMemo(() => notesOnScope(allNotes, id), [allNotes, id]);
   useNoteCount(navigation, notes.length);
+  const readme = useReadme(id);
   const graph = store.subgraphs[store.rootScope];
   const node =
     Object.values(store.subgraphs)
@@ -798,6 +828,8 @@ function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }
       .find((n) => n.id === id) ?? graph?.nodes.find((n) => n.id === id);
 
   if (navigation.tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath />;
+  // 仓库根不是图上的节点，从结构树顶部的仓库名进来
+  if (!node && id === store.rootScope) return <RepoRootBody readme={readme} />;
   if (!node) return <Empty>{t("找不到这个节点")}</Empty>;
 
   return (
@@ -837,7 +869,128 @@ function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }
           {store.expanded.includes(node.id) ? t("收起子项") : t("展开 {count} 项", { count: node.childCount })}
         </button>
       )}
+
+      {readme && <ReadmeSection readme={readme} />}
     </div>
+  );
+}
+
+function RepoRootBody({ readme }: { readme: ReadmeDto | null }) {
+  const t = useT();
+  const overview = useAppStore((s) => s.overview);
+  if (!overview) return <Skeleton />;
+
+  return (
+    <div className="p-3">
+      <div className="text-[14px] font-medium">{overview.repoName}</div>
+      <div className="mono mt-1 break-all text-[10.5px] text-[var(--color-ink-faint)]">{overview.repoRoot}</div>
+
+      {overview.summary && (
+        <div className="mt-2.5 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-2.5">
+          <Label ai>{t("AI 仓库概览")}</Label>
+          <p className="mt-1 whitespace-pre-line text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
+            {overview.summary}
+          </p>
+        </div>
+      )}
+
+      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[var(--color-line)] pt-2.5">
+        <Metric label={t("代码行")} value={formatCount(overview.totals.loc)} />
+        <Metric label={t("文件数")} value={formatCount(overview.totals.files)} />
+        <Metric label={t("符号数")} value={formatCount(overview.totals.symbols)} />
+        <Metric label={t("包数")} value={String(overview.totals.packages)} />
+      </div>
+
+      {readme && <ReadmeSection readme={readme} />}
+    </div>
+  );
+}
+
+function useReadme(id: string): ReadmeDto | null {
+  const repoRevision = useAppStore((s) => s.repoRevision);
+  const [readme, setReadme] = useState<ReadmeDto | null>(null);
+  useEffect(() => {
+    if (!/^(?:dir|pkg):/.test(id)) return;
+    let cancelled = false;
+    setReadme(null);
+    // README 只是补充，取不到就不显示，不打断概览
+    void api.readme(id).then((result) => !cancelled && setReadme(result)).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [id, repoRevision]);
+  return readme;
+}
+
+/** 先露出开头一屏，够判断「这一层是做什么的」；README 常常很长，细看再展开 */
+const README_PREVIEW_HEIGHT = 220;
+
+function ReadmeSection({ readme }: { readme: ReadmeDto }) {
+  const t = useT();
+  const openDetail = useAppStore((s) => s.openDetail);
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const [body, setBody] = useState<HTMLDivElement | null>(null);
+
+  // markdown 渲染器是懒加载的，内容高度要等它到了才知道
+  useEffect(() => {
+    if (!body) return;
+    const observer = new ResizeObserver(() => setOverflowing(body.offsetHeight > README_PREVIEW_HEIGHT));
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [body]);
+
+  const plain = (
+    <pre className="whitespace-pre-wrap break-words font-[inherit] text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
+      {readme.content}
+    </pre>
+  );
+
+  return (
+    <section className="mt-3 border-t border-[var(--color-line)] pt-2.5">
+      <div className="flex items-center gap-2">
+        <Label>README</Label>
+        <button
+          type="button"
+          onClick={() => openDetail(readme.fileId, { tab: "source", lines: null }, false)}
+          title={t("在源码中打开")}
+          className="mono ml-auto min-w-0 truncate text-[10px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-accent)]"
+        >
+          {readme.path.split("/").at(-1)}
+        </button>
+      </div>
+      <div className="relative mt-1.5 overflow-hidden" style={expanded ? undefined : { maxHeight: README_PREVIEW_HEIGHT }}>
+        <div ref={setBody}>
+          {readme.format === "markdown" ? (
+            <Suspense fallback={plain}>
+              <DocMarkdown content={readme.content} />
+            </Suspense>
+          ) : (
+            plain
+          )}
+        </div>
+        {!expanded && overflowing && (
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-12"
+            style={{ background: "linear-gradient(to top, var(--color-surface), transparent)" }}
+          />
+        )}
+      </div>
+      {overflowing && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-1 text-[10.5px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-ink-muted)]"
+        >
+          {expanded ? t("收起") : t("展开全文")}
+        </button>
+      )}
+      {expanded && readme.truncated && (
+        <p className="mt-1 text-[10.5px] text-[var(--color-ink-faint)]">
+          {t("README 太长，这里只显示开头部分，完整内容点上面的文件名在源码里看")}
+        </p>
+      )}
+    </section>
   );
 }
 

@@ -6,11 +6,13 @@ import {
   getCallGraph,
   getEntryPoints,
   getFileDetail,
+  getFileTree,
   getFindingSummary,
   getRevealChain,
   getFindings,
   getOverview,
   getScopeGraph,
+  getScopeReadme,
   getSource,
   getSymbolDetail,
   getTree,
@@ -24,17 +26,20 @@ import {
   deleteNote,
   indexPath,
   listNotes,
+  loadConfig,
   openDb,
   parseChatRequest,
   parseNoteInput,
+  readRepoFile,
   recordChatUsage,
+  RepoFileError,
   search,
   streamRepositoryChat,
   type Confidence,
   type Db,
   type FileRole,
 } from "@repolens/core";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 
 export interface ApiDeps {
@@ -66,6 +71,13 @@ export function createApi(deps: ApiDeps): Hono {
     const roles = parseRoles(c.req.query("roles"));
     return c.json(getTree(db, path, depth, roles));
   });
+
+  // 结构树按磁盘列全部文件，和只看索引的 /tree 分开：这里要读目录、按配置判定排除原因
+  app.get("/files", (c) =>
+    repoFile(c, () => getFileTree(db, repoRoot, loadConfig(repoRoot), c.req.query("path") ?? ".")),
+  );
+
+  app.get("/raw", (c) => repoFile(c, () => readRepoFile(repoRoot, c.req.query("path") ?? "")));
 
   app.get("/graph", (c) => {
     const graph = getScopeGraph(db, {
@@ -305,6 +317,9 @@ export function createApi(deps: ApiDeps): Hono {
     return slice ? c.json(slice) : c.json({ error: "源码不可读" }, 404);
   });
 
+  // 没有 README 是常态，回 null 而不是 404
+  app.get("/readme", (c) => c.json(getScopeReadme(db, repoRoot, c.req.query("node") ?? "")));
+
   app.get("/search", (c) => {
     const q = c.req.query("q") ?? "";
     return c.json(
@@ -313,6 +328,15 @@ export function createApi(deps: ApiDeps): Hono {
   });
 
   return app;
+}
+
+function repoFile(c: Context, run: () => unknown) {
+  try {
+    return c.json(run());
+  } catch (err) {
+    if (err instanceof RepoFileError) return c.json({ error: err.message }, err.status);
+    throw err;
+  }
 }
 
 async function withWritableDb<T>(repoRoot: string, run: (db: Db) => Promise<T>): Promise<T> {

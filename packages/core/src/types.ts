@@ -690,7 +690,27 @@ export interface TreeNodeDto {
   heat: number;
   hasChildren: boolean;
   children?: TreeNodeDto[] | null;
+  /**
+   * 按磁盘列出的结构树才有：analyzed 参与分析；noise 进了索引但按角色不上主干图
+   * （测试、配置、文档等，文件的角色见 role）；excluded 没进索引，原因见 excludedBy。
+   */
+  status?: "analyzed" | "noise" | "excluded";
+  excludedBy?: ExclusionReason | null;
 }
+
+/** 文件或目录没进索引的原因，判定规则和扫描时的遍历一致 */
+export type ExclusionReason =
+  /** node_modules、.venv、target 这类固定跳过的依赖和构建目录 */
+  | "builtin"
+  /** .gitignore、.repolensignore 或配置里的 exclude */
+  | "ignored"
+  | "vendor"
+  /** 超过配置的 maxFileBytes */
+  | "too-large"
+  /** 软链接不跟随，避免成环或指到仓库外 */
+  | "symlink"
+  /** 上次扫描之后才出现 */
+  | "unscanned";
 
 export interface SymbolSummaryDto {
   id: string;
@@ -828,6 +848,18 @@ export interface SourceSliceDto {
   startLine: number;
   endLine: number;
   code: string;
+}
+
+/** 包 / 目录里作者自己写的说明，原文交给界面渲染 */
+export interface ReadmeDto {
+  /** README 自己的文件节点 */
+  fileId: string;
+  path: string;
+  /** rst、txt 和无扩展名的按纯文本显示，不当 markdown 解析 */
+  format: "markdown" | "text";
+  content: string;
+  /** 超过读取上限，只给了开头一段 */
+  truncated: boolean;
 }
 
 export interface PathQueryResultDto {
