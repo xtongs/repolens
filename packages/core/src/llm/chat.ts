@@ -273,7 +273,7 @@ function walkBlock(db: Db, stack: Array<{ id: string; at: string | null }>, lang
       ? ` → ${call.target.name}（id=${call.target.id}，${call.target.filePath}:${call.target.line}）`
       : call.candidates
         ? ` → ${zh ? "候选" : "candidates"} ${call.candidates.map((item) => `${item.name}（id=${item.id}）`).join(zh ? "、" : ", ")}`
-        : call.external ? ` → ${call.external}` : "";
+        : call.external ? ` → ${call.builtin ? (zh ? "内置 " : "built-in ") : ""}${call.external}` : "";
     const io = call.io ? ` [${call.io}]` : "";
     // 链式调用的接收者可能是一整段多行 SQL 调用，原样放进来会挤占上下文
     const receiver = call.receiver?.replace(/\s+/g, " ");

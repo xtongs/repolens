@@ -214,6 +214,14 @@ export interface ParsedCall {
   callee: string;
   /** 接收者文本，如 `this` / `self` / `obj` / Go 的包别名 */
   receiver?: string | undefined;
+  /**
+   * 接收者的类型线索，链接阶段解析：`T:类型` 来自标注、`new`、`as`；
+   * `R:路径` 表示接收者是那个函数的返回值，`A:路径` 是 await 过的返回值；
+   * `M:线索` 是属性链 `c.req`，线索属于根变量；`C:方法|线索` 是没标类型的回调参数，
+   * 由线索所指对象的那个方法传进来。`P:` 是看不出类型的参数，`D:路径` 是从那次调用的返回值里解构出来的，
+   * 这两种只给走读界面解释用。裸调用记的是被调名本身的线索
+   */
+  receiverType?: string | undefined;
   /** 完整点分路径，如 `["a","b","c"]` */
   calleePath?: string[] | undefined;
   line: number;
@@ -491,7 +499,7 @@ export interface FindingSummaryDto {
 
 export interface FindingQuery {
   kind?: FindingKind | undefined;
-  /** 限定在某个作用域子树内，形如 `dir:packages/core` */
+  /** 限定在某个图节点里：`pkg:` / `dir:` 取子树，`file:` 含文件里的符号，`sym:` 只取它自己 */
   scope?: string | undefined;
   limit?: number | undefined;
 }
@@ -946,8 +954,26 @@ export interface WalkCallDto {
   candidates?: WalkTargetDto[] | null;
   /** external 时的库名 */
   external?: string | null;
+  /** external 落在语言内置（Map、console、len）上，而不是哪个文件 import 过的库 */
+  builtin?: boolean;
+  /** unresolved 时推不出来的原因，界面据此给出具体提示 */
+  unresolved?: UnresolvedReason | null;
   io?: IoKind | null;
 }
+
+/**
+ * 调用为什么没解析出来：
+ * callback 是参数传进来的函数；function-value 是变量里存的函数，source 是产生它的调用（如 `useT()`），
+ * destructured 表示是从那次调用的返回值里解构出来的（如 `useState()`）；
+ * chained 接在推不出类型的返回值上；untyped 是接收者变量推不出类型，source 是给它赋值的调用，
+ * param 表示它是没标类型的参数；inherited 是 this 上的方法在类和父类里都没找到。
+ */
+export type UnresolvedReason =
+  | { kind: "callback" }
+  | { kind: "function-value"; source: string | null; destructured?: boolean }
+  | { kind: "chained" }
+  | { kind: "untyped"; source?: string; param?: boolean }
+  | { kind: "inherited" };
 
 /** 单步走读的一帧：一个函数的源码范围，以及它体内依次发生的调用 */
 export interface WalkFrameDto {

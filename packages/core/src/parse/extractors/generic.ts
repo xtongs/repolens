@@ -75,7 +75,8 @@ export const genericExtractor: LanguageExtractor = {
         imports.push(dependency);
         return false;
       }
-      if (CALL_TYPES.has(node.type)) {
+      // CSS 的 var() / calc() / rgba() 在语法树里也是 call_expression，但它们不调用任何代码
+      if (CALL_TYPES.has(node.type) && input.language !== "css") {
         const call = callOf(node);
         if (call) calls.push(call);
       }

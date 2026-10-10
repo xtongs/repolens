@@ -20,7 +20,7 @@ interface SymbolRow {
 
 interface CallRow {
   id: number; fileId: number; callerId: number | null; callee: string; receiver: string | null;
-  arguments: string; line: number;
+  receiverType: string | null; arguments: string; line: number;
   /** 解析为 external 时落到的包名 */
   external: string | null;
 }
@@ -52,8 +52,13 @@ export function analyzeEntries(db: Db): EntryAnalysisStats {
   const markIo = db.prepare("UPDATE call_sites SET io_kind = ? WHERE id = ?");
   const ioBySymbol = new Map<number, Set<IoKind>>();
   let ioSites = 0;
+  const libraries = new Set(
+    (db.prepare("SELECT DISTINCT external_name AS name FROM imports WHERE external_name IS NOT NULL").all() as Array<{
+      name: string;
+    }>).map((row) => row.name),
+  );
   for (const call of calls) {
-    const kind = classifyIo(call);
+    const kind = classifyIo(call, libraries);
     if (!kind) continue;
     markIo.run(kind, call.id);
     ioSites++;
@@ -107,7 +112,7 @@ function loadSymbols(db: Db): SymbolRow[] {
 function loadCalls(db: Db): CallRow[] {
   return db.prepare(
     `SELECT id, file_id AS fileId, caller_symbol_id AS callerId, callee_name AS callee, receiver,
-            argument_texts AS arguments, line, target_name AS external
+            receiver_type AS receiverType, argument_texts AS arguments, line, target_name AS external
      FROM call_sites`,
   ).all() as CallRow[];
 }
@@ -323,8 +328,14 @@ const PACKAGE_IO: Readonly<Record<string, IoKind>> = Object.fromEntries([
  * 按落到的包、API 名和接收者认出 I/O 访问。只是标注：走读到这一行时告诉人「这里碰数据库」，
  * 不拿它当终点——函数照样可以继续往下走。
  */
-function classifyIo(call: Pick<CallRow, "callee" | "receiver" | "external">): IoKind | null {
-  const byPackage = call.external ? PACKAGE_IO[call.external.replace(/^node:/, "")] : undefined;
+function classifyIo(
+  call: Pick<CallRow, "callee" | "receiver" | "receiverType" | "external">,
+  libraries: ReadonlySet<string>,
+): IoKind | null {
+  // 接在别的调用结果上的（链式调用、`const s = fs.readFileSync(…)` 之后的 `s.split()`）只是借了那个库的名字，
+  // 返回值多半是普通数据，不算 I/O
+  const derived = (call.receiver ?? "").includes("(") || /^[RAM]:/.test(call.receiverType ?? "");
+  const byPackage = call.external && !derived ? PACKAGE_IO[call.external.replace(/^node:/, "")] : undefined;
   if (byPackage) return byPackage;
   const callee = call.callee.toLowerCase();
   const receiver = (call.receiver ?? "").toLowerCase();
@@ -333,11 +344,15 @@ function classifyIo(call: Pick<CallRow, "callee" | "receiver" | "external">): Io
       /(^|\.|_)(db|sql|sqlx|database|pool|connection|conn|cursor|session|prisma|sequelize|knex|repository|repo|collection|model)(\.|_|$)/.test(receiver)) {
     return "database";
   }
-  if (/^(readfile|readfilesync|writefile|writefilesync|appendfile|appendfilesync|createreadstream|createwritestream|readdir|readdirsync|mkdir|mkdirsync|unlink|unlinksync|remove|read_to_string|read_dir)$/.test(callee) ||
-      (/^(open|create)$/.test(callee) && /(^|\.)(fs|file|path|os)$/.test(receiver))) {
+  if (/^(readfile|readfilesync|writefile|writefilesync|appendfile|appendfilesync|createreadstream|createwritestream|readdir|readdirsync|mkdir|mkdirsync|unlink|unlinksync|read_to_string|read_dir)$/.test(callee) ||
+      (/^(open|create|remove|rmtree|rm|rmsync)$/.test(callee) && /(^|\.)(fs|fse|file|path|pathlib|os|shutil)$/.test(receiver)) ||
+      // Python 内置的 open；npm 上叫 open 的包是打开浏览器的，import 过它就不是这个
+      (callee === "open" && call.external === "open" && !libraries.has("open"))) {
     return "filesystem";
   }
-  if (/^(spawn|execfile|execsync|spawnsync|command|popen|system)$/.test(callee) ||
+  // `program.command("scan")` 是注册 CLI 子命令，不是起进程
+  if (/^(spawn|execfile|execsync|spawnsync|execfilesync|popen)$/.test(callee) ||
+      (callee === "system" && (receiver === "" || receiver === "os")) ||
       (callee === "exec" && (receiver === "" || /child_process|command|process/.test(receiver))) ||
       (callee === "run" && /subprocess|command|process/.test(receiver)) ||
       (callee === "new" && /(^|::|\.)command$/.test(receiver))) {
@@ -347,8 +362,11 @@ function classifyIo(call: Pick<CallRow, "callee" | "receiver" | "external">): Io
       /queue|kafka|rabbit|channel|sqs|pubsub|broker|producer|consumer/.test(receiver)) {
     return "message-queue";
   }
-  if (callee === "fetch" || /^(axios|got|requesturl|urlopen)$/.test(callee) ||
-      (/^(get|post|put|patch|delete|send|request|do)$/.test(callee) && /http|client|axios|request|requests|url/.test(receiver))) {
+  // 接收者要以 HTTP 客户端的名字结尾：`overviewRequests.delete(key)` 是 Map 操作
+  if ((callee === "fetch" && /^(|window|globalthis|self)$/.test(receiver)) || /^(axios|got|requesturl|urlopen)$/.test(callee) ||
+      (/^(get|post|put|patch|delete|send|request|do)$/.test(callee) &&
+        /(^|[._])(https?|axios|requests|httpx|urllib\d?|got|ky|superagent|(http|api|rest)_?client)$/.test(receiver)) ||
+      (callee === "do" && /(^|[._])client$/.test(receiver))) {
     return "network";
   }
   if (/^(get|all|run|prepare)$/.test(callee) && /(^|\.|_)(db|sql|database)(\.|_|$)/.test(receiver)) {

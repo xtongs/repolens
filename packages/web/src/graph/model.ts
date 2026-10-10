@@ -88,7 +88,7 @@ export function flattenGraph(slice: GraphSlice): FlatGraph {
 }
 
 /**
- * 聚焦模式：只保留与焦点节点在 depth 跳以内相连的节点。
+ * 聚焦模式：只保留与焦点节点在 depth 跳以内相连的节点，以及它们展开出来的内容。
  *
  * 无向扩展而不是只看出向边——用户问「谁和它有关系」时，
  * 调用方和被调用方同样重要。
@@ -121,6 +121,24 @@ export function applyFocus(graph: FlatGraph, focus: string | null, depth: number
     }
     frontier = next;
     if (frontier.length === 0) break;
+  }
+
+  // 留下的节点展开着就连里面一起留：子图的边只连同层兄弟，展开出来的子节点和焦点之间
+  // 没有边，不这样做双击展开焦点只会得到一个空框。只因为是祖先才留下的容器不往下带，
+  // 否则聚焦深处一个文件会把整个包都带回来
+  const children = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    if (node.parentId === null) continue;
+    const bucket = children.get(node.parentId);
+    if (bucket) bucket.push(node.dto.id); else children.set(node.parentId, [node.dto.id]);
+  }
+  const pending = [...keep];
+  while (pending.length > 0) {
+    for (const child of children.get(pending.pop() as string) ?? []) {
+      if (keep.has(child)) continue;
+      keep.add(child);
+      pending.push(child);
+    }
   }
 
   // 祖先容器必须保留，否则子节点会失去 parentId 指向的父节点

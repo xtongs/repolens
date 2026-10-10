@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS call_sites (
   caller_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
   callee_name      TEXT NOT NULL,
   receiver         TEXT,
+  receiver_type    TEXT,             -- 解析器看到的接收者类型线索，链接阶段据此解析方法调用
   callee_path      TEXT,
   call_kind        TEXT NOT NULL,
   arg_count        INTEGER NOT NULL DEFAULT 0,
@@ -376,4 +377,4 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 `;
 
 /** schema 版本，变更时 bump。database.ts 里有迁移的旧版本就地升级，没有的整库重建 */
-export const SCHEMA_VERSION = "6";
+export const SCHEMA_VERSION = "7";

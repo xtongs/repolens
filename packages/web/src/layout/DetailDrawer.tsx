@@ -61,8 +61,10 @@ export function DetailDrawer() {
   const [sourceFocus, setSourceFocus] = useState<SourceFocus | null>(null);
   const [noteCount, setNoteCount] = useState(0);
   const [content, setContent] = useState<HTMLDivElement | null>(null);
+  const detailVisible = open && selected !== null;
   const resize = useResizablePanel({
     side: "right",
+    visible: detailVisible || chatOpen,
     storageKey: "repolens:right-panel-custom-width",
     fallbackWidth: 400,
     minWidth: 320,
@@ -87,7 +89,6 @@ export function DetailDrawer() {
     if (detailRequest.lines) jumpToSource(detailRequest.lines);
     else setTab(detailRequest.tab);
   }, [selected, detailRequest]);
-  const detailVisible = open && selected !== null;
   if (!detailVisible && !chatOpen) return null;
 
   const isSymbol = selected?.startsWith("sym:") ?? false;
@@ -729,9 +730,6 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
           style={{ background: languageColor(detail.language) }}
         />
         <span className="truncate text-[14px] font-medium">{detail.path.split("/").at(-1)}</span>
-        <span className="ml-auto shrink-0 text-[10px] text-[var(--color-ink-faint)]">
-          {detail.role}
-        </span>
       </div>
       <div className="mono mt-1 break-all text-[10.5px] text-[var(--color-ink-faint)]">
         {detail.path}
@@ -942,23 +940,9 @@ function useReadme(id: string): ReadmeDto | null {
   return readme;
 }
 
-/** 先露出开头一屏，够判断「这一层是做什么的」；README 常常很长，细看再展开 */
-const README_PREVIEW_HEIGHT = 220;
-
 function ReadmeSection({ readme }: { readme: ReadmeDto }) {
   const t = useT();
   const openDetail = useAppStore((s) => s.openDetail);
-  const [expanded, setExpanded] = useState(false);
-  const [overflowing, setOverflowing] = useState(false);
-  const [body, setBody] = useState<HTMLDivElement | null>(null);
-
-  // markdown 渲染器是懒加载的，内容高度要等它到了才知道
-  useEffect(() => {
-    if (!body) return;
-    const observer = new ResizeObserver(() => setOverflowing(body.offsetHeight > README_PREVIEW_HEIGHT));
-    observer.observe(body);
-    return () => observer.disconnect();
-  }, [body]);
 
   const plain = (
     <pre className="whitespace-pre-wrap break-words font-[inherit] text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
@@ -979,33 +963,16 @@ function ReadmeSection({ readme }: { readme: ReadmeDto }) {
           {readme.path.split("/").at(-1)}
         </button>
       </div>
-      <div className="relative mt-1.5 overflow-hidden" style={expanded ? undefined : { maxHeight: README_PREVIEW_HEIGHT }}>
-        <div ref={setBody}>
-          {readme.format === "markdown" ? (
-            <Suspense fallback={plain}>
-              <DocMarkdown content={readme.content} />
-            </Suspense>
-          ) : (
-            plain
-          )}
-        </div>
-        {!expanded && overflowing && (
-          <div
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-12"
-            style={{ background: "linear-gradient(to top, var(--color-surface), transparent)" }}
-          />
+      <div className="mt-1.5">
+        {readme.format === "markdown" ? (
+          <Suspense fallback={plain}>
+            <DocMarkdown content={readme.content} />
+          </Suspense>
+        ) : (
+          plain
         )}
       </div>
-      {overflowing && (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="mt-1 text-[10.5px] text-[var(--color-ink-faint)] transition-colors hover:text-[var(--color-ink-muted)]"
-        >
-          {expanded ? t("收起") : t("展开全文")}
-        </button>
-      )}
-      {expanded && readme.truncated && (
+      {readme.truncated && (
         <p className="mt-1 text-[10.5px] text-[var(--color-ink-faint)]">
           {t("README 太长，这里只显示开头部分，完整内容点上面的文件名在源码里看")}
         </p>

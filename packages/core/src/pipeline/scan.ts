@@ -32,7 +32,7 @@ export type { ScanPhase } from "../types.js";
  * 抽取器产物的形状或语义变了就加一。内容没变的文件也会整体重新解析，
  * 而不是像 schema 版本那样重建整个库——那会连带清掉 LLM 缓存。
  */
-export const EXTRACTOR_VERSION = "8";
+export const EXTRACTOR_VERSION = "9";
 export const EXTRACTOR_VERSION_KEY = "extractor_version";
 
 export interface ScanOptions {
@@ -403,6 +403,7 @@ function persistParsed(
         : null,
     calleeName: call.callee,
     receiver: call.receiver ?? null,
+    receiverType: call.receiverType ?? null,
     calleePath: call.calleePath ? call.calleePath.join(".") : null,
     callKind: call.kind,
     argCount: call.argCount,

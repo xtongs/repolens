@@ -164,6 +164,9 @@ export const EN: Record<string, Translation> = {
   "从入口开始单步走读 · 越往下走得远的越靠前": "Step through code from an entry point · deepest first",
   "筛选入口或文件": "Filter entries or files",
   "没有匹配的入口。": "No matching entry points.",
+  "{name} 里没有入口。": "No entry points in {name}.",
+  "只看聚焦的 {name} 里的": "Only showing what's inside the focused {name}",
+  "取消聚焦，列出全部": "Exit focus and list everything",
   "没有入口能沿静态调用关系走到仓库里的其他函数。": "No entry point reaches other functions in the repo through static calls.",
   "走不到其他函数的入口": "Entry points that don't reach other functions",
   "处理函数没有独立符号，无法走读": "The handler has no symbol of its own, so it can't be walked through",
@@ -193,6 +196,7 @@ export const EN: Record<string, Translation> = {
   "这个文件不参与分析，需要时再让 AI 解读。": "This file isn't analyzed. Ask AI to explain it when you need to.",
   "没进索引，不参与分析，这里只显示原文": "Not indexed or analyzed, so only the raw file is shown",
   "没有发现结构问题。": "No structural issues found.",
+  "{name} 里没有体检问题。": "No issues found in {name}.",
   "当前检查项：跨文件的重复实现、同级作用域之间的循环依赖、读不动的过大函数和文件，以及 .repolens.json 里声明的依赖规则。":
     "Current checks: duplicate implementations across files, dependency cycles between sibling scopes, functions and files too large to read, and the dependency rules declared in .repolens.json.",
   "全部 {count}": "All {count}",
@@ -211,6 +215,7 @@ export const EN: Record<string, Translation> = {
     "Indexing the base commit. The first comparison against a commit takes a few seconds.",
   "上次扫描时的代码": "code as of the last scan",
   "和基线相比没有结构变化。改完代码后重新扫描再对比。": "No structural changes against the base. Rescan after editing, then compare again.",
+  "{name} 里没有改动。": "No changes in {name}.",
   "另有 {count} 个测试、配置等文件的改动未列出，打开「显示噪音」可见。": (params) =>
     `${count(params)} more ${plural(params, "change", "changes")} in tests, config and other files are hidden. Turn on "Show noise" to see them.`,
   "改动文件": "Files",
@@ -529,7 +534,23 @@ export const EN: Record<string, Translation> = {
     `${count(params)} more library or unresolved ${plural(params, "call", "calls")}`,
   "访问{kind}": "Accesses {kind}",
   "外部库 {name}": "Library {name}",
+  "语言内置 {name}": "Built-in {name}",
+  "内置 {name}": "built-in {name}",
   "静态分析确定不了它调的是哪个函数": "Static analysis can't tell which function this calls",
+  "{name} 是参数传进来的函数，要看调用方传了什么": "{name} is a function passed in as a parameter; it depends on what the caller passes",
+  "{name} 是 {source} 返回的函数，静态分析不追踪函数值":
+    "{name} is the function returned by {source}; static analysis doesn't follow function values",
+  "{name} 是从 {source} 的返回值里解构出来的函数，静态分析不追踪函数值":
+    "{name} is destructured from what {source} returns; static analysis doesn't follow function values",
+  "{name} 不是本文件定义或 import 的函数，可能来自闭包、变量或运行时注入":
+    "{name} isn't defined or imported in this file; it likely comes from a closure, a variable, or the runtime",
+  "接在上一个调用的返回值上，推不出这个返回值的类型": "Chained onto the previous call's result, whose type can't be inferred",
+  "{receiver} 来自 {source} 的返回值，推不出它的类型": "{receiver} comes from what {source} returns; its type can't be inferred",
+  "{receiver} 是没标类型的参数，推不出它的类型": "{receiver} is an untyped parameter; its type can't be inferred",
+  "推不出 {receiver} 的类型，多半是内置对象或外部库返回的数据":
+    "Can't infer the type of {receiver}; it's probably a built-in object or data returned by a library",
+  "类和父类里都没找到这个方法，可能是运行时挂上去的":
+    "Not found on the class or its parents; it may be attached at runtime",
   "里面还有 {count} 处调用": (params) => `${count(params)} more ${plural(params, "call", "calls")} inside`,
   "里面没有更多调用": "No further calls inside",
   "递归": "recursive",

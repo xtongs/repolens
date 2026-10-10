@@ -6,8 +6,10 @@ import type {
   FindingKind,
   TreeNodeDto,
 } from "@repolens/core/types";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type FindingsResponse, api } from "../api/client";
+import { type NodeScope, inScope } from "../graph/scope";
+import { useNodeScope } from "../graph/useNodeScope";
 import { msg, t, useT } from "../i18n";
 import { formatCount, languageColor } from "../ui/visual";
 import { useAppStore } from "../store/useAppStore";
@@ -30,8 +32,11 @@ export function TreePanel() {
   const setTreeOpen = useAppStore((s) => s.setTreeOpen);
   const tab = useAppStore((s) => s.panelTab);
   const setTab = useAppStore((s) => s.setPanelTab);
+  // 图上聚焦到哪个节点，体检、入口、变更就只列它里面的
+  const focus = useNodeScope(useAppStore((s) => s.focus));
   const resize = useResizablePanel({
     side: "left",
+    visible: open,
     storageKey: "repolens:left-panel-custom-width",
     fallbackWidth: 300,
     minWidth: 180,
@@ -71,16 +76,33 @@ export function TreePanel() {
         </button>
       </div>
 
+      {tab !== "tree" && focus && <FocusScopeBar scope={focus} />}
       {tab === "tree" ? (
         <TreeBody key={`tree:${repoId ?? ""}:${repoRevision}`} />
       ) : tab === "findings" ? (
-        <FindingsBody key={`findings:${repoId ?? ""}:${repoRevision}`} />
+        <FindingsBody key={`findings:${repoId ?? ""}:${repoRevision}`} scope={focus} />
       ) : tab === "changes" ? (
-        <ChangesBody key={`changes:${repoId ?? ""}:${repoRevision}`} />
+        <ChangesBody key={`changes:${repoId ?? ""}:${repoRevision}`} scope={focus} />
       ) : (
-        <EntriesBody key={`entries:${repoId ?? ""}:${repoRevision}`} />
+        <EntriesBody key={`entries:${repoId ?? ""}:${repoRevision}`} scope={focus} />
       )}
     </aside>
+  );
+}
+
+function FocusScopeBar({ scope }: { scope: NodeScope }) {
+  const t = useT();
+  const setFocus = useAppStore((s) => s.setFocus);
+  return (
+    <button
+      type="button"
+      onClick={() => setFocus(null)}
+      title={t("取消聚焦，列出全部")}
+      className="mx-3 mt-2 flex shrink-0 items-center gap-1.5 rounded bg-[var(--color-accent)]/12 px-2 py-1 text-left text-[10.5px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent)]/20"
+    >
+      <span className="min-w-0 flex-1 truncate">{t("只看聚焦的 {name} 里的", { name: scope.label })}</span>
+      <span className="shrink-0 text-[12px] leading-none">×</span>
+    </button>
   );
 }
 
@@ -88,7 +110,7 @@ export function TreePanel() {
  * 入口清单。点一个入口就从它的处理函数开始单步走读；服务端已按「能走到多远」排好序，
  * 往下走不到别的函数的入口（只调库、或匿名闭包没有独立符号）收在最后。
  */
-function EntriesBody() {
+function EntriesBody({ scope }: { scope: NodeScope | null }) {
   const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
@@ -110,8 +132,9 @@ function EntriesBody() {
     const needle = query.trim().toLowerCase();
     return (entries ?? []).filter((entry) =>
       (showNoise || (entry.kind !== "test" && entry.fileRole !== "test")) &&
+      (scope === null || inScope(scope, entry.filePath, entry.symbolId ?? null)) &&
       (needle === "" || entry.label.toLowerCase().includes(needle) || entry.filePath.toLowerCase().includes(needle)));
-  }, [entries, showNoise, query]);
+  }, [entries, showNoise, scope, query]);
   const deep = visible.filter((entry) => entry.symbolId && entry.reachSymbols > 0);
   const shallow = visible.filter((entry) => !(entry.symbolId && entry.reachSymbols > 0));
 
@@ -142,7 +165,11 @@ function EntriesBody() {
         {deep.map(row)}
         {deep.length === 0 && (
           <div className="px-3 py-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-            {query ? t("没有匹配的入口。") : t("没有入口能沿静态调用关系走到仓库里的其他函数。")}
+            {query
+              ? t("没有匹配的入口。")
+              : scope && shallow.length === 0
+                ? t("{name} 里没有入口。", { name: scope.label })
+                : t("没有入口能沿静态调用关系走到仓库里的其他函数。")}
           </div>
         )}
         {shallow.length > 0 && (
@@ -234,14 +261,19 @@ function PanelTab({
 /**
  * 结构树列出仓库里的全部文件，不跟噪音开关走：画布回答「主干是什么」，
  * 结构树回答「仓库里有什么」。不参与分析的置灰，点开照样能看源码。
+ *
+ * 和画布双向联动：图上选中什么，树就一路展开到它所在的文件或目录并滚过去；
+ * 树上点一项，图上也展开到它并居中。
  */
 function TreeBody() {
   const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
   const select = useAppStore((s) => s.select);
+  const selected = useAppStore((s) => s.selected);
   const [root, setRoot] = useState<TreeNodeDto | null>(null);
-  const rootSelected = useAppStore((s) => root !== null && s.selected === root.id);
+  const target = useNodeScope(selected)?.path ?? null;
+  const rootSelected = root !== null && (selected === root.id || target === root.path);
 
   useEffect(() => {
     let cancelled = false;
@@ -285,7 +317,7 @@ function TreeBody() {
         {root === null ? (
           <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>
         ) : (
-          (root.children ?? []).map((child) => <TreeRow key={child.id} node={child} depth={0} />)
+          (root.children ?? []).map((child) => <TreeRow key={child.id} node={child} depth={0} target={target} />)
         )}
       </div>
     </>
@@ -320,23 +352,24 @@ function statusHint(node: TreeNodeDto): string | undefined {
   return node.role ? t("不参与分析：{role}", { role: t(ROLE_LABELS[node.role]) }) : t("目录里没有参与分析的源码");
 }
 
-function TreeRow({ node, depth }: { node: TreeNodeDto; depth: number }) {
+/** target 是图上选中项落在的路径（符号取所在文件），树据此一层层展开到它 */
+function TreeRow({ node, depth, target }: { node: TreeNodeDto; depth: number; target: string | null }) {
   const t = useT();
   const select = useAppStore((s) => s.select);
+  const locate = useAppStore((s) => s.locate);
   const openDetail = useAppStore((s) => s.openDetail);
-  const selected = useAppStore((s) => s.selected === node.id);
+  // 画布上包和目录是两种节点，目录正好是某个包的根时，图上只有那个包
+  const packageId = useAppStore((s) =>
+    node.kind === "directory" ? s.overview?.packages.find((p) => p.dir === node.path)?.id ?? null : null);
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<TreeNodeDto[] | null>(node.children ?? null);
   const [loading, setLoading] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
   const muted = node.status === "noise" || node.status === "excluded";
+  const isTarget = target === node.path;
+  const holdsTarget = node.kind === "directory" && target !== null && target.startsWith(`${node.path}/`);
 
-  const toggle = useCallback(async () => {
-    if (node.kind === "file") return;
-    if (expanded) {
-      setExpanded(false);
-      return;
-    }
-    setExpanded(true);
+  const load = useCallback(async () => {
     if (children !== null) return;
     setLoading(true);
     try {
@@ -345,18 +378,40 @@ function TreeRow({ node, depth }: { node: TreeNodeDto; depth: number }) {
     } finally {
       setLoading(false);
     }
-  }, [expanded, children, node.kind, node.path]);
+  }, [children, node.path]);
+
+  const toggle = useCallback(async () => {
+    if (node.kind === "file") return;
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    setExpanded(true);
+    await load();
+  }, [expanded, load, node.kind]);
+
+  useEffect(() => {
+    if (!holdsTarget) return;
+    setExpanded(true);
+    if (!loading) void load();
+  }, [holdsTarget, target, load, loading]);
+
+  useEffect(() => {
+    if (isTarget) rowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [isTarget]);
 
   // 灰色目录不在画布上、没有概览可看，单击直接展开；灰色文件直接看源码
   const open = () => {
     if (muted && node.kind === "directory") void toggle();
     else if (node.status === "noise") openDetail(node.id, { tab: "source", lines: null }, false);
-    else select(node.id);
+    else if (node.status === "excluded") select(node.id);
+    else locate(packageId ?? node.id);
   };
 
   return (
     <>
       <div
+        ref={rowRef}
         role="treeitem"
         aria-expanded={node.kind === "directory" ? expanded : undefined}
         tabIndex={0}
@@ -371,7 +426,7 @@ function TreeRow({ node, depth }: { node: TreeNodeDto; depth: number }) {
           }
         }}
         className={`group relative flex cursor-pointer items-center gap-1.5 py-[3px] pr-3 text-[12px] transition-colors ${
-          selected ? "bg-[var(--color-surface-3)]" : "hover:bg-[var(--color-surface-2)]"
+          isTarget ? "bg-[var(--color-surface-3)]" : "hover:bg-[var(--color-surface-2)]"
         } ${node.status === "excluded" ? "opacity-60" : ""}`}
         style={{ paddingLeft: 13 + depth * 13 }}
       >
@@ -414,7 +469,9 @@ function TreeRow({ node, depth }: { node: TreeNodeDto; depth: number }) {
         </div>
       )}
 
-      {expanded && children?.map((child) => <TreeRow key={child.id} node={child} depth={depth + 1} />)}
+      {expanded && children?.map((child) => (
+        <TreeRow key={child.id} node={child} depth={depth + 1} target={target} />
+      ))}
     </>
   );
 }
@@ -456,7 +513,7 @@ function FolderIcon({ open, muted = false }: { open: boolean; muted?: boolean })
  *
  * 一条结论只列一次（服务端按 group_key 去重），点击落到图上对应节点。
  */
-function FindingsBody() {
+function FindingsBody({ scope }: { scope: NodeScope | null }) {
   const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
@@ -464,12 +521,13 @@ function FindingsBody() {
   const [kind, setKind] = useState<"all" | FindingKind>("all");
   const reveal = useAppStore((s) => s.reveal);
   const selected = useAppStore((s) => s.selected);
+  const scopeId = scope?.id;
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     void api
-      .findings(kind === "all" ? undefined : kind)
+      .findings(kind === "all" ? undefined : kind, scopeId)
       .then((res) => {
         if (!cancelled) setData(res);
       })
@@ -479,10 +537,18 @@ function FindingsBody() {
     return () => {
       cancelled = true;
     };
-  }, [kind, repoId, repoRevision]);
+  }, [kind, scopeId, repoId, repoRevision]);
 
   if (data === null) {
     return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>;
+  }
+
+  if (data.summary.total === 0 && scope) {
+    return (
+      <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">
+        {t("{name} 里没有体检问题。", { name: scope.label })}
+      </div>
+    );
   }
 
   if (data.summary.total === 0) {

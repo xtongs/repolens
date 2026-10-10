@@ -52,6 +52,7 @@ export const typescriptExtractor: LanguageExtractor = {
     const exports: ParsedExport[] = [];
     const typeRelations: ParsedTypeRelation[] = [];
     const callSites: RawCallSite[] = [];
+    const hints = new ReceiverHints();
 
     walk(root, (node) => {
       switch (node.type) {
@@ -109,7 +110,7 @@ export const typescriptExtractor: LanguageExtractor = {
         }
 
         case "call_expression": {
-          collectCall(node, callSites, imports);
+          collectCall(node, callSites, imports, hints);
           const handler = inlineHandlerSymbol(node, symbols);
           if (handler) symbols.push(handler);
           return true;
@@ -664,7 +665,7 @@ function collectJsxElement(node: TsNode, out: RawCallSite[]): void {
   });
 }
 
-function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]): void {
+function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[], hints: ReceiverHints): void {
   const fn = fieldNode(node, "function");
   if (!fn) return;
 
@@ -690,6 +691,7 @@ function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]):
   if (fn.type === "identifier") {
     out.push({
       callee: fn.text,
+      receiverType: hints.of(fn),
       line: lineOf(node),
       argCount,
       argumentTexts: args,
@@ -710,6 +712,7 @@ function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]):
     out.push({
       callee: property,
       receiver,
+      receiverType: objectNode ? hints.of(objectNode) : undefined,
       calleePath: path.length > 1 ? path : undefined,
       line: lineOf(node),
       argCount,
@@ -720,6 +723,265 @@ function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]):
       ...calleeAt(fn, property),
     });
   }
+}
+
+const FUNCTION_SCOPES = new Set([
+  "function_declaration", "generator_function_declaration", "function_expression", "function",
+  "generator_function", "arrow_function", "method_definition",
+]);
+
+interface Declaration {
+  start: number;
+  /** undefined 表示声明了但看不出类型 */
+  hint: string | undefined;
+}
+
+/**
+ * 方法调用接收者的类型线索（格式见 ParsedCall.receiverType），链接阶段据此找到方法。
+ *
+ * 只认写在源码里的几种：参数标注、`const x: T`、`new T()`、`x as T`、`const x = f()`、
+ * 类字段与构造器参数属性。沿作用域往外找，碰到同名但看不出类型的绑定就停——
+ * 越过它拿到外层同名变量的类型，比不知道更糟。
+ */
+class ReceiverHints {
+  /** 语句块 id → 名字 → 块内的声明；一个文件里同一个块会被它里面的每个调用问到 */
+  private readonly blocks = new Map<number, Map<string, Declaration[]>>();
+
+  of(object: TsNode): string | undefined {
+    const node = unwrapExpression(object);
+    switch (node.type) {
+      case "identifier":
+        return this.binding(node.text, node);
+      case "member_expression": {
+        const property = fieldText(node, "property");
+        if (fieldNode(node, "object")?.type === "this") return property ? classFieldHint(property, node) : undefined;
+        // `c.req.json()`：属性的类型不知道，但根变量属于某个外部库时，属性多半也是那个库的对象
+        let root: TsNode | null = node;
+        while (root?.type === "member_expression") root = fieldNode(root, "object");
+        const rootHint = root?.type === "identifier" ? this.binding(root.text, root) : undefined;
+        return rootHint ? `M:${rootHint}` : undefined;
+      }
+      // `a().b()` 交给链接阶段：内层调用自己有接收者线索，拿它的解析结果比重新解析路径准
+      case "call_expression":
+        return undefined;
+      default:
+        return valueHint(node);
+    }
+  }
+
+  private binding(name: string, from: TsNode): string | undefined {
+    let insideClosure = false;
+    for (let scope = from.parent; scope; scope = scope.parent) {
+      if (FUNCTION_SCOPES.has(scope.type)) {
+        const param = paramDeclaration(scope, name);
+        // P: 只告诉走读界面「这是参数传进来的」，链接阶段不拿它解析
+        if (param !== null) return param.hint ?? this.callbackHint(scope) ?? "P:";
+        insideClosure = true;
+        continue;
+      }
+      if (scope.type === "statement_block" || scope.type === "program") {
+        // 闭包里用到的变量可以声明在闭包之后：调用发生时外层早已执行完
+        const found = this.declarations(scope)
+          .get(name)
+          ?.find((d) => insideClosure || d.start < from.startIndex);
+        if (found) return found.hint;
+        continue;
+      }
+      const loopBinding =
+        scope.type === "for_in_statement" ? fieldNode(scope, "left")
+        : scope.type === "catch_clause" ? fieldNode(scope, "parameter")
+        : scope.type === "for_statement" ? fieldNode(scope, "initializer")
+        : null;
+      if (loopBinding && bindsName(loopBinding, name)) return undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * 没标类型的回调参数：`app.get("/x", (c) => …)` 里的 c 由 app.get 传进来。
+   * 记下注册方法名和它接收者的线索，链接阶段确认 app.get 落在外部库上时，c 也归那个库。
+   */
+  private callbackHint(fn: TsNode): string | undefined {
+    if (fn.type !== "arrow_function" && fn.type !== "function_expression" && fn.type !== "function") return undefined;
+    const call = fn.parent?.type === "arguments" ? fn.parent.parent : null;
+    const callee = call?.type === "call_expression" ? fieldNode(call, "function") : null;
+    if (callee?.type !== "member_expression") return undefined;
+    const method = fieldText(callee, "property");
+    const object = fieldNode(callee, "object");
+    const owner = object && object.type !== "call_expression" ? this.of(object) : undefined;
+    return method && owner ? `C:${method}|${owner}` : undefined;
+  }
+
+  private declarations(block: TsNode): Map<string, Declaration[]> {
+    const cached = this.blocks.get(block.id);
+    if (cached) return cached;
+    const table = new Map<string, Declaration[]>();
+    const add = (name: string, start: number, hint: string | undefined) => {
+      const list = table.get(name);
+      if (list) list.push({ start, hint });
+      else table.set(name, [{ start, hint }]);
+    };
+    for (const statement of namedChildren(block)) {
+      const decl = statement.type === "export_statement" ? fieldNode(statement, "declaration") : statement;
+      if (!decl) continue;
+      if (decl.type === "lexical_declaration" || decl.type === "variable_declaration") {
+        for (const declarator of namedChildren(decl)) {
+          if (declarator.type !== "variable_declarator") continue;
+          const id = fieldNode(declarator, "name");
+          if (id?.type === "identifier") {
+            add(id.text, statement.startIndex, declaratorHint(declarator));
+            continue;
+          }
+          // `const [open, setOpen] = useState()`：D: 记下解构自哪次调用，同样只给走读界面解释用
+          const value = fieldNode(declarator, "value");
+          const source = value ? valueHint(value)?.match(/^[RA]:(.+)$/)?.[1] : undefined;
+          if (id) for (const bound of boundNames(id)) add(bound, statement.startIndex, source ? `D:${source}` : undefined);
+        }
+      } else if (decl.type === "function_declaration" || decl.type === "class_declaration") {
+        const id = fieldText(decl, "name");
+        if (id) add(id, statement.startIndex, undefined);
+      }
+    }
+    this.blocks.set(block.id, table);
+    return table;
+  }
+}
+
+function unwrapExpression(node: TsNode): TsNode {
+  let current = node;
+  while (current.type === "parenthesized_expression" || current.type === "non_null_expression") {
+    const inner = namedChildren(current)[0];
+    if (!inner) break;
+    current = inner;
+  }
+  return current;
+}
+
+/** 函数自己的参数里有没有这个名字；null 表示没有，要继续往外找 */
+function paramDeclaration(fn: TsNode, name: string): { hint: string | undefined } | null {
+  const single = fieldNode(fn, "parameter");
+  if (single) return single.text === name ? { hint: undefined } : null;
+  const params = fieldNode(fn, "parameters");
+  if (!params) return null;
+  for (const param of namedChildren(params)) {
+    if (param.type === "required_parameter" || param.type === "optional_parameter") {
+      const pattern = fieldNode(param, "pattern");
+      if (pattern?.type === "identifier" && pattern.text === name) {
+        const type = typeAnnotationText(fieldNode(param, "type"));
+        const value = fieldNode(param, "value");
+        return { hint: type ? `T:${type}` : value ? valueHint(value) : undefined };
+      }
+      if (pattern && bindsName(pattern, name)) return { hint: undefined };
+    } else if (bindsName(param, name)) {
+      return { hint: undefined };
+    }
+  }
+  return null;
+}
+
+function declaratorHint(declarator: TsNode): string | undefined {
+  const type = typeAnnotationText(fieldNode(declarator, "type"));
+  if (type) return `T:${type}`;
+  const value = fieldNode(declarator, "value");
+  return value ? valueHint(value) : undefined;
+}
+
+function valueHint(value: TsNode): string | undefined {
+  const node = unwrapExpression(value);
+  switch (node.type) {
+    case "new_expression": {
+      const ctor = fieldNode(node, "constructor");
+      return ctor && (ctor.type === "identifier" || ctor.type === "member_expression")
+        ? `T:${normalizeWhitespace(ctor.text)}`
+        : undefined;
+    }
+    case "as_expression":
+    case "satisfies_expression": {
+      const [expression, type] = namedChildren(node);
+      if (!type) return expression ? valueHint(expression) : undefined;
+      return `T:${normalizeWhitespace(type.text).slice(0, 200)}`;
+    }
+    case "await_expression": {
+      const inner = namedChildren(node)[0];
+      if (!inner) return undefined;
+      const call = unwrapExpression(inner);
+      if (call.type !== "call_expression") return valueHint(inner);
+      const path = callPath(call);
+      return path ? `A:${path}` : undefined;
+    }
+    case "call_expression": {
+      const path = callPath(node);
+      return path ? `R:${path}` : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** `f()` / `a.b.f()` 的被调路径；中间夹着调用、下标或可选链的不算 */
+function callPath(call: TsNode): string | undefined {
+  const fn = fieldNode(call, "function");
+  if (!fn || (fn.type !== "identifier" && fn.type !== "member_expression")) return undefined;
+  const path = dottedPath(fn.text).join(".");
+  return path === fn.text.replace(/\s+/g, "") ? path : undefined;
+}
+
+/** `this.db` 的类型：类字段的标注或初值、构造器参数属性、构造器里的 `this.db = …` */
+function classFieldHint(property: string, from: TsNode): string | undefined {
+  const body = ancestorOfType(from, ["class_body"]);
+  if (!body) return undefined;
+  for (const member of namedChildren(body)) {
+    if (member.type === "public_field_definition" || member.type === "field_definition") {
+      const name = fieldNode(member, "name") ?? fieldNode(member, "property");
+      if (name?.text !== property) continue;
+      const type = typeAnnotationText(fieldNode(member, "type"));
+      if (type) return `T:${type}`;
+      const value = fieldNode(member, "value");
+      return value ? valueHint(value) : undefined;
+    }
+    if (member.type !== "method_definition" || fieldText(member, "name") !== "constructor") continue;
+    for (const param of namedChildren(fieldNode(member, "parameters") ?? member)) {
+      if (param.type !== "required_parameter" && param.type !== "optional_parameter") continue;
+      if (fieldNode(param, "pattern")?.text !== property) continue;
+      const type = typeAnnotationText(fieldNode(param, "type"));
+      return type ? `T:${type}` : undefined;
+    }
+    for (const statement of namedChildren(fieldNode(member, "body") ?? member)) {
+      const assignment = statement.type === "expression_statement" ? namedChildren(statement)[0] : null;
+      if (assignment?.type !== "assignment_expression") continue;
+      const left = fieldNode(assignment, "left");
+      if (left?.type !== "member_expression" || fieldNode(left, "object")?.type !== "this") continue;
+      if (fieldText(left, "property") !== property) continue;
+      const right = fieldNode(assignment, "right");
+      return right ? valueHint(right) : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** 解构模式、for 循环变量里绑定出来的名字；默认值和初值里出现的名字不算 */
+function boundNames(pattern: TsNode, out: string[] = []): string[] {
+  switch (pattern.type) {
+    case "identifier":
+    case "shorthand_property_identifier_pattern":
+      out.push(pattern.text);
+      break;
+    case "assignment_pattern":
+    case "object_assignment_pattern":
+    case "variable_declarator": {
+      const target = fieldNode(pattern, "left") ?? fieldNode(pattern, "name");
+      if (target) boundNames(target, out);
+      break;
+    }
+    default:
+      for (const child of namedChildren(pattern)) boundNames(child, out);
+  }
+  return out;
+}
+
+function bindsName(pattern: TsNode, name: string): boolean {
+  if (pattern.type === "identifier") return pattern.text === name;
+  return boundNames(pattern).includes(name);
 }
 
 /** `const x = require("m")` 与 `const { a, b: c } = require("m")` 的本地绑定 */

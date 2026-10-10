@@ -37,7 +37,7 @@ const V5_SQL = `
 `;
 
 describe("openDb", () => {
-  it("v5 索引就地迁移：补列、删旧链路表，AI 摘要保留", () => {
+  it("v5 索引逐版就地迁移到当前版本：补列、删旧链路表，AI 摘要保留", () => {
     const root = mkdtempSync(join(tmpdir(), "repolens-migrate-"));
     roots.push(root);
     const path = join(root, "index.db");
@@ -52,6 +52,7 @@ describe("openDb", () => {
         (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name);
       expect(columns("call_sites")).toEqual(expect.arrayContaining([
         "end_byte", "name_line", "name_col", "resolution", "target_symbol_id", "target_name", "candidates", "io_kind",
+        "receiver_type",
       ]));
       expect(columns("entry_points")).toEqual(expect.arrayContaining(["reach_symbols", "reach_files", "reach_io"]));
       const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)

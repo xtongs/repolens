@@ -14,7 +14,7 @@ import { readPref, writePref } from "../lib/prefs";
 
 export type MetricKey = "loc" | "complexity" | "symbols";
 
-/** 看图的设置跟着用户走，下次打开还是上次的样子；看到哪、选了什么不算设置，不记 */
+/** 看图的设置和侧栏开合跟着用户走，下次打开还是上次的样子；看到哪、选了什么不算设置，不记 */
 const PREF = {
   metric: "repolens:metric",
   noise: "repolens:show-noise",
@@ -23,6 +23,9 @@ const PREF = {
   callDepth: "repolens:call-depth",
   callDirection: "repolens:call-direction",
   walkAllCalls: "repolens:walk-all-calls",
+  treeOpen: "repolens:left-panel-open",
+  panelTab: "repolens:left-panel-tab",
+  chatOpen: "repolens:chat-open",
 } as const;
 
 function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
@@ -170,6 +173,8 @@ export interface AppState {
   select: (nodeId: string | null) => void;
   /** 展开到目标节点所在层并选中它。搜索结果和体检清单都靠它把图带过去 */
   reveal: (nodeId: string) => Promise<void>;
+  /** 结构树里点一项：结构视图下展开到它并居中；走读和调用图里只选中，不把人从眼前的视图拽走 */
+  locate: (nodeId: string) => void;
   /** 最近一次 reveal 的目标，供画布把视口移过去；消费后清空 */
   revealed: string | null;
   clearRevealed: () => void;
@@ -232,9 +237,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   hoverAnchor: null,
 
   drawerOpen: false,
-  chatOpen: false,
-  treeOpen: false,
-  panelTab: "tree",
+  chatOpen: readPref(PREF.chatOpen) === "on",
+  treeOpen: readPref(PREF.treeOpen) === "on",
+  panelTab: savedChoice<PanelTab>(PREF.panelTab, ["tree", "findings", "entries", "changes"], "tree"),
   revealed: null,
   detailRequest: null,
   filterOpen: false,
@@ -395,10 +400,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openWalk(symbolId, label) {
-    // 侧栏是浮在内容上的，画布可以平移避开它，走读的步骤列表和源码不行
+    // 两侧栏开着就留着，走读视图会按它们的宽度让出位置
     set({
       walk: { label, stack: [{ id: symbolId, name: label, at: null }] },
-      callGraph: null, drawerOpen: false, selected: null, treeOpen: false,
+      callGraph: null,
     });
   },
 
@@ -517,6 +522,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isCurrentRepo()) get().select(nodeId);
   },
 
+  locate(nodeId) {
+    if (get().walk !== null || get().callGraph !== null) get().select(nodeId);
+    else void get().reveal(nodeId);
+  },
+
   collapse(nodeId) {
     set((state) => ({
       // 收起一个节点时，它内部所有已展开的后代也要一起收起，
@@ -628,6 +638,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     return undefined;
   },
 }));
+
+// 侧栏开合的来路很多（顶栏按钮、面板上的 ×、Esc、⌘I），统一在这里记，不用每条路各写一遍
+useAppStore.subscribe((state, prev) => {
+  if (state.treeOpen !== prev.treeOpen) writePref(PREF.treeOpen, state.treeOpen ? "on" : "off");
+  if (state.panelTab !== prev.panelTab) writePref(PREF.panelTab, state.panelTab);
+  if (state.chatOpen !== prev.chatOpen) writePref(PREF.chatOpen, state.chatOpen ? "on" : "off");
+});
 
 /**
  * 只订阅决定图结构的四个字段。

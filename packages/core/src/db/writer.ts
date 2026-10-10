@@ -58,6 +58,7 @@ export interface CallSiteRow {
   callerSymbolId: number | null;
   calleeName: string;
   receiver: string | null;
+  receiverType: string | null;
   calleePath: string | null;
   callKind: string;
   argCount: number;
@@ -187,11 +188,11 @@ export class IndexWriter {
       ),
       insertCallSite: db.prepare(
         `INSERT INTO call_sites
-           (file_id, caller_symbol_id, callee_name, receiver, callee_path, call_kind, arg_count, argument_texts, line, end_byte,
-            name_line, name_col)
+           (file_id, caller_symbol_id, callee_name, receiver, receiver_type, callee_path, call_kind, arg_count, argument_texts,
+            line, end_byte, name_line, name_col)
          VALUES
-           (@fileId, @callerSymbolId, @calleeName, @receiver, @calleePath, @callKind, @argCount, @argumentTexts, @line, @endByte,
-            @nameLine, @nameColumn)`,
+           (@fileId, @callerSymbolId, @calleeName, @receiver, @receiverType, @calleePath, @callKind, @argCount, @argumentTexts,
+            @line, @endByte, @nameLine, @nameColumn)`,
       ),
       insertEntryHint: db.prepare(
         `INSERT INTO entry_hints
@@ -440,6 +441,7 @@ export class IndexWriter {
         callerSymbolId: site.callerSymbolId,
         calleeName: site.calleeName,
         receiver: site.receiver,
+        receiverType: site.receiverType,
         calleePath: site.calleePath,
         callKind: site.callKind,
         argCount: site.argCount,

@@ -1,6 +1,7 @@
 import type { FindingSummaryDto } from "@repolens/core/types";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { useNodeScope } from "../graph/useNodeScope";
 import { msg, translateMessage, useLocale, useLocaleStore, useT } from "../i18n";
 import { desktop } from "../lib/desktop";
 import { writePref } from "../lib/prefs";
@@ -569,6 +570,7 @@ function WalkControls() {
 function Breadcrumb() {
   const t = useT();
   const store = useAppStore();
+  const focusLabel = useNodeScope(store.focus)?.label;
   const parts: Array<{ key: string; label: string; onClick: () => void }> = [];
 
   if (store.callGraph) {
@@ -586,7 +588,11 @@ function Breadcrumb() {
     });
   }
   if (store.focus !== null) {
-    parts.push({ key: "focus", label: t("聚焦 {name}", { name: labelOf(store.focus) }), onClick: () => store.setFocus(null) });
+    parts.push({
+      key: "focus",
+      label: t("聚焦 {name}", { name: focusLabel ?? labelOf(store.focus) }),
+      onClick: () => store.setFocus(null),
+    });
   }
   // 展开层数属于结构视图的状态，调用图模式下它既不可见也不可操作，
   // 显示出来只会让人以为面包屑描述的是眼前这张图

@@ -204,3 +204,184 @@ describe("调用链接的证据边界", () => {
     } finally { db.close(); }
   });
 });
+
+interface Site {
+  file: string;
+  callee: string;
+  receiver: string | null;
+  line: number;
+  caller: string | null;
+  resolution: string;
+  external: string | null;
+  target: string | null;
+  io: string | null;
+}
+
+function sites(db: Db): Site[] {
+  return db.prepare(
+    `SELECT f.path AS file, c.callee_name AS callee, c.receiver, c.line, caller.name AS caller, c.resolution,
+            c.target_name AS external, c.io_kind AS io,
+            CASE WHEN t.id IS NULL THEN NULL
+                 WHEN t.container IS NULL THEN t.name ELSE t.container || '.' || t.name END AS target
+     FROM call_sites c
+     JOIN files f ON f.id = c.file_id
+     LEFT JOIN symbols caller ON caller.id = c.caller_symbol_id
+     LEFT JOIN symbols t ON t.id = c.target_symbol_id`,
+  ).all() as Site[];
+}
+
+function site(all: readonly Site[], match: Partial<Site>): Site {
+  const found = all.filter((s) => Object.entries(match).every(([key, value]) => s[key as keyof Site] === value));
+  if (found.length !== 1) throw new Error(`期望 1 个调用点匹配 ${JSON.stringify(match)}，实际 ${found.length} 个`);
+  return found[0] as Site;
+}
+
+describe("按接收者类型解析方法调用", () => {
+  it("构造器、参数标注、类型别名、返回值、接口实现、父类与链式调用", async () => {
+    const db = await scanFixture({
+      "src/database.ts": `
+        import Database from "better-sqlite3";
+        export type Db = Database.Database;
+        export function openDb(path: string): Db { return new Database(path); }
+      `,
+      "src/store.ts": `
+        import type { Db } from "./database.js";
+        export interface Repo { load(id: string): string; }
+        export class SqlRepo implements Repo {
+          constructor(private readonly db: Db) {}
+          load(id: string) { return this.db.prepare("SELECT 1").get(id) as string; }
+        }
+        export class Base { save() { return 1; } }
+        export class Users extends Base {
+          run() { return this.save(); }
+          find() { return 1; }
+        }
+        export function makeUsers(): Users { return new Users(); }
+      `,
+      "src/main.ts": `
+        import { openDb } from "./database.js";
+        import { makeUsers, type Repo, Users } from "./store.js";
+        export function main(repo: Repo, label: string) {
+          const db = openDb("x");
+          const rows = db.prepare("SELECT * FROM t").all();
+          const users = new Users();
+          users.find();
+          makeUsers().find();
+          repo.load("1");
+          label.trim();
+          [users].forEach((users) => users.find());
+          return rows;
+        }
+      `,
+    });
+    try {
+      const all = sites(db);
+      // 别名 Db = Database.Database 追到 better-sqlite3，按包名认出数据库访问
+      expect(site(all, { file: "src/main.ts", callee: "prepare" })).toMatchObject({
+        resolution: "external", external: "better-sqlite3", io: "database",
+      });
+      expect(site(all, { file: "src/main.ts", callee: "all" })).toMatchObject({
+        resolution: "external", external: "better-sqlite3",
+      });
+      // 构造器参数属性 `private readonly db: Db` 给出 this.db 的类型
+      expect(site(all, { caller: "load", callee: "prepare", receiver: "this.db" })).toMatchObject({
+        resolution: "external", external: "better-sqlite3", io: "database",
+      });
+      expect(site(all, { caller: "load", callee: "get" })).toMatchObject({
+        resolution: "external", external: "better-sqlite3",
+      });
+      expect(site(all, { callee: "find", receiver: "users", line: 8 })).toMatchObject({
+        resolution: "exact", target: "Users.find",
+      });
+      // 返回类型标注推出来的只算 likely：标注可能比实际返回的宽
+      expect(site(all, { callee: "find", receiver: "makeUsers()" })).toMatchObject({
+        resolution: "likely", target: "Users.find",
+      });
+      expect(site(all, { callee: "load", receiver: "repo" })).toMatchObject({
+        resolution: "likely", target: "SqlRepo.load",
+      });
+      expect(site(all, { callee: "save", receiver: "this" })).toMatchObject({ resolution: "exact", target: "Base.save" });
+      expect(site(all, { callee: "trim" })).toMatchObject({ resolution: "external", external: "String" });
+      // 箭头函数参数 users 遮住了外层的 `const users = new Users()`，不能拿外层的类型
+      expect(site(all, { callee: "find", receiver: "users", line: 12 }).resolution).not.toBe("exact");
+    } finally { db.close(); }
+  });
+
+  it("注册回调的参数归注册方所在的库，集合方法回调里的元素不算", async () => {
+    const db = await scanFixture({
+      "src/server.ts": `
+        import { Hono } from "hono";
+        import { List } from "immutable";
+        const app = new Hono();
+        app.post("/x", async (c) => {
+          const body = await c.req.json();
+          return c.json(body);
+        });
+        export function names(xs: List<string>) {
+          return xs.map((x) => x.trim());
+        }
+      `,
+    });
+    try {
+      const all = sites(db);
+      expect(site(all, { callee: "json", receiver: "c.req" })).toMatchObject({ resolution: "external", external: "hono" });
+      expect(site(all, { callee: "json", receiver: "c" })).toMatchObject({ resolution: "external", external: "hono" });
+      expect(site(all, { callee: "map" })).toMatchObject({ resolution: "external", external: "immutable" });
+      expect(site(all, { callee: "trim" }).external).toBeNull();
+    } finally { db.close(); }
+  });
+});
+
+describe("内置与 I/O 标注", () => {
+  it("语言内置标为外部，注册子命令和 Map 操作不算 I/O，CSS 函数不算调用", async () => {
+    const db = await scanFixture({
+      "src/cli.ts": `
+        import { Command } from "commander";
+        const program = new Command();
+        program.command("scan").action(() => {});
+        const overviewRequests = new Map<string, number>();
+        overviewRequests.delete("k");
+        setTimeout(() => parseInt("1"), 1);
+        const jobs: Array<() => void> = [];
+        jobs.push(() => {});
+        class Report { deps: string[] = []; filter() { return this; } }
+        export function pick(deps: Report["deps"]) { return deps.filter(Boolean); }
+      `,
+      "src/files.ts": `
+        import { readFileSync } from "node:fs";
+        export function lines(p: string) {
+          const text = readFileSync(p, "utf8");
+          return text.split("\\n");
+        }
+      `,
+      "app/main.py": "def run(items):\n    print(len(items))\n    with open('x') as f:\n        return f.read()\n",
+      "src/style.css": ":root { --a: 1px; } .x { width: calc(var(--a) * 2); }",
+    });
+    try {
+      const all = sites(db);
+      expect(site(all, { callee: "command" })).toMatchObject({ resolution: "external", external: "commander", io: null });
+      expect(site(all, { callee: "delete" })).toMatchObject({ resolution: "external", external: "Map", io: null });
+      expect(site(all, { callee: "setTimeout" })).toMatchObject({ resolution: "external", external: "setTimeout" });
+      expect(site(all, { callee: "parseInt" })).toMatchObject({ resolution: "external" });
+      // 泛型参数里的函数类型不影响外层是 Array；Report["deps"] 是字段的类型，不是 Report 本身
+      expect(site(all, { callee: "push" })).toMatchObject({ resolution: "external", external: "Array" });
+      expect(site(all, { callee: "filter" })?.resolution).not.toBe("exact");
+      expect(site(all, { callee: "readFileSync" })).toMatchObject({ external: "node:fs", io: "filesystem" });
+      // 读出来的字符串借了 node:fs 的名字，但 split 不碰文件
+      expect(site(all, { callee: "split" })).toMatchObject({ resolution: "external", external: "node:fs", io: null });
+      expect(site(all, { callee: "print" })).toMatchObject({ resolution: "external", external: "print" });
+      expect(site(all, { callee: "len" })).toMatchObject({ resolution: "external", external: "len" });
+      expect(site(all, { callee: "open" })).toMatchObject({ resolution: "external", io: "filesystem" });
+      expect(all.filter((s) => s.file === "src/style.css")).toEqual([]);
+    } finally { db.close(); }
+  });
+
+  it("npm 的 open 包是打开浏览器，不是 Python 内置的 open", async () => {
+    const db = await scanFixture({
+      "src/cli.ts": 'import open from "open";\nexport function launch() { open("http://localhost"); }\n',
+    });
+    try {
+      expect(site(sites(db), { callee: "open" })).toMatchObject({ resolution: "external", external: "open", io: null });
+    } finally { db.close(); }
+  });
+});

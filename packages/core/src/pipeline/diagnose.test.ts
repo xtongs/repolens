@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { indexPath, openDb, type Db } from "../db/database.js";
-import { getFindings } from "../db/queries.js";
+import { getFindings, getFindingSummary } from "../db/queries.js";
 import { scanRepo } from "./scan.js";
 
 const roots: string[] = [];
@@ -55,6 +55,26 @@ describe("过大的函数和文件", () => {
         ["src/branchy.ts", "route() 分支过多：复杂度 27，29 行", "low"],
         ["src/long.ts", "pipeline() 过长：222 行，复杂度 13", "low"],
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("体检结论可以限定在目录、文件、符号里，计数跟着收窄", async () => {
+    const db = await scanFixture({
+      "src/a/branchy.ts": BRANCHY,
+      "src/b/long.ts": LONG,
+    });
+    try {
+      const paths = (scope: string) => getFindings(db, { kind: "oversized", scope }).map((f) => f.path);
+      expect(paths("dir:src")).toHaveLength(2);
+      expect(paths("dir:src/a")).toEqual(["src/a/branchy.ts"]);
+      const file = db.prepare("SELECT id FROM files WHERE path = 'src/b/long.ts'").get() as { id: number };
+      expect(paths(`file:${file.id}`)).toEqual(["src/b/long.ts"]);
+      const route = db.prepare("SELECT id FROM symbols WHERE name = 'route'").get() as { id: number };
+      expect(paths(`sym:${route.id}`)).toEqual(["src/a/branchy.ts"]);
+      expect(getFindingSummary(db, "dir:src/a").byKind["oversized"]).toBe(1);
+      expect(getFindingSummary(db).byKind["oversized"]).toBe(2);
     } finally {
       db.close();
     }

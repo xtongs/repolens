@@ -1,5 +1,6 @@
-import type { ChangeReportDto, FileChangeDto, SymbolChangeDto } from "@repolens/core/types";
+import type { ChangeReportDto, DependencyChangeDto, FileChangeDto, SymbolChangeDto } from "@repolens/core/types";
 import { useEffect, useMemo, useState } from "react";
+import { type NodeScope, inScope } from "../graph/scope";
 import { useT } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
 import { useChangesStore } from "../store/useChangesStore";
@@ -20,7 +21,7 @@ const MARK_COLOR = {
  * 排序按审阅的先后：先看新增了哪些模块依赖和外部库（架构有没有被悄悄改掉），
  * 再看哪些入口会走到改过的代码（影响面），最后才是逐文件的符号清单。
  */
-export function ChangesBody() {
+export function ChangesBody({ scope }: { scope: NodeScope | null }) {
   const t = useT();
   const status = useChangesStore((s) => s.status);
   const report = useChangesStore((s) => s.report);
@@ -64,13 +65,48 @@ export function ChangesBody() {
         <Hint>{t("正在为基线提交建立结构索引，第一次对比某个提交需要几秒。")}</Hint>
       )}
       {status === "error" && <Hint tone="danger">{error}</Hint>}
-      {report && <ReportView report={report} />}
+      {report && <ReportView full={report} scope={scope} />}
     </>
   );
 }
 
-function ReportView({ report }: { report: ChangeReportDto }) {
+/**
+ * 只留落在聚焦节点里的改动。入口除了自己在里面，走到里面改动的也留着——
+ * 「这块改了会波及哪些入口」正是聚焦时想看的影响面。外部库是整仓的，聚焦时不列。
+ */
+function scopeReport(report: ChangeReportDto, scope: NodeScope): ChangeReportDto {
+  const symbolPath = new Map(report.symbols.flatMap((s) => (s.id ? [[s.id, s.path] as const] : [])));
+  const reaches = (id: string) => {
+    const path = symbolPath.get(id);
+    return path !== undefined && inScope(scope, path, id);
+  };
+  return {
+    ...report,
+    files: report.files.filter((file) => inScope(scope, file.path)),
+    symbols: report.symbols.filter((symbol) => inScope(scope, symbol.path, symbol.id)),
+    dependencies: report.dependencies.filter((dep) => dependencyInScope(dep, scope)),
+    externals: { added: [], removed: [] },
+    findings: report.findings.filter((finding) => inScope(scope, finding.path, finding.scopeKey)),
+    entries: report.entries.filter((entry) =>
+      inScope(scope, entry.path, entry.symbolId) || entry.via.some((v) => reaches(v.id))),
+  };
+}
+
+/** 依赖边只在包和目录这两级有，聚焦到文件或符号时没有能对上的 */
+function dependencyInScope(dep: DependencyChangeDto, scope: NodeScope): boolean {
+  if (scope.kind === "package" && dep.level === "package") {
+    const name = scope.id.slice("pkg:".length);
+    return dep.source === name || dep.target === name;
+  }
+  if (scope.kind === "package" || scope.kind === "directory") {
+    return dep.level === "directory" && (inScope(scope, dep.source) || inScope(scope, dep.target));
+  }
+  return false;
+}
+
+function ReportView({ full, scope }: { full: ChangeReportDto; scope: NodeScope | null }) {
   const t = useT();
+  const report = useMemo(() => (scope ? scopeReport(full, scope) : full), [full, scope]);
   const showNoise = useAppStore((s) => s.showNoise);
   const files = useMemo(
     () => report.files.filter((file) => showNoise || file.role === "source"),
@@ -95,8 +131,10 @@ function ReportView({ report }: { report: ChangeReportDto }) {
         {!report.head && indexedAt && <span> ({indexedAt})</span>}
       </div>
 
-      {report.files.length === 0 ? (
+      {full.files.length === 0 ? (
         <Hint>{t("和基线相比没有结构变化。改完代码后重新扫描再对比。")}</Hint>
+      ) : scope && report.files.length === 0 && report.entries.length === 0 && report.dependencies.length === 0 ? (
+        <Hint>{t("{name} 里没有改动。", { name: scope.label })}</Hint>
       ) : (
         <>
           <Summary report={report} files={files} symbols={symbols} />

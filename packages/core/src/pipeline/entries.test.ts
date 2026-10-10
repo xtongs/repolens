@@ -204,7 +204,8 @@ describe("单步走读", () => {
         import express from "express";
         import { UserService } from "./service.js";
         const app = express();
-        const service = new UserService();
+        function makeService() { return new UserService(); }
+        const service = makeService();
         function getUser(req: { params: { id: string } }) {
           return service.loadUser(req.params.id);
         }
@@ -219,6 +220,55 @@ describe("单步走读", () => {
         target: expect.objectContaining({ name: "UserService.loadUser", filePath: "src/service.ts", steps: 1 }),
       });
       expect(call?.target?.reaches).toEqual([{ kind: "database", depth: 0 }]);
+    } finally { db.close(); }
+  });
+
+  it("落不到仓库里的调用说明原因，并区分语言内置和外部库", async () => {
+    const db = await scanFixture("walk-reasons", {
+      "src/i18n.ts": "export function useT() { return (key: string) => key; }\n",
+      "src/view.ts": `
+        import { useState } from "react";
+        import { join } from "node:path";
+        import { useT } from "./i18n.js";
+        function getThing() { return {} as any; }
+        export function makeStore(set: (v: number) => void) {
+          return { reset() { set(0); } };
+        }
+        export function load(cfg) { cfg.read(); }
+        export function view({ onClose }: { onClose: () => void }, items: unknown) {
+          const t = useT();
+          const [open, setOpen] = useState(false);
+          t("title");
+          onClose();
+          setOpen(!open);
+          items.foo();
+          const thing = getThing();
+          thing.baz();
+          getThing().bar();
+          getThing().then(() => 1);
+          JSON.parse("1");
+          join("a", "b");
+        }
+      `,
+    });
+    try {
+      const symbol = db.prepare("SELECT id FROM symbols WHERE name = 'view'").get() as { id: number };
+      const byCallee = new Map(frameOf(db, `sym:${symbol.id}`).calls.map((call) => [call.callee, call]));
+      expect(byCallee.get("t")?.unresolved).toEqual({ kind: "function-value", source: "useT()" });
+      expect(byCallee.get("setOpen")?.unresolved).toEqual({ kind: "function-value", source: "useState()", destructured: true });
+      expect(byCallee.get("onClose")?.unresolved).toEqual({ kind: "callback" });
+      expect(byCallee.get("foo")?.unresolved).toEqual({ kind: "untyped" });
+      expect(byCallee.get("baz")?.unresolved).toEqual({ kind: "untyped", source: "getThing()" });
+      const load = db.prepare("SELECT id FROM symbols WHERE name = 'load'").get() as { id: number };
+      expect(frameOf(db, `sym:${load.id}`).calls[0]?.unresolved).toEqual({ kind: "untyped", param: true });
+      expect(byCallee.get("bar")?.unresolved).toEqual({ kind: "chained" });
+      expect(byCallee.get("then")).toMatchObject({ resolution: "external", external: "Promise", builtin: true });
+      // set 是外层 makeStore 的参数，reset 自己的参数表里没有它
+      const reset = db.prepare("SELECT id FROM symbols WHERE name = 'reset'").get() as { id: number };
+      expect(frameOf(db, `sym:${reset.id}`).calls[0]?.unresolved).toEqual({ kind: "callback" });
+      expect(byCallee.get("parse")).toMatchObject({ resolution: "external", external: "JSON", builtin: true });
+      expect(byCallee.get("join")).toMatchObject({ resolution: "external", external: "node:path" });
+      expect(byCallee.get("join")?.builtin).toBeUndefined();
     } finally { db.close(); }
   });
 

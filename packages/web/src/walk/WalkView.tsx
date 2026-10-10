@@ -3,6 +3,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { api } from "../api/client";
 import { useSource } from "../code/useSource";
 import { msg, useT } from "../i18n";
+import { useSidebarInset } from "../layout/ResizablePanelHandle";
 import { useAppStore, type WalkFrameRef } from "../store/useAppStore";
 import { CodeLine, type CodeMark } from "../ui/CodeLines";
 
@@ -33,6 +34,39 @@ function visibleSteps(frame: WalkFrameDto, all: boolean): WalkCallDto[] {
 
 function steppable(call: WalkCallDto | null): WalkTargetDto | null {
   return call && call.resolution !== "ambiguous" ? call.target ?? null : null;
+}
+
+/** 落不到仓库里的调用要说清楚落在哪、为什么推不出来，一律「确定不了」等于什么都没说 */
+function callNote(call: WalkCallDto, t: ReturnType<typeof useT>): string | null {
+  if (call.resolution === "external") {
+    const name = call.external ?? call.callee;
+    return call.builtin ? t("语言内置 {name}", { name }) : t("外部库 {name}", { name });
+  }
+  if (call.resolution !== "unresolved") return null;
+  const reason = call.unresolved;
+  switch (reason?.kind) {
+    case "callback":
+      return t("{name} 是参数传进来的函数，要看调用方传了什么", { name: call.callee });
+    case "function-value":
+      if (!reason.source) {
+        return t("{name} 不是本文件定义或 import 的函数，可能来自闭包、变量或运行时注入", { name: call.callee });
+      }
+      return reason.destructured
+        ? t("{name} 是从 {source} 的返回值里解构出来的函数，静态分析不追踪函数值", { name: call.callee, source: reason.source })
+        : t("{name} 是 {source} 返回的函数，静态分析不追踪函数值", { name: call.callee, source: reason.source });
+    case "chained":
+      return t("接在上一个调用的返回值上，推不出这个返回值的类型");
+    case "untyped": {
+      const receiver = shorten(call.receiver ?? "");
+      if (reason.source) return t("{receiver} 来自 {source} 的返回值，推不出它的类型", { receiver, source: reason.source });
+      if (reason.param) return t("{receiver} 是没标类型的参数，推不出它的类型", { receiver });
+      return t("推不出 {receiver} 的类型，多半是内置对象或外部库返回的数据", { receiver });
+    }
+    case "inherited":
+      return t("类和父类里都没找到这个方法，可能是运行时挂上去的");
+    default:
+      return t("静态分析确定不了它调的是哪个函数");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +193,7 @@ export function WalkView() {
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
   const rootRef = useRef<HTMLDivElement>(null);
+  const inset = { paddingLeft: useSidebarInset("left"), paddingRight: useSidebarInset("right") };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -184,7 +219,7 @@ export function WalkView() {
   if (!walk || !top) return null;
   if (error && !frame) {
     return (
-      <div ref={rootRef} className="flex h-full flex-col bg-[var(--color-canvas)]">
+      <div ref={rootRef} className="flex h-full flex-col bg-[var(--color-canvas)]" style={inset}>
         <WalkMessage>
           <div>{error}</div>
           <button type="button" onClick={stack.length > 1 ? () => actions.out() : closeWalk}
@@ -197,7 +232,7 @@ export function WalkView() {
   }
 
   return (
-    <div ref={rootRef} className="flex h-full flex-col bg-[var(--color-canvas)]">
+    <div ref={rootRef} className="flex h-full flex-col bg-[var(--color-canvas)]" style={inset}>
       <CallStack stack={stack} frames={frames} onOut={(depth) => actions.out(depth)} />
 
       {frame === null ? (
@@ -405,7 +440,7 @@ function StepList({ frame, steps, current, allCalls, caller, onPick, onShowAll }
                   : target
                     ? ` → ${crossFile ? target.filePath.split("/").at(-1) : t("同文件")}`
                     : call.external
-                      ? ` · ${call.external}`
+                      ? ` · ${call.builtin ? t("内置 {name}", { name: call.external }) : call.external}`
                       : ""}
               </span>
             </span>
@@ -566,9 +601,9 @@ function StepCard({ call, frame, recursive, onInto }: {
             </span>
           </>
         ) : call.resolution === "external" ? (
-          <span className="text-[var(--color-ink-muted)]">{t("外部库 {name}", { name: call.external ?? call.callee })}</span>
+          <span className="text-[var(--color-ink-muted)]">{callNote(call, t)}</span>
         ) : call.resolution === "unresolved" ? (
-          <span className="text-[var(--color-ink-faint)]">{t("静态分析确定不了它调的是哪个函数")}</span>
+          <span className="text-[var(--color-ink-faint)]">{callNote(call, t)}</span>
         ) : null}
       </div>
 

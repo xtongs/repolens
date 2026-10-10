@@ -1,6 +1,6 @@
 import type {
-  CallKind, Confidence, EntryPointDto, IoKind, IoReachDto, Language, SymbolKind, WalkCallDto, WalkFrameDto,
-  WalkTargetDto,
+  CallKind, Confidence, EntryPointDto, IoKind, IoReachDto, Language, SymbolKind, UnresolvedReason, WalkCallDto,
+  WalkFrameDto, WalkTargetDto,
 } from "../types.js";
 import type { Db } from "./database.js";
 import { symbolKey } from "./queries.js";
@@ -19,8 +19,8 @@ interface SymbolRow {
 }
 
 interface CallRow {
-  id: number; line: number; column: number; callee: string; receiver: string | null; kind: CallKind;
-  arguments: string; resolution: Confidence; targetId: number | null; targetName: string | null;
+  id: number; line: number; column: number; callee: string; receiver: string | null; receiverType: string | null;
+  kind: CallKind; arguments: string; resolution: Confidence; targetId: number | null; targetName: string | null;
   candidates: string | null; io: IoKind | null;
 }
 
@@ -60,7 +60,7 @@ export function getWalkFrame(db: Db, symbolId: number): WalkFrameDto | null {
 
   const rows = db.prepare(
     `SELECT id, CASE WHEN name_line > 0 THEN name_line ELSE line END AS line, name_col AS "column",
-            callee_name AS callee, receiver, call_kind AS kind,
+            callee_name AS callee, receiver, receiver_type AS receiverType, call_kind AS kind,
             argument_texts AS arguments, resolution, target_symbol_id AS targetId, target_name AS targetName,
             candidates, io_kind AS io
      FROM call_sites WHERE caller_symbol_id = ? ORDER BY call_sites.line, end_byte, id`,
@@ -71,6 +71,8 @@ export function getWalkFrame(db: Db, symbolId: number): WalkFrameDto | null {
     ...rows.flatMap((row) => (row.targetId === null ? [] : [row.targetId])),
     ...[...candidateIds.values()].flat(),
   ]);
+  const libraries = importedExternals(db, rows);
+  const params = paramNames(db, symbolId);
 
   const calls: WalkCallDto[] = rows.map((row) => {
     const candidates = row.resolution === "ambiguous"
@@ -81,7 +83,11 @@ export function getWalkFrame(db: Db, symbolId: number): WalkFrameDto | null {
       kind: row.kind, arguments: parseStrings(row.arguments), resolution: row.resolution,
       target: row.targetId === null ? null : targets.get(row.targetId) ?? null,
       candidates: candidates && candidates.length > 0 ? candidates : null,
-      external: row.targetName, io: row.io,
+      external: row.targetName,
+      ...(row.resolution === "external" && row.targetName !== null && !libraries.has(row.targetName)
+        ? { builtin: true } : {}),
+      unresolved: row.resolution === "unresolved" ? unresolvedReason(row, params) : null,
+      io: row.io,
     };
   });
 
@@ -91,6 +97,45 @@ export function getWalkFrame(db: Db, symbolId: number): WalkFrameDto | null {
     signature: symbol.signature, summary: shortSummary(db, symbol),
     reaches: loadReaches(db, [symbol.id]).get(symbol.id) ?? [], calls,
   };
+}
+
+/** 这一帧里出现的外部名中，有文件 import 过的那些是库；其余是语言内置 */
+function importedExternals(db: Db, rows: readonly CallRow[]): Set<string> {
+  const names = [...new Set(rows.flatMap((row) => (row.resolution === "external" && row.targetName ? [row.targetName] : [])))];
+  if (names.length === 0) return new Set();
+  return new Set((db.prepare(
+    `SELECT DISTINCT external_name AS name FROM imports WHERE external_name IN (${names.map(() => "?").join(",")})`,
+  ).all(...names) as Array<{ name: string }>).map((row) => row.name));
+}
+
+/** 参数名；解构参数 `{ onClose }: Props` 存的是整段模式，里面的名字都算 */
+function paramNames(db: Db, symbolId: number): Set<string> {
+  const row = db.prepare("SELECT params FROM symbols WHERE id = ?").get(symbolId) as { params: string | null } | undefined;
+  try {
+    const params = JSON.parse(row?.params ?? "[]") as Array<{ name?: string }>;
+    return new Set(params.flatMap((param) => param.name?.match(/[A-Za-z_$][\w$]*/g) ?? []));
+  } catch { return new Set(); }
+}
+
+function unresolvedReason(row: CallRow, params: ReadonlySet<string>): UnresolvedReason {
+  const receiver = row.receiver ?? "";
+  if (receiver === "") {
+    const hint = row.receiverType ?? "";
+    // 裸调用带着类型标注线索，几乎都是 `onDone: () => void` 这样的函数参数
+    if (params.has(row.callee) || /^[PCT]:/.test(hint)) return { kind: "callback" };
+    const source = hint.match(/^[RAD]:(.+)$/)?.[1];
+    return {
+      kind: "function-value",
+      source: source ? `${source}()` : null,
+      ...(hint.startsWith("D:") ? { destructured: true } : {}),
+    };
+  }
+  if (receiver === "this" || receiver === "self") return { kind: "inherited" };
+  if (receiver.includes("(")) return { kind: "chained" };
+  const hint = row.receiverType ?? "";
+  const source = hint.match(/^[RAD]:(.+)$/)?.[1];
+  if (source) return { kind: "untyped", source: `${source}()` };
+  return hint === "P:" ? { kind: "untyped", param: true } : { kind: "untyped" };
 }
 
 function loadTargets(db: Db, ids: readonly number[]): Map<number, WalkTargetDto> {

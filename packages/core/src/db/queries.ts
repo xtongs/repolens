@@ -1732,13 +1732,10 @@ export function getFindings(db: Db, options: FindingQuery = {}): FindingDto[] {
     where.push(`kind = ?`);
     args.push(options.kind);
   }
-  if (options.scope !== undefined && options.scope !== ROOT_SCOPE) {
-    // 作用域过滤走路径前缀，和图上的下钻保持一致
-    const path = options.scope.startsWith("dir:") ? options.scope.slice(4) : null;
-    if (path !== null) {
-      where.push(`(path = ? OR path LIKE ? || '/%')`);
-      args.push(path, path);
-    }
+  const scope = findingScope(db, options.scope);
+  if (scope) {
+    where.push(scope.clause);
+    args.push(...scope.args);
   }
 
   const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
@@ -1783,12 +1780,14 @@ export function getFindings(db: Db, options: FindingQuery = {}): FindingDto[] {
   }));
 }
 
-export function getFindingSummary(db: Db): FindingSummaryDto {
+export function getFindingSummary(db: Db, scope?: string): FindingSummaryDto {
+  const filter = findingScope(db, scope);
   const rows = db
     .prepare(
-      `SELECT kind, severity, COUNT(DISTINCT group_key) AS n FROM findings GROUP BY kind, severity`,
+      `SELECT kind, severity, COUNT(DISTINCT group_key) AS n FROM findings
+       ${filter ? `WHERE ${filter.clause}` : ""} GROUP BY kind, severity`,
     )
-    .all() as Array<{ kind: string; severity: string; n: number }>;
+    .all(...(filter?.args ?? [])) as Array<{ kind: string; severity: string; n: number }>;
 
   const summary: FindingSummaryDto = { total: 0, high: 0, byKind: {} };
   for (const row of rows) {
@@ -1797,6 +1796,27 @@ export function getFindingSummary(db: Db): FindingSummaryDto {
     summary.byKind[row.kind] = (summary.byKind[row.kind] ?? 0) + row.n;
   }
   return summary;
+}
+
+/**
+ * 体检结论限定在某个图节点里。包和目录走路径前缀，和图上的下钻一致；文件取它自己和
+ * 里面的符号（符号结论的 path 是所在文件）；符号只取挂在它身上的。认不出的节点不过滤。
+ */
+function findingScope(db: Db, scope: string | undefined): { clause: string; args: unknown[] } | null {
+  if (scope === undefined || scope === ROOT_SCOPE) return null;
+  const underPath = (path: string) =>
+    path === "." ? null : { clause: `(path = ? OR path LIKE ? || '/%')`, args: [path, path] };
+  if (scope.startsWith("dir:")) return underPath(scope.slice(4));
+  if (scope.startsWith("pkg:")) {
+    const row = db.prepare("SELECT dir FROM packages WHERE name = ?").get(scope.slice(4)) as { dir: string } | undefined;
+    return row ? underPath(row.dir) : null;
+  }
+  if (scope.startsWith("file:")) {
+    const row = db.prepare("SELECT path FROM files WHERE id = ?").get(Number(scope.slice(5))) as { path: string } | undefined;
+    return row ? { clause: "path = ?", args: [row.path] } : null;
+  }
+  if (scope.startsWith("sym:")) return { clause: "scope_key = ?", args: [scope] };
+  return null;
 }
 
 /**

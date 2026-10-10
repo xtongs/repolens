@@ -7,6 +7,8 @@ type PanelSide = "left" | "right";
 
 interface ResizablePanelOptions {
   side: PanelSide;
+  /** 侧栏当前是否显示，决定它在 useSidebarInset 里占不占宽度 */
+  visible: boolean;
   storageKey: string;
   /** 顶栏还没量到对齐位置时用这个宽度 */
   fallbackWidth: number;
@@ -33,12 +35,22 @@ export function measureSidebarAnchors(header: HTMLElement): void {
   if (next.left !== current.left || next.right !== current.right) useSidebarAnchors.setState(next);
 }
 
+const useSidebarInsets = create<Record<PanelSide, number>>(() => ({ left: 0, right: 0 }));
+
+/**
+ * 侧栏此刻盖住了这一侧多宽，没显示就是 0。画布能平移躲开浮层，不用管它；
+ * 走读视图的步骤列表和源码躲不开，要按这个宽度让出位置。
+ */
+export function useSidebarInset(side: PanelSide): number {
+  return useSidebarInsets((s) => s[side]);
+}
+
 /**
  * 侧边栏宽度控制。拖拽只更新覆盖层本身，不触发画布重新布局。只有拖过的宽度才存成
  * 偏好，双击恢复默认就是清掉它，重新跟着顶栏对齐。
  */
 export function useResizablePanel(options: ResizablePanelOptions) {
-  const { side, storageKey, fallbackWidth, minWidth, maxWidth } = options;
+  const { side, visible, storageKey, fallbackWidth, minWidth, maxWidth } = options;
   const anchored = useSidebarAnchors((s) => s[side]);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const clamp = useCallback(
@@ -55,6 +67,11 @@ export function useResizablePanel(options: ResizablePanelOptions) {
   useEffect(() => {
     writePref(storageKey, custom === null ? null : String(custom));
   }, [storageKey, custom]);
+
+  useEffect(() => {
+    useSidebarInsets.setState({ [side]: visible ? width : 0 });
+  }, [side, visible, width]);
+  useEffect(() => () => useSidebarInsets.setState({ [side]: 0 }), [side]);
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);

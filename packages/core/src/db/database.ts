@@ -54,12 +54,19 @@ export function openDb(dbPath: string, opts: OpenOptions = {}): Db {
 
   const existing = readSchemaVersion(db);
   if (existing !== null && existing !== SCHEMA_VERSION) {
-    const migrate = MIGRATIONS[existing];
-    if (!migrate) {
+    const steps: Array<(db: Db) => void> = [];
+    for (let version = Number(existing); version < Number(SCHEMA_VERSION); version++) {
+      const step = MIGRATIONS[String(version)];
+      if (!step) break;
+      steps.push(step);
+    }
+    if (steps.length !== Number(SCHEMA_VERSION) - Number(existing)) {
       db.close();
       return openDb(dbPath, { ...opts, fresh: true });
     }
-    transact(db, () => migrate(db));
+    transact(db, () => {
+      for (const step of steps) step(db);
+    });
   }
 
   db.exec(SCHEMA_SQL);
@@ -94,6 +101,9 @@ const MIGRATIONS: Record<string, (db: Db) => void> = {
       DROP TABLE IF EXISTS boundaries;
       DELETE FROM summaries WHERE target_kind = 'trace';
     `);
+  },
+  "6": (db) => {
+    addColumns(db, "call_sites", { receiver_type: "TEXT" });
   },
 };
 

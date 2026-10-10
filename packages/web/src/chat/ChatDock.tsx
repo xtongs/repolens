@@ -464,8 +464,9 @@ function ChatComposer() {
   );
   const textarea = useRef<HTMLTextAreaElement>(null);
 
+  // 刷新后按记忆恢复打开的对话不抢焦点，否则走读的方向键一上来就被输入框吞掉
   useEffect(() => {
-    textarea.current?.focus();
+    if (chat.focusNonce > 0) textarea.current?.focus();
   }, [chat.focusNonce]);
 
   // 高度随内容长到六行左右，再多就在框内滚动

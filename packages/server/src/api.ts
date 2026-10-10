@@ -94,11 +94,12 @@ export function createApi(deps: ApiDeps): Hono {
   // 硬塞进一个端点只会让 limit 的含义变得含糊。
   app.get("/findings", (c) => {
     const kind = c.req.query("kind");
+    const scope = c.req.query("scope");
     return c.json({
-      summary: getFindingSummary(db),
+      summary: getFindingSummary(db, scope),
       items: getFindings(db, {
         kind: FINDING_KINDS.find((known) => known === kind),
-        scope: c.req.query("scope"),
+        scope,
         limit: clampInt(c.req.query("limit"), 200, 1, 1000),
       }),
     });

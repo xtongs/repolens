@@ -26,8 +26,9 @@ export function linkGraph(db: Db, writer: IndexWriter, rules: readonly Architect
   writer.clearDerived();
 
   linkImportEdges(db, writer);
-  const calls = linkCallEdges(db, (edges) => writer.insertEdges(edges));
+  // 方法调用要沿 extends / implements 找到父类或实现类，所以类型关系先解析
   linkTypeRelations(db);
+  const calls = linkCallEdges(db, (edges) => writer.insertEdges(edges));
   const entries = analyzeEntries(db);
   // 路由表来自入口识别，所以排在入口分析之后；I/O 可达性因此也不会跨过网络边界
   const http = linkHttpEdges(db, writer);

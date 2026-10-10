@@ -326,6 +326,7 @@ export const RUST_DECISIONS: ReadonlySet<string> = new Set([
 export interface RawCallSite {
   callee: string;
   receiver?: string | undefined;
+  receiverType?: string | undefined;
   calleePath?: string[] | undefined;
   line: number;
   argCount: number;
@@ -382,6 +383,7 @@ export function attributeCalls(symbols: readonly ParsedSymbol[], sites: readonly
       callerContainer: owner?.container,
       callee: site.callee,
       receiver: site.receiver,
+      receiverType: site.receiverType,
       calleePath: site.calleePath,
       line: site.line,
       endByte: site.endByte,
