@@ -8,7 +8,6 @@ import { writePref } from "../lib/prefs";
 import { modKey } from "../lib/shortcut";
 import { METRIC_LABELS } from "../ui/visual";
 import { useAppStore, type MetricKey } from "../store/useAppStore";
-import { changedFileCount, useChangesStore } from "../store/useChangesStore";
 import { useChatStore } from "../store/useChatStore";
 import { RepoPicker } from "./RepoPicker";
 import { measureSidebarAnchors } from "./ResizablePanelHandle";
@@ -410,7 +409,7 @@ function LlmPill() {
         else if (chatOpen) setChatOpen(false);
         else useChatStore.getState().open();
       }}
-      className={`rounded-full border px-1.5 py-0.5 text-[9.5px] transition-colors ${
+      className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
         ready
           ? "border-[var(--color-accent)]/40 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
           : "border-[var(--color-line)] text-[var(--color-ink-faint)] hover:text-[var(--color-ink-muted)]"
@@ -647,7 +646,6 @@ function EntriesPill() {
 function ChangesPill() {
   const t = useT();
   const store = useAppStore();
-  const changed = useChangesStore((s) => changedFileCount(s.index, store.showNoise));
   const open = store.treeOpen && store.panelTab === "changes";
   return (
     <button type="button" onClick={() => { store.setPanelTab("changes"); store.setTreeOpen(!open); }}
@@ -655,7 +653,6 @@ function ChangesPill() {
       style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
       title={t("对比某个提交：这次改了哪些依赖、接口和入口")} aria-label={t("变更")}>
       Δ<span data-topbar-optional="2">{t("变更")}</span>
-      {changed > 0 && <span className="tabular-nums">{changed}</span>}
     </button>
   );
 }

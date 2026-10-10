@@ -69,12 +69,6 @@ function buildIndex(report: ChangeReportDto): ChangeIndex {
   return { byId, files };
 }
 
-/** 顶栏的改动文件数，和变更页签的摘要一样跟着「噪音」开关 */
-export function changedFileCount(index: ChangeIndex | null, showNoise: boolean): number {
-  if (index === null) return 0;
-  return showNoise ? index.files.length : index.files.filter((file) => file.source).length;
-}
-
 /**
  * 图节点上的变更标记：文件和符号直接查表；目录和包数下面改过的文件，
  * 这样在最顶层就能看出这次改动落在哪几块。

@@ -198,11 +198,10 @@ export function WalkView() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
-      // 焦点在输入框，或在详情抽屉、左侧面板这些叠在上面的侧栏里时，按键留给它们
+      // 只有输入框和侧栏宽度拖柄这类自己要用方向键的控件，按键才留给它们。侧栏里的普通按钮
+      // 不用方向键，点完入口焦点还停在那个按钮上，不能因此吞掉走读的快捷键
       const target = event.target as HTMLElement | null;
-      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
-      const panel = target?.closest("aside");
-      if (panel && !rootRef.current?.contains(panel)) return;
+      if (target?.closest("input, textarea, select, [contenteditable='true'], [role='separator'], [role='listbox']")) return;
       const run = actionsRef.current;
       const key = event.key;
       if (key === "ArrowDown" || key === "j" || key === "F10") run.next();
@@ -211,6 +210,8 @@ export function WalkView() {
       else if (key === "ArrowRight" || key === "l" || key === "F11") run.into();
       else return;
       event.preventDefault();
+      // 按过键之后，浏览器会给仍有焦点的侧栏按钮画上焦点框，看起来像方向键在选侧栏
+      if (target && target !== document.body && !rootRef.current?.contains(target)) target.blur();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
