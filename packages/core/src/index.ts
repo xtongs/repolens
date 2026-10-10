@@ -64,7 +64,7 @@ export { NoteInputError, addNote, deleteNote, listNotes, notesPath, parseNoteInp
 
 export { scanRepo, type ScanOptions } from "./pipeline/scan.js";
 export { evaluateRules, type RuleReport, type RuleViolation } from "./pipeline/rules.js";
-export { BaselineError, buildBaseline, headCommit, type Baseline } from "./diff/baseline.js";
+export { BaselineError, buildBaseline, headCommit, listCommits, type Baseline } from "./diff/baseline.js";
 export { diffIndexes, type DiffOptions } from "./diff/compare.js";
 export { buildChangeReport, type ChangeReportOptions } from "./diff/report.js";
 export {

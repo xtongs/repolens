@@ -1064,6 +1064,20 @@ export interface EntryChangeDto {
   via: Array<{ id: string; name: string; depth: number }>;
 }
 
+/** 变更对比可以挑的基线提交，只列动过扫描根的 */
+export interface CommitDto {
+  commit: string;
+  short: string;
+  subject: string;
+  author: string;
+  /** 提交时间，ISO 格式 */
+  date: string;
+  /** 当前检出的就是它 */
+  head: boolean;
+  branches: string[];
+  tags: string[];
+}
+
 export interface ChangeReportDto {
   base: { ref: string; commit: string };
   /** head 为 null 表示工作区（含未提交改动） */

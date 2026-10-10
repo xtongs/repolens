@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getMeta, INDEX_DIR, indexPath, isIndexCurrent, openDb } from "../db/database.js";
 import { EXTRACTOR_VERSION, EXTRACTOR_VERSION_KEY, scanRepo, type ScanOptions } from "../pipeline/scan.js";
+import type { CommitDto } from "../types.js";
 
 export class BaselineError extends Error {}
 
@@ -86,6 +87,30 @@ export function headCommit(root: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 从 HEAD 往回的提交，给变更对比挑基线用。只列动过扫描根的提交：没碰过它的提交
+ * 快照和前一个一模一样，列出来只是噪音。不在 git 里或还没有提交时返回空列表。
+ */
+export function listCommits(root: string, limit = 50): CommitDto[] {
+  let out: string;
+  try {
+    out = git(root, ["log", `-n${limit}`, "--decorate=full", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%D%x1e", "--", "."], "");
+  } catch {
+    return [];
+  }
+  return out.split("\x1e").map((record) => record.trim()).filter(Boolean).map((record) => {
+    const [commit = "", short = "", subject = "", author = "", date = "", decorations = ""] = record.split("\x1f");
+    const result: CommitDto = { commit, short, subject, author, date, head: false, branches: [], tags: [] };
+    for (const decoration of decorations.split(", ").filter(Boolean)) {
+      const ref = decoration.replace(/^HEAD -> /, "");
+      if (ref !== decoration || ref === "HEAD") result.head = true;
+      if (ref.startsWith("refs/heads/")) result.branches.push(ref.slice("refs/heads/".length));
+      else if (ref.startsWith("tag: refs/tags/")) result.tags.push(ref.slice("tag: refs/tags/".length));
+    }
+    return result;
+  });
 }
 
 function isBaselineCurrent(dbPath: string): boolean {

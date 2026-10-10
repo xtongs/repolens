@@ -1,9 +1,16 @@
 import type { ChangeReportDto, DependencyChangeDto, FileChangeDto, SymbolChangeDto } from "@repolens/core/types";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { changedRanges } from "../code/declaration";
+import { SignatureText } from "../code/Signature";
 import { type NodeScope, inScope } from "../graph/scope";
 import { useT } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
 import { useChangesStore } from "../store/useChangesStore";
+import { CommitPicker } from "./CommitPicker";
+
+/** 和原生 title 差不多的延迟，鼠标扫过列表时不闪 */
+const HOVER_DELAY_MS = 350;
 
 const MARK = { added: "+", removed: "−", modified: "~", moved: "›", affected: "~", resolved: "✓" } as const;
 const MARK_COLOR = {
@@ -28,7 +35,6 @@ export function ChangesBody({ scope }: { scope: NodeScope | null }) {
   const error = useChangesStore((s) => s.error);
   const base = useChangesStore((s) => s.base);
   const compare = useChangesStore((s) => s.compare);
-  const [draft, setDraft] = useState(base);
 
   useEffect(() => {
     if (status === "idle") void compare();
@@ -36,30 +42,12 @@ export function ChangesBody({ scope }: { scope: NodeScope | null }) {
 
   return (
     <>
-      <form
-        className="flex shrink-0 items-center gap-1.5 px-3 pt-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void compare(draft);
-        }}
-      >
-        <span className="shrink-0 text-[10.5px] text-[var(--color-ink-faint)]">{t("对比")}</span>
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          spellCheck={false}
-          aria-label={t("基线提交")}
-          placeholder="HEAD"
-          className="mono min-w-0 flex-1 rounded border border-[var(--color-line)] bg-[var(--color-surface-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-ink)] outline-none focus:border-[var(--color-accent)]"
-        />
-        <button
-          type="submit"
-          disabled={status === "loading"}
-          className="shrink-0 rounded border border-[var(--color-line)] px-2 py-0.5 text-[11px] text-[var(--color-ink-muted)] hover:border-[var(--color-line-strong)] disabled:opacity-50"
-        >
-          {status === "loading" ? t("对比中…") : t("对比")}
-        </button>
-      </form>
+      <CommitPicker
+        base={base}
+        baseCommit={report && report.base.ref === base ? report.base.commit : null}
+        busy={status === "loading"}
+        onPick={(ref) => void compare(ref)}
+      />
 
       {status === "loading" && !report && (
         <Hint>{t("正在为基线提交建立结构索引，第一次对比某个提交需要几秒。")}</Hint>
@@ -123,7 +111,9 @@ function ReportView({ full, scope }: { full: ChangeReportDto; scope: NodeScope |
   return (
     <div className="thin-scroll flex-1 overflow-y-auto pb-3">
       <div className="px-3 pt-1.5 text-[10.5px] leading-relaxed text-[var(--color-ink-faint)]">
-        <span className="mono">{report.base.ref} · {report.base.commit.slice(0, 8)}</span>
+        <span className="mono">
+          {report.base.ref === report.base.commit ? report.base.commit.slice(0, 8) : `${report.base.ref} · ${report.base.commit.slice(0, 8)}`}
+        </span>
         {" → "}
         {report.head
           ? <span className="mono">{report.head.ref} · {report.head.commit.slice(0, 8)}</span>
@@ -302,31 +292,140 @@ function FileSection({ files, symbols }: { files: FileChangeDto[]; symbols: Symb
 function SymbolRow({ symbol, showPath, indent }: { symbol: SymbolChangeDto; showPath?: boolean; indent?: boolean }) {
   const t = useT();
   const reveal = useAppStore((s) => s.reveal);
-  const name = symbol.container ? `${symbol.container}.${symbol.name}` : symbol.name;
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const timer = useRef<number | null>(null);
+  const name = symbolName(symbol);
   const cosmetic = symbol.status === "modified" && !symbol.shapeChanged;
   const signatureChanged = symbol.status === "modified" && symbol.signature !== symbol.signatureBefore;
   const complexer = symbol.complexityBefore !== null && symbol.complexity - symbol.complexityBefore >= 5;
+
+  const hide = useCallback(() => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    setAnchor(null);
+  }, []);
+  useEffect(() => hide, [hide]);
+
   return (
-    <Row
-      status={symbol.status}
-      indent={indent}
-      onClick={symbol.id ? () => void reveal(symbol.id as string) : undefined}
-      title={[
-        showPath ? `${symbol.path}:${symbol.line}` : null,
-        signatureChanged ? `${symbol.signatureBefore ?? ""}\n→ ${symbol.signature ?? ""}` : symbol.signature,
-        symbol.status === "removed" ? t("基线里有 {count} 个调用方", { count: symbol.callers }) : t("{count} 个调用方", { count: symbol.callers }),
-      ].filter(Boolean).join("\n")}
+    // 悬停挂在外层：删掉的符号点不了，按钮是 disabled，有的浏览器不给它发指针事件
+    <div
+      onPointerEnter={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        timer.current = window.setTimeout(() => setAnchor(rect), HOVER_DELAY_MS);
+      }}
+      onPointerLeave={hide}
+      onPointerDown={hide}
     >
-      <span className="mono truncate">{name}</span>
-      {showPath && <span className="mono truncate text-[9.5px] text-[var(--color-ink-faint)]">{symbol.path.split("/").at(-1)}</span>}
-      <span className="ml-auto flex shrink-0 gap-1">
-        {signatureChanged && <Tag tone="warn">{t("签名")}</Tag>}
-        {complexer && <Tag tone="warn">{`${symbol.complexityBefore}→${symbol.complexity}`}</Tag>}
-        {cosmetic && <Tag>{t("仅格式")}</Tag>}
-      </span>
-    </Row>
+      <Row
+        status={symbol.status}
+        indent={indent}
+        onClick={symbol.id ? () => void reveal(symbol.id as string) : undefined}
+      >
+        <span className="mono truncate">{name}</span>
+        {showPath && <span className="mono truncate text-[9.5px] text-[var(--color-ink-faint)]">{symbol.path.split("/").at(-1)}</span>}
+        <span className="ml-auto flex shrink-0 gap-1">
+          {signatureChanged && <Tag tone="warn">{t("签名")}</Tag>}
+          {complexer && <Tag tone="warn">{`${symbol.complexityBefore}→${symbol.complexity}`}</Tag>}
+          {cosmetic && <Tag>{t("仅格式")}</Tag>}
+        </span>
+      </Row>
+      {anchor && <SymbolCard symbol={symbol} anchor={anchor} onClose={hide} />}
+    </div>
   );
 }
+
+function symbolName(symbol: SymbolChangeDto): string {
+  return symbol.container ? `${symbol.container}.${symbol.name}` : symbol.name;
+}
+
+/** 浮在侧栏右边、画布之上：签名动辄上百字符，侧栏里只放得下名字 */
+function SymbolCard({ symbol, anchor, onClose }: { symbol: SymbolChangeDto; anchor: DOMRect; onClose: () => void }) {
+  const t = useT();
+  const ref = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(anchor.top);
+  const signatureChanged = symbol.status === "modified" && symbol.signature !== symbol.signatureBefore;
+  const complexityChanged = symbol.complexityBefore !== null && symbol.complexityBefore !== symbol.complexity;
+  const cosmetic = symbol.status === "modified" && !symbol.shapeChanged;
+  const changed = signatureChanged && symbol.signatureBefore && symbol.signature
+    ? changedRanges(symbol.signatureBefore, symbol.signature)
+    : null;
+
+  useLayoutEffect(() => {
+    const height = ref.current?.offsetHeight ?? 0;
+    setTop(Math.max(8, Math.min(anchor.top - 6, window.innerHeight - height - 8)));
+  }, [anchor]);
+
+  // 列表滚动后卡片就和那一行错开了
+  useEffect(() => {
+    window.addEventListener("scroll", onClose, true);
+    return () => window.removeEventListener("scroll", onClose, true);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="anim-fade pointer-events-none fixed z-50 w-max overflow-hidden rounded-lg border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-2xl"
+      style={{ top, left: anchor.right + 8, minWidth: 240, maxWidth: Math.max(240, Math.min(520, window.innerWidth - anchor.right - 24)) }}
+    >
+      <div className="flex items-baseline gap-2 border-b border-[var(--color-line)] px-2.5 py-1.5">
+        <span className="mono shrink-0 text-[11px]" style={{ color: MARK_COLOR[symbol.status] }}>{MARK[symbol.status]}</span>
+        <span className="mono min-w-0 truncate text-[12px] text-[var(--color-ink)]">{symbolName(symbol)}</span>
+        <span className="mono ml-auto min-w-0 shrink truncate-start truncate pl-2 text-[10px] text-[var(--color-ink-faint)]">
+          {symbol.path}:{symbol.line}
+        </span>
+      </div>
+      {signatureChanged ? (
+        <div className="space-y-1 px-2.5 py-1.5">
+          {symbol.signatureBefore && (
+            <SignatureDiff mark="−" color="var(--color-danger)" code={symbol.signatureBefore} path={symbol.path} ranges={changed?.before} />
+          )}
+          {symbol.signature && (
+            <SignatureDiff mark="+" color="var(--color-success)" code={symbol.signature} path={symbol.path} ranges={changed?.after} />
+          )}
+        </div>
+      ) : symbol.signature ? (
+        <div className="px-2.5 py-1.5">
+          <SignatureText code={symbol.signature} path={symbol.path} />
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-x-2.5 border-t border-[var(--color-line)] px-2.5 py-1 text-[10.5px] text-[var(--color-ink-faint)]">
+        <span>
+          {symbol.status === "removed"
+            ? t("基线里有 {count} 个调用方", { count: symbol.callers })
+            : t("{count} 个调用方", { count: symbol.callers })}
+        </span>
+        {complexityChanged && <span>{t("复杂度 {from} → {to}", { from: symbol.complexityBefore ?? 0, to: symbol.complexity })}</span>}
+        {cosmetic && <span>{t("只改了命名、字面量或格式")}</span>}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function SignatureDiff({
+  mark, color, code, path, ranges = [],
+}: {
+  mark: string;
+  color: string;
+  code: string;
+  path: string;
+  /** 和另一版不同的几段，加深底色 */
+  ranges: Array<[number, number]> | undefined;
+}) {
+  const className = mark === "+" ? DIFF_ADDED : DIFF_REMOVED;
+  const marks = ranges.map(([from, to]) => ({ from, to, className }));
+  return (
+    <div className="flex gap-1.5 rounded px-1.5 py-0.5" style={{ background: `color-mix(in srgb, ${color} 9%, transparent)` }}>
+      <span className="mono shrink-0 text-[11px] leading-[1.6]" style={{ color }}>{mark}</span>
+      <div className="min-w-0 flex-1">
+        <SignatureText code={code} path={path} marks={marks} />
+      </div>
+    </div>
+  );
+}
+
+const DIFF_ADDED = "rounded-sm bg-[var(--color-success)]/25";
+const DIFF_REMOVED = "rounded-sm bg-[var(--color-danger)]/25";
 
 function Section({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   if (count === 0) return null;

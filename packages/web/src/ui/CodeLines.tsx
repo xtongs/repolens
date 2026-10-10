@@ -60,6 +60,7 @@ export function CodeLine({
   gutter,
   lineRef,
   marks,
+  wrap = false,
 }: {
   number: number | null;
   text: string;
@@ -71,6 +72,8 @@ export function CodeLine({
   gutter?: string | null;
   lineRef?: Ref<HTMLDivElement>;
   marks?: readonly CodeMark[];
+  /** 超宽时在容器内折行，续行悬挂缩进，和真正的换行区分开 */
+  wrap?: boolean;
 }) {
   let content: ReactNode;
   if (marks && marks.length > 0) {
@@ -113,7 +116,16 @@ export function CodeLine({
           {number}
         </span>
       )}
-      <span className="whitespace-pre pr-3 text-[var(--code-foreground)]">{content}</span>
+      {wrap ? (
+        <span
+          className="min-w-0 whitespace-pre-wrap text-[var(--code-foreground)] [overflow-wrap:anywhere]"
+          style={{ paddingLeft: "2ch", textIndent: "-2ch" }}
+        >
+          {content}
+        </span>
+      ) : (
+        <span className="whitespace-pre pr-3 text-[var(--code-foreground)]">{content}</span>
+      )}
     </div>
   );
 }

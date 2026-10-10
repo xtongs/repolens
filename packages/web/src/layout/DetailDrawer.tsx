@@ -11,6 +11,7 @@ import { ChatDock } from "../chat/ChatDock";
 import { msg, useT } from "../i18n";
 import { SelectionAsk } from "../chat/SelectionAsk";
 import { PseudocodePanel, stepMarkerWidth, type StepQuote } from "../code/PseudocodePanel";
+import { DeclarationHeader } from "../code/Signature";
 import { SourcePanel, type SourceFocus } from "../code/SourcePanel";
 import { formatCount, languageColor, symbolGlyph } from "../ui/visual";
 import { NoteList } from "../notes/NoteCard";
@@ -388,9 +389,15 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
       </div>
 
       {detail.signature && (
-        <pre className="mono mt-2.5 overflow-x-auto whitespace-pre-wrap rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] p-2.5 text-[11px] leading-relaxed">
-          {detail.signature}
-        </pre>
+        <DeclarationHeader
+          key={detail.id}
+          fileId={detail.fileId}
+          startLine={detail.startLine}
+          endLine={detail.endLine}
+          signature={detail.signature}
+          path={detail.filePath}
+          language={detail.language}
+        />
       )}
 
       {detail.doc && (

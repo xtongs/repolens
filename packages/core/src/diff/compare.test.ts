@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { scanRepo } from "../pipeline/scan.js";
-import { buildBaseline } from "./baseline.js";
+import { buildBaseline, listCommits } from "./baseline.js";
 import { buildChangeReport } from "./report.js";
 
 const roots: string[] = [];
@@ -136,5 +136,28 @@ describe("变更视角", () => {
     await expect(buildBaseline(plain, "HEAD")).rejects.toThrow("不是 git 仓库");
     const root = repoAtBase();
     await expect(buildBaseline(root, "no-such-branch")).rejects.toThrow("找不到提交 no-such-branch");
+  });
+
+  it("可选的基线提交：新的在前，带分支和 tag，只列动过扫描根的", () => {
+    const root = repoAtBase();
+    git(root, "tag", "v1");
+    write(root, { "apps/web/main.ts": "export const a = 1;\n" });
+    git(root, "add", ".");
+    git(root, "commit", "-m", "add web app");
+    write(root, { "README.md": "readme\n" });
+    git(root, "add", ".");
+    git(root, "commit", "-m", "docs only");
+
+    const all = listCommits(root);
+    expect(all.map((c) => c.subject)).toEqual(["docs only", "add web app", "base"]);
+    expect(all[0]).toMatchObject({ head: true, author: "t", tags: [] });
+    expect(all[0]?.branches.length).toBe(1);
+    expect(all[2]).toMatchObject({ head: false, branches: [], tags: ["v1"] });
+    expect(all[2]?.commit).toMatch(/^[0-9a-f]{40}$/);
+
+    expect(listCommits(join(root, "apps/web")).map((c) => c.subject)).toEqual(["add web app"]);
+    const plain = mkdtempSync(join(tmpdir(), "repolens-diff-plain-"));
+    roots.push(plain);
+    expect(listCommits(plain)).toEqual([]);
   });
 });

@@ -211,6 +211,10 @@ export const EN: Record<string, Translation> = {
   "对比": "Compare",
   "对比中…": "Comparing…",
   "基线提交": "Base commit",
+  "筛选提交，或输入分支、tag、HEAD~3": "Filter commits, or type a branch, tag or HEAD~3",
+  "读取提交记录…": "Loading commits…",
+  "这里不是 git 仓库，或者还没有提交。": "Not a git repository, or there are no commits yet.",
+  "任意提交号、分支、tag，或 HEAD~3 这类写法": "Any commit hash, branch or tag, or something like HEAD~3",
   "正在为基线提交建立结构索引，第一次对比某个提交需要几秒。":
     "Indexing the base commit. The first comparison against a commit takes a few seconds.",
   "上次扫描时的代码": "code as of the last scan",
@@ -238,6 +242,8 @@ export const EN: Record<string, Translation> = {
   "{count} 个调用方": counted("caller", "callers"),
   "签名": "signature",
   "仅格式": "format only",
+  "复杂度 {from} → {to}": "complexity {from} → {to}",
+  "只改了命名、字面量或格式": "only names, literals or formatting changed",
   "{count} 个文件有改动": (params) => `${count(params)} changed ${plural(params, "file", "files")}`,
   "对比基线新增": "Added since the base",
   "对比基线有修改": "Modified since the base",
@@ -246,6 +252,7 @@ export const EN: Record<string, Translation> = {
 
   // 右侧详情
   "概览": "Overview",
+  "… 还有 {count} 行": (params) => `… ${count(params)} more ${plural(params, "line", "lines")}`,
   "传参": "Params",
   "伪代码": "Pseudocode",
   "源码": "Source",

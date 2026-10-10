@@ -1,5 +1,6 @@
 import type {
   ChangeReportDto,
+  CommitDto,
   ChatContextItemDto,
   ChatDoneDto,
   ChatRequestDto,
@@ -210,6 +211,9 @@ export const api = {
 
   /** 首次对比某个提交要导出快照并建基线索引，可能要几秒 */
   changes: (base: string) => post<ChangeReportDto>("/changes", { base }, "compare-changes"),
+
+  /** 动过扫描根的最近提交，新的在前；不在 git 里时为空 */
+  commits: () => get<CommitDto[]>("/commits"),
 
   walk: (symbolId: string) => get<WalkFrameDto>(`/walk/${stripPrefix(symbolId)}`),
 

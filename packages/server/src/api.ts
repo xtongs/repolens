@@ -23,6 +23,7 @@ import {
   addNote,
   deleteNote,
   indexPath,
+  listCommits,
   listNotes,
   loadConfig,
   openDb,
@@ -285,6 +286,8 @@ export function createApi(deps: ApiDeps): Hono {
       return c.json({ error: (err as Error).message }, err instanceof BaselineError ? 400 : 500);
     }
   });
+
+  app.get("/commits", (c) => c.json(listCommits(repoRoot, clampInt(c.req.query("limit"), 60, 1, 300))));
 
   app.get("/source/:id", (c) => {
     const id = numericId(c.req.param("id"));
