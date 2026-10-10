@@ -168,14 +168,14 @@ function EmptyThread() {
   useT();
   const selected = useAppStore((s) => s.selected);
   const callGraph = useAppStore((s) => s.callGraph !== null);
-  const traceId = useAppStore((s) => s.traceId);
+  const walking = useAppStore((s) => s.walk !== null);
   const send = useChatStore((s) => s.send);
   const reason = useAppStore((s) => (s.overview?.llm && !(s.overview.llm.enabled && s.overview.llm.available)
     ? (s.overview.llm.reason ? translateMessage(s.overview.llm.reason) : t("扫描时未启用 AI"))
     : null));
 
-  const suggestions = traceId
-    ? [t("用一段话讲清这条链路在做什么"), t("数据在哪一步被改写或落盘？"), t("这条链路有哪些失败分支？")]
+  const suggestions = walking
+    ? [t("当前这一步在做什么？"), t("这里的实参是从哪里来的？"), t("这个函数走完之后会发生什么？")]
     : callGraph
       ? [t("这些调用方分别在什么场景下调用它？"), t("改动它的签名会影响哪些地方？")]
       : selected?.startsWith("sym:")
@@ -442,8 +442,7 @@ function ChatComposer() {
       expanded: s.expanded,
       rootScope: s.rootScope,
       callGraph: s.callGraph,
-      traceId: s.traceId,
-      traceLabel: s.traceLabel,
+      walk: s.walk,
     })),
   );
   const chat = useChatStore(

@@ -88,6 +88,9 @@ export function NodeContextMenu({ state, onClose }: { state: ContextMenuState; o
       hint: t("单击"),
       run: () => store.select(node.id),
     },
+    ...(node.symbolKind === "function" || node.symbolKind === "method"
+      ? [{ label: t("从这里单步走读"), run: () => store.openWalk(node.id, node.label) }]
+      : []),
     {
       label: t("加入 AI 对话"),
       disabled: !canAttachNode(node.id),

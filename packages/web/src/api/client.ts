@@ -22,9 +22,7 @@ import type {
   SymbolDetailDto,
   TreeNodeDto,
   EntryPointDto,
-  TraceDto,
-  TraceNarrativeResultDto,
-  TraceSummaryDto,
+  WalkFrameDto,
 } from "@repolens/core/types";
 import { t, translateMessage } from "../i18n";
 
@@ -213,13 +211,7 @@ export const api = {
   /** 首次对比某个提交要导出快照并建基线索引，可能要几秒 */
   changes: (base: string) => post<ChangeReportDto>("/changes", { base }, "compare-changes"),
 
-  traces: (entryId?: string) =>
-    get<TraceSummaryDto[]>("/traces", { entry: entryId }),
-
-  trace: (id: string) => get<TraceDto>(`/trace/${stripPrefix(id)}`),
-
-  generateTraceNarrative: (id: string) =>
-    post<TraceNarrativeResultDto>(`/semantic/trace/${stripPrefix(id)}`),
+  walk: (symbolId: string) => get<WalkFrameDto>(`/walk/${stripPrefix(symbolId)}`),
 
   file: (id: string) => get<FileDetailDto>(`/file/${stripPrefix(id)}`),
 

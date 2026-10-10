@@ -7,14 +7,13 @@ import type { LlmUsage } from "../types.js";
 import { getMeta, getMetaJson, setMetaJson, type Db } from "./database.js";
 import { normalizeSemanticContent } from "./semantic-format.js";
 
-export type SemanticTargetKind = "repo" | "package" | "directory" | "file" | "symbol" | "trace";
+export type SemanticTargetKind = "repo" | "package" | "directory" | "file" | "symbol";
 export type SemanticFlavor =
   | "summary"
   | "summary-v2"
   | "tooltip-summary"
   | "pseudocode"
-  | "pseudocode-map"
-  | "narrative";
+  | "pseudocode-map";
 
 export interface CachedSemantic {
   content: string;

@@ -205,7 +205,7 @@ useAppStore.subscribe((state, previous) => {
 /** 决定自动附件的那部分画布状态 */
 export type ChatViewState = Pick<
   AppState,
-  "selected" | "subgraphs" | "expanded" | "rootScope" | "callGraph" | "traceId" | "traceLabel"
+  "selected" | "subgraphs" | "expanded" | "rootScope" | "callGraph" | "walk"
 >;
 
 /** 发送时实际附带的上下文：自动附件在前，手动附件在后，按 key 去重。 */
@@ -241,12 +241,13 @@ export function canAttachNode(id: string): boolean {
 }
 
 function viewAttachment(app: ChatViewState): ChatAttachment {
-  if (app.traceId) {
+  if (app.walk) {
+    const top = app.walk.stack.at(-1);
     return {
       key: "view",
       kind: "view",
-      ref: { kind: "view", mode: "trace", traceId: app.traceId },
-      label: t("链路 · {name}", { name: app.traceLabel ?? app.traceId }),
+      ref: { kind: "view", mode: "walk", walk: app.walk.stack.map(({ id, at }) => ({ id, at })) },
+      label: t("走读 · {name}", { name: top?.name ?? app.walk.label }),
     };
   }
   if (app.callGraph) {

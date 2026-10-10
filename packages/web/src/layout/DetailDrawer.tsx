@@ -379,8 +379,11 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
         )}
       </div>
 
-      <div className="mono mt-1 truncate text-[10.5px] text-[var(--color-ink-faint)]">
-        {detail.filePath}:{detail.startLine}
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="mono min-w-0 flex-1 truncate text-[10.5px] text-[var(--color-ink-faint)]">
+          {detail.filePath}:{detail.startLine}
+        </span>
+        <WalkLink detail={detail} />
       </div>
 
       {detail.signature && (
@@ -443,6 +446,23 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
         </div>
       )}
     </div>
+  );
+}
+
+/** 从这个函数开始单步走读；类、常量这些没有函数体可走 */
+function WalkLink({ detail }: { detail: SymbolDetailDto }) {
+  const t = useT();
+  const openWalk = useAppStore((s) => s.openWalk);
+  if (detail.kind !== "function" && detail.kind !== "method") return null;
+  return (
+    <button
+      type="button"
+      onClick={() => openWalk(detail.id, detail.container ? `${detail.container}.${detail.name}` : detail.name)}
+      title={t("沿它体内的调用一步步往下看，可以跨文件步入")}
+      className="shrink-0 text-[10.5px] text-[var(--color-accent)] underline-offset-2 hover:underline"
+    >
+      {t("单步走读")} →
+    </button>
   );
 }
 

@@ -10,7 +10,7 @@ import {
   getSymbolDetail,
   ROOT_SCOPE,
 } from "../db/queries.js";
-import { getTrace } from "../db/traces.js";
+import { getWalkFrame } from "../db/walk.js";
 import type {
   ChatContextItemDto,
   ChatDoneDto,
@@ -22,6 +22,7 @@ import type {
   LlmConfig,
   LlmUsage,
   RelationDto,
+  WalkCallDto,
 } from "../types.js";
 import { pseudocodeStepsToText } from "../db/semantic-format.js";
 import { chatToolDefinitions, runChatTool, type ChatToolContext } from "./chat-tools.js";
@@ -34,6 +35,8 @@ const MAX_MESSAGE_CHARS = 8_000;
 const MAX_REFS_PER_MESSAGE = 12;
 const MAX_QUOTE_CHARS = 2_000;
 const MAX_EXPANDED_SCOPES = 4;
+/** 走读栈太深时只留靠近栈顶的几帧，入口那头对回答当前位置帮助最小 */
+const MAX_WALK_FRAMES = 12;
 /** 整份上下文的字符预算；单个节点再各自限额，保证一次引用十个节点也不会被第一个吃光 */
 const CONTEXT_BUDGET = 36_000;
 const SYMBOL_SOURCE_CHARS = 9_000;
@@ -82,13 +85,19 @@ function parseRef(raw: unknown): ChatRefDto | null {
   }
   if (raw["kind"] === "view") {
     const mode = raw["mode"];
-    if (mode !== "structure" && mode !== "callgraph" && mode !== "trace") return null;
+    if (mode !== "structure" && mode !== "callgraph" && mode !== "walk") return null;
     const scope = typeof raw["scope"] === "string" ? raw["scope"].slice(0, 500) : null;
     const expanded = Array.isArray(raw["expanded"])
       ? raw["expanded"].filter((id): id is string => typeof id === "string" && NODE_ID.test(id)).slice(0, 32)
       : null;
-    const traceId = typeof raw["traceId"] === "string" && /^(?:trace:)?\d+$/.test(raw["traceId"]) ? raw["traceId"] : null;
-    return { kind: "view", mode, scope, expanded, traceId };
+    const walk = Array.isArray(raw["walk"])
+      ? raw["walk"].flatMap((frame) => {
+          if (!isRecord(frame) || typeof frame["id"] !== "string" || !/^sym:\d+$/.test(frame["id"])) return [];
+          const at = typeof frame["at"] === "string" && /^call:\d+$/.test(frame["at"]) ? frame["at"] : null;
+          return [{ id: frame["id"], at }];
+        }).slice(-MAX_WALK_FRAMES)
+      : null;
+    return { kind: "view", mode, scope, expanded, walk: walk && walk.length > 0 ? walk : null };
   }
   return null;
 }
@@ -215,24 +224,7 @@ function repoBlock(db: Db, lang: "zh" | "en"): Block {
 
 function viewBlock(db: Db, view: Extract<ChatRefDto, { kind: "view" }>, lang: "zh" | "en"): Block | null {
   const zh = lang === "zh";
-  if (view.mode === "trace" && view.traceId) {
-    const trace = getTrace(db, numericId(view.traceId));
-    if (!trace) return null;
-    const steps = trace.orderedSteps.map((step) => {
-      const target = step.symbolId ?? step.fileId;
-      const narrative = trace.narrative?.steps.find((item) => item.ordinal === step.ordinal)?.narrative;
-      return `${step.ordinal}. ${step.label}（id=${target}，${step.filePath}:${step.line}，${step.kind}/${step.confidence}）${narrative ? ` — ${narrative}` : ""}`;
-    });
-    const text = [
-      zh ? `## 用户正在看的关键链路：${trace.label}` : `## Trace the user is viewing: ${trace.label}`,
-      zh
-        ? `入口 ${trace.entry.label}（${trace.entry.kind}），终点是 ${trace.boundary.kind} 边界 ${trace.boundary.callee}`
-        : `Entry ${trace.entry.label} (${trace.entry.kind}), ending at ${trace.boundary.kind} boundary ${trace.boundary.callee}`,
-      trace.narrative?.summary ? `${zh ? "AI 叙述" : "AI narrative"}：${trace.narrative.summary}` : "",
-      ...steps,
-    ].filter(Boolean).join("\n");
-    return { text, item: { label: zh ? "当前链路" : "Current trace", detail: `${trace.label} · ${steps.length} ${zh ? "步" : "steps"}` } };
-  }
+  if (view.mode === "walk" && view.walk && view.walk.length > 0) return walkBlock(db, view.walk, lang);
 
   if (view.mode === "callgraph" && view.scope?.startsWith("call:")) {
     const symbolId = Number(view.scope.slice(5));
@@ -264,6 +256,47 @@ function viewBlock(db: Db, view: Extract<ChatRefDto, { kind: "view" }>, lang: "z
   return {
     text: parts.join("\n"),
     item: { label: zh ? "当前视图" : "Current view", detail: `${scope === ROOT_SCOPE ? (zh ? "仓库根" : "root") : scope} · ${graph.nodes.length} ${zh ? "个节点" : "nodes"}` },
+  };
+}
+
+/** 调用栈逐帧列出停在哪处调用上，再把栈顶函数体内的调用按执行顺序列全 */
+function walkBlock(db: Db, stack: Array<{ id: string; at: string | null }>, lang: "zh" | "en"): Block | null {
+  const zh = lang === "zh";
+  const frames = stack.flatMap((entry) => {
+    const frame = getWalkFrame(db, numericId(entry.id));
+    return frame ? [{ frame, at: frame.calls.find((call) => call.id === entry.at) ?? null }] : [];
+  });
+  const top = frames.at(-1);
+  if (!top) return null;
+  const callText = (call: WalkCallDto) => {
+    const target = call.target && call.resolution !== "ambiguous"
+      ? ` → ${call.target.name}（id=${call.target.id}，${call.target.filePath}:${call.target.line}）`
+      : call.candidates
+        ? ` → ${zh ? "候选" : "candidates"} ${call.candidates.map((item) => `${item.name}（id=${item.id}）`).join(zh ? "、" : ", ")}`
+        : call.external ? ` → ${call.external}` : "";
+    const io = call.io ? ` [${call.io}]` : "";
+    // 链式调用的接收者可能是一整段多行 SQL 调用，原样放进来会挤占上下文
+    const receiver = call.receiver?.replace(/\s+/g, " ");
+    const shown = receiver && receiver.length > 60 ? `…${receiver.slice(-59)}` : receiver;
+    return `L${call.line} ${shown ? `${shown}.` : ""}${call.callee}(${call.arguments.join(", ")})${target}${io} ${call.resolution}`;
+  };
+  const lines = [
+    zh ? "## 用户正在单步走读（调用栈，自入口起）" : "## The user is stepping through code (call stack, from the entry)",
+    ...frames.map(({ frame, at }, index) =>
+      `${index + 1}. ${frame.name}（id=${frame.id}，${frame.filePath}:${frame.startLine}-${frame.endLine}）` +
+      (at ? (zh ? ` 停在 ${callText(at)}` : ` paused at ${callText(at)}`) : ""),
+    ),
+    zh ? `### 栈顶 ${top.frame.name} 体内的调用，按执行顺序` : `### Calls inside ${top.frame.name}, in execution order`,
+    ...top.frame.calls.slice(0, 60).map((call) => `- ${call.id === top.at?.id ? "▶ " : ""}${callText(call)}`),
+    top.frame.calls.length > 60 ? (zh ? `- …另有 ${top.frame.calls.length - 60} 处` : `- …${top.frame.calls.length - 60} more`) : "",
+  ];
+  return {
+    text: lines.filter(Boolean).join("\n"),
+    item: {
+      label: zh ? "当前走读" : "Current walkthrough",
+      detail: frames.map(({ frame }) => frame.name).join(" › "),
+      nodeId: top.frame.id,
+    },
   };
 }
 
@@ -455,7 +488,7 @@ function sourceHeading(lang: "zh" | "en", truncated: boolean, elided: boolean): 
     `${truncated ? "; truncated for length" : ""}):`;
 }
 
-/** `sym:12` / `file:3` / `trace:7` / `7` → 7 */
+/** `sym:12` / `file:3` / `7` → 7 */
 function numericId(id: string): number {
   return Number(id.slice(id.indexOf(":") + 1));
 }

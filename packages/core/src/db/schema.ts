@@ -157,6 +157,10 @@ CREATE INDEX IF NOT EXISTS idx_exp_name ON exports(name);
 -- 与 edges 分表存放，因为二者性质不同：call_sites 是 AST 里读出来的原始事实，
 -- edges 是链接后的派生结果。分开之后重跑链接器不需要重新解析源码，
 -- 增量扫描只要替换变更文件的 call_sites，再整体重算一遍链接即可。
+--
+-- resolution 起的几列是链接阶段逐行回填的派生值。edges 按 (调用者, 被调者)
+-- 合并、只留第一处行号，回答不了「这个函数体里依次调了谁」；单步走读要的
+-- 正是每一处调用各自落到哪里。
 CREATE TABLE IF NOT EXISTS call_sites (
   id               INTEGER PRIMARY KEY,
   file_id          INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -167,7 +171,15 @@ CREATE TABLE IF NOT EXISTS call_sites (
   call_kind        TEXT NOT NULL,
   arg_count        INTEGER NOT NULL DEFAULT 0,
   argument_texts   TEXT NOT NULL DEFAULT '[]',
-  line             INTEGER NOT NULL
+  line             INTEGER NOT NULL,
+  end_byte         INTEGER NOT NULL DEFAULT 0,
+  name_line        INTEGER NOT NULL DEFAULT 0,   -- 被调名本身的位置，列为 UTF-16 偏移
+  name_col         INTEGER NOT NULL DEFAULT 0,
+  resolution       TEXT NOT NULL DEFAULT 'unresolved',
+  target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+  target_name      TEXT,             -- external 时的库名
+  candidates       TEXT,             -- ambiguous 时的候选符号 id，JSON 数组
+  io_kind          TEXT              -- 识别出的 I/O 访问：database | network | filesystem | ...
 );
 
 CREATE INDEX IF NOT EXISTS idx_callsite_file ON call_sites(file_id);
@@ -290,7 +302,7 @@ CREATE TABLE IF NOT EXISTS summaries (
   id          INTEGER PRIMARY KEY,
   target_kind TEXT NOT NULL,        -- repo | package | directory | file | symbol
   target_key  TEXT NOT NULL,        -- 稳定键：包名 / 目录路径 / 文件路径 / 符号签名键
-  flavor      TEXT NOT NULL,        -- summary | summary-v2 | tooltip-summary | pseudocode | narrative
+  flavor      TEXT NOT NULL,        -- summary | summary-v2 | tooltip-summary | pseudocode | pseudocode-map
   lang        TEXT NOT NULL,
   content     TEXT NOT NULL,
   /** 生成时目标的内容指纹，不匹配则视为过期 */
@@ -314,7 +326,7 @@ CREATE TABLE IF NOT EXISTS layers (
 );
 
 -- ---------------------------------------------------------------------------
--- 关键链路（M4，全部可由解析事实重建）
+-- 入口与单步走读（全部可由解析事实重建）
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS entry_points (
@@ -328,55 +340,23 @@ CREATE TABLE IF NOT EXISTS entry_points (
   method      TEXT,
   route       TEXT,
   confidence  TEXT NOT NULL,
-  evidence    TEXT NOT NULL
+  evidence    TEXT NOT NULL,
+  -- 从处理函数出发沿确定/可能的调用能走到的仓库内函数数、文件数，以及途经的 I/O 类型
+  reach_symbols INTEGER NOT NULL DEFAULT 0,
+  reach_files   INTEGER NOT NULL DEFAULT 0,
+  reach_io      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_entry_symbol ON entry_points(symbol_id);
 CREATE INDEX IF NOT EXISTS idx_entry_kind ON entry_points(kind);
 
-CREATE TABLE IF NOT EXISTS boundaries (
-  id          INTEGER PRIMARY KEY,
+-- 每个函数往下走最少几跳能碰到某类 I/O；0 表示它自己就在做。
+-- 走读时据此提示「从这一步进去会访问数据库」，人才知道该往哪个分支走。
+CREATE TABLE IF NOT EXISTS io_reach (
+  symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   kind        TEXT NOT NULL,
-  symbol_id   INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
-  file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-  call_site_id INTEGER REFERENCES call_sites(id) ON DELETE CASCADE,
-  line        INTEGER NOT NULL,
-  callee      TEXT NOT NULL,
-  confidence  TEXT NOT NULL,
-  evidence    TEXT NOT NULL
+  depth       INTEGER NOT NULL,
+  PRIMARY KEY (symbol_id, kind)
 );
-CREATE INDEX IF NOT EXISTS idx_boundary_symbol ON boundaries(symbol_id);
-CREATE INDEX IF NOT EXISTS idx_boundary_kind ON boundaries(kind);
-
-CREATE TABLE IF NOT EXISTS traces (
-  id           INTEGER PRIMARY KEY,
-  entry_id     INTEGER NOT NULL REFERENCES entry_points(id) ON DELETE CASCADE,
-  boundary_id  INTEGER NOT NULL REFERENCES boundaries(id) ON DELETE CASCADE,
-  label        TEXT NOT NULL,
-  confidence   TEXT NOT NULL,
-  fingerprint  TEXT NOT NULL UNIQUE
-);
-CREATE INDEX IF NOT EXISTS idx_trace_entry ON traces(entry_id);
-
-CREATE TABLE IF NOT EXISTS trace_steps (
-  id           INTEGER PRIMARY KEY,
-  trace_id     INTEGER NOT NULL REFERENCES traces(id) ON DELETE CASCADE,
-  ordinal      INTEGER NOT NULL,
-  kind         TEXT NOT NULL,
-  source       TEXT NOT NULL,
-  confidence   TEXT NOT NULL,
-  label        TEXT NOT NULL,
-  symbol_id    INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
-  file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-  line         INTEGER NOT NULL,
-  call_file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
-  call_line    INTEGER,
-  callee       TEXT,
-  arg_count    INTEGER NOT NULL DEFAULT 0,
-  arguments    TEXT NOT NULL DEFAULT '[]',
-  params       TEXT NOT NULL DEFAULT '[]',
-  return_type  TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_trace_step_ordinal ON trace_steps(trace_id, ordinal);
 
 -- ---------------------------------------------------------------------------
 -- 全文搜索
@@ -395,5 +375,5 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 );
 `;
 
-/** schema 版本，变更时 bump，旧库会被重建 */
-export const SCHEMA_VERSION = "5";
+/** schema 版本，变更时 bump。database.ts 里有迁移的旧版本就地升级，没有的整库重建 */
+export const SCHEMA_VERSION = "6";

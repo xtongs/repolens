@@ -4,14 +4,14 @@ import { dirOf } from "../resolve/path-utils.js";
 import type { ArchitectureRule, Confidence, HttpLinkStats } from "../types.js";
 import { type DiagnoseStats, diagnose } from "./diagnose.js";
 import { linkHttpEdges } from "./http-links.js";
+import { analyzeEntries, type EntryAnalysisStats } from "./entries.js";
 import { linkCallEdges } from "./link-calls.js";
-import { analyzeTraces, type TraceAnalysisStats } from "./trace.js";
 
 export interface LinkStats {
   calls: number;
   callsByConfidence: Record<Confidence, number>;
   findings: DiagnoseStats;
-  traces: TraceAnalysisStats;
+  entries: EntryAnalysisStats;
   http: HttpLinkStats;
 }
 
@@ -28,14 +28,14 @@ export function linkGraph(db: Db, writer: IndexWriter, rules: readonly Architect
   linkImportEdges(db, writer);
   const calls = linkCallEdges(db, (edges) => writer.insertEdges(edges));
   linkTypeRelations(db);
-  const traces = analyzeTraces(db);
-  // 路由表来自入口识别，所以排在链路分析之后；链路因此也不会跨过网络边界
+  const entries = analyzeEntries(db);
+  // 路由表来自入口识别，所以排在入口分析之后；I/O 可达性因此也不会跨过网络边界
   const http = linkHttpEdges(db, writer);
   buildSearchIndex(db, writer);
   // 体检要在 rollup 边建好之后跑，环检测读的就是那张表
   const findings = diagnose(db, writer, rules);
 
-  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings, traces, http };
+  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings, entries, http };
 }
 
 // ---------------------------------------------------------------------------

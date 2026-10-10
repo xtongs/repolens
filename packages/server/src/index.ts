@@ -57,7 +57,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
       throw new Error(`索引不存在：${dbPath}\n先运行 \`repolens scan ${options.repoRoot}\``);
     }
     if (!isIndexCurrent(dbPath)) {
-      throw new Error(`索引版本过期：${dbPath}\n运行 \`repolens scan ${options.repoRoot} --fresh\` 重建索引`);
+      throw new Error(`索引版本过期：${dbPath}\n运行 \`repolens scan ${options.repoRoot}\` 更新索引`);
     }
   }
 

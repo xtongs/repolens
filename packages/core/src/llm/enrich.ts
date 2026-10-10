@@ -6,13 +6,10 @@ import type {
   LlmRunStats,
   PseudocodeStepDto,
   SemanticResultDto,
-  TraceNarrativeDto,
-  TraceNarrativeResultDto,
 } from "../types.js";
 import { loadConfig } from "../config.js";
 import { getMeta, setMeta, type Db, transact } from "../db/database.js";
 import { symbolKey } from "../db/queries.js";
-import { getTrace } from "../db/traces.js";
 import { addUsage, emptyUsage, LlmUnavailableError, OpenAiCompatibleClient } from "./client.js";
 import {
   cleanSingleLine,
@@ -61,13 +58,7 @@ interface FileSemanticResponse {
   pseudocode?: unknown;
 }
 
-interface TraceNarrativeResponse {
-  summary?: unknown;
-  steps?: Array<{ ordinal?: unknown; narrative?: unknown; parameterFlow?: unknown }>;
-}
-
 const inflight = new Map<string, Promise<SemanticResultDto>>();
-const traceInflight = new Map<string, Promise<TraceNarrativeResultDto>>();
 
 /** 发给模型的源码形式变了就加一，由 dropSemanticsFromOutdatedInput 清掉受影响的缓存 */
 const SEMANTIC_INPUT_VERSION = "2";
@@ -454,71 +445,6 @@ export async function generateFileSummary(
   const task = generateFileSummaryInner(db, root, fileId, force).finally(() => inflight.delete(key));
   inflight.set(key, task);
   return task;
-}
-
-/** 链路事实已经确定后才调用 LLM；模型只负责逐步叙述，不得改写步骤或置信度。 */
-export async function generateTraceNarrative(
-  db: Db,
-  root: string,
-  traceId: number,
-): Promise<TraceNarrativeResultDto> {
-  const key = `${root}:trace:${traceId}`;
-  const pending = traceInflight.get(key);
-  if (pending) return pending;
-  const task = generateTraceNarrativeInner(db, root, traceId).finally(() => traceInflight.delete(key));
-  traceInflight.set(key, task);
-  return task;
-}
-
-async function generateTraceNarrativeInner(
-  db: Db, root: string, traceId: number,
-): Promise<TraceNarrativeResultDto> {
-  const config = loadConfig(root).llm;
-  const requestConfig = interactiveConfig(config);
-  const trace = getTrace(db, traceId);
-  if (!trace) throw new Error("链路不存在");
-  const cached = getCachedSemantic(
-    db, "trace", trace.fingerprint, "narrative", config.outputLanguage, trace.fingerprint, requestConfig.model,
-  );
-  if (cached) {
-    const narrative = parseTraceNarrative(cached.content, trace.orderedSteps.map((step) => step.ordinal));
-    if (narrative) {
-      return { narrative, generated: false, cacheHit: true, model: cached.model, usage: emptyUsage() };
-    }
-  }
-
-  const client = new OpenAiCompatibleClient(requestConfig);
-  const result = await client.completeJson<TraceNarrativeResponse>(
-    traceSystem(config.outputLanguage),
-    JSON.stringify({
-      trace: {
-        label: trace.label, entry: trace.entry, boundary: trace.boundary,
-        steps: trace.orderedSteps.map((step) => ({
-          ordinal: step.ordinal, kind: step.kind, source: step.source, confidence: step.confidence,
-          label: step.label, file: step.filePath, line: step.line, callSite: step.callSite,
-          argCount: step.argCount, arguments: step.arguments, params: step.params, returnType: step.returnType,
-        })),
-        signatureTypeFlows: trace.typeFlows,
-      },
-    }),
-    { maxOutputTokens: 900 },
-  );
-  const narrative = cleanTraceNarrative(result.data, trace.orderedSteps.map((step) => step.ordinal));
-  if (!narrative) throw new Error("LLM 返回的链路叙述不完整");
-
-  transact(db, () => {
-    invalidateCachedSemantic(db, "trace", trace.fingerprint, trace.fingerprint);
-    putCachedSemantic(db, {
-      targetKind: "trace", targetKey: trace.fingerprint, flavor: "narrative",
-      lang: config.outputLanguage, content: JSON.stringify(narrative),
-      sourceHash: trace.fingerprint, model: requestConfig.model,
-    });
-    mergeLlmStatusUsage(db, {
-      enabled: true, available: true, model: config.model, interactiveModel: config.interactiveModel,
-      reason: null, usage: result.usage,
-    });
-  });
-  return { narrative, generated: true, cacheHit: false, model: requestConfig.model, usage: result.usage };
 }
 
 async function generateFileSummaryInner(
@@ -1019,34 +945,4 @@ function semanticJsonContract(): string {
     `lines 用这些行号标出该步骤对应源码的起止行（闭区间），子步骤的范围应落在所属步骤之内；` +
     `无法对应到具体代码时省略 lines，不要猜测。` +
     `数组顺序必须遵循源码组织或执行顺序；没有内容时返回空数组，不得更换字段名。`;
-}
-
-function traceSystem(lang: "zh" | "en"): string {
-  return `你是代码执行链路解释器。用${languageName(lang)}叙述输入中已经确定的静态链路。` +
-    `不得增加、删除、重排步骤，不得把 inferred 说成运行时事实；参数流只能依据 arguments、params、returnType。` +
-    `只返回 JSON：{"summary":"2-4句总览","steps":[{"ordinal":0,"narrative":"该步作用","parameterFlow":"关键参数如何进入/离开；无则空字符串"}]}。`;
-}
-
-function cleanTraceNarrative(
-  input: TraceNarrativeResponse, allowedOrdinals: readonly number[],
-): TraceNarrativeDto | null {
-  const summary = cleanText(input.summary, 2_000);
-  if (!summary || !Array.isArray(input.steps)) return null;
-  const allowed = new Set(allowedOrdinals);
-  const byOrdinal = new Map<number, TraceNarrativeDto["steps"][number]>();
-  for (const raw of input.steps) {
-    if (typeof raw.ordinal !== "number" || !allowed.has(raw.ordinal) || byOrdinal.has(raw.ordinal)) continue;
-    const narrative = cleanText(raw.narrative, 1_000);
-    if (!narrative) continue;
-    byOrdinal.set(raw.ordinal, {
-      ordinal: raw.ordinal, narrative, parameterFlow: cleanText(raw.parameterFlow, 1_000),
-    });
-  }
-  if (allowedOrdinals.some((ordinal) => !byOrdinal.has(ordinal))) return null;
-  return { summary, steps: allowedOrdinals.map((ordinal) => byOrdinal.get(ordinal) as TraceNarrativeDto["steps"][number]) };
-}
-
-function parseTraceNarrative(raw: string, ordinals: readonly number[]): TraceNarrativeDto | null {
-  try { return cleanTraceNarrative(JSON.parse(raw) as TraceNarrativeResponse, ordinals); }
-  catch { return null; }
 }

@@ -13,6 +13,7 @@ import {
   ancestorOfType,
   argumentTexts,
   attributeCalls,
+  calleeAt,
   complexityOf,
   docCommentAbove,
   dottedPath,
@@ -129,6 +130,8 @@ export const typescriptExtractor: LanguageExtractor = {
                 argumentTexts: argumentTexts(fieldNode(node, "arguments")),
                 kind: "new",
                 byte: node.startIndex,
+                endByte: node.endIndex,
+                ...calleeAt(ctor, name),
               });
             }
           }
@@ -341,9 +344,9 @@ const INLINE_FUNCTIONS = new Set(["arrow_function", "function_expression", "func
 /**
  * 注册调用里的内联回调：`app.get("/x", (c) => …)`、`program.command("scan").action(async () => …)`、
  * `ipcMain.handle("pick", async () => …)`。它们是真正的业务入口，却没有名字——不单独成符号的话，
- * 里面的调用全都记在外层 `createApi` 头上，路由入口也追不出任何链路。
+ * 里面的调用全都记在外层 `createApi` 头上，路由入口也走读不进去。
  *
- * 名字按注册语义合成（`GET /x`、`CLI scan`、`ipcMain.handle("pick")`），链路分析按同样的规则找回它。
+ * 名字按注册语义合成（`GET /x`、`CLI scan`、`ipcMain.handle("pick")`），入口识别按同样的规则找回它。
  */
 function inlineHandlerSymbol(call: TsNode, existing: readonly ParsedSymbol[]): ParsedSymbol | null {
   const fn = fieldNode(call, "function");
@@ -656,6 +659,8 @@ function collectJsxElement(node: TsNode, out: RawCallSite[]): void {
     argumentTexts: props.slice(0, 12).map((p) => p.slice(0, 240)),
     kind: "render",
     byte: node.startIndex,
+    endByte: node.endIndex,
+    ...calleeAt(nameNode, callee),
   });
 }
 
@@ -690,6 +695,8 @@ function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]):
       argumentTexts: args,
       kind: "call",
       byte: node.startIndex,
+      endByte: node.endIndex,
+      ...calleeAt(fn, fn.text),
     });
     return;
   }
@@ -709,6 +716,8 @@ function collectCall(node: TsNode, out: RawCallSite[], imports: ParsedImport[]):
       argumentTexts: args,
       kind: "method",
       byte: node.startIndex,
+      endByte: node.endIndex,
+      ...calleeAt(fn, property),
     });
   }
 }

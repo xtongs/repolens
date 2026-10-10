@@ -2,6 +2,7 @@ import type { ParsedFile, ParsedImport, ParsedSymbol, SymbolKind } from "../../t
 import {
   argumentTexts,
   attributeCalls,
+  calleeAt,
   fieldNode,
   lineOf,
   namedChildren,
@@ -155,6 +156,8 @@ function callOf(node: TsNode): RawCallSite | null {
     argumentTexts: argumentTexts(args),
     kind: parts.length > 1 ? "method" : "call",
     byte: node.startIndex,
+    endByte: node.endIndex,
+    ...calleeAt(target, callee),
   };
 }
 

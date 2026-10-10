@@ -7,8 +7,7 @@ export type SemanticTextFlavor =
   | "summary-v2"
   | "tooltip-summary"
   | "pseudocode"
-  | "pseudocode-map"
-  | "narrative";
+  | "pseudocode-map";
 
 interface StructuredSummary {
   purpose?: unknown;
@@ -36,9 +35,8 @@ export function normalizeSemanticContent(
       return cleanSingleLine(value, 240) ?? "";
     case "pseudocode":
       return normalizePseudocode(value, 16_000) ?? "";
-    // narrative 与 pseudocode-map 是 JSON 字符串，不能在解析前改写反斜杠。
+    // pseudocode-map 是 JSON 字符串，不能在解析前改写反斜杠。
     case "pseudocode-map":
-    case "narrative":
       return value;
   }
 }

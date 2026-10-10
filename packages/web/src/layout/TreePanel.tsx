@@ -4,7 +4,6 @@ import type {
   FileRole,
   FindingDto,
   FindingKind,
-  TraceSummaryDto,
   TreeNodeDto,
 } from "@repolens/core/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -12,6 +11,7 @@ import { type FindingsResponse, api } from "../api/client";
 import { msg, t, useT } from "../i18n";
 import { formatCount, languageColor } from "../ui/visual";
 import { useAppStore } from "../store/useAppStore";
+import { IO_LABELS } from "../walk/WalkView";
 import { ChangesBody } from "./ChangesPanel";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 import { TabStrip } from "./TabStrip";
@@ -59,7 +59,7 @@ export function TreePanel() {
         <TabStrip scrollKey={tab}>
           <PanelTab active={tab === "tree"} onClick={() => setTab("tree")} label={t("结构")} />
           <PanelTab active={tab === "findings"} onClick={() => setTab("findings")} label={t("体检")} />
-          <PanelTab active={tab === "traces"} onClick={() => setTab("traces")} label={t("链路")} />
+          <PanelTab active={tab === "entries"} onClick={() => setTab("entries")} label={t("入口")} />
           <PanelTab active={tab === "changes"} onClick={() => setTab("changes")} label={t("变更")} />
         </TabStrip>
         <button
@@ -78,107 +78,86 @@ export function TreePanel() {
       ) : tab === "changes" ? (
         <ChangesBody key={`changes:${repoId ?? ""}:${repoRevision}`} />
       ) : (
-        <TracesBody key={`traces:${repoId ?? ""}:${repoRevision}`} />
+        <EntriesBody key={`entries:${repoId ?? ""}:${repoRevision}`} />
       )}
     </aside>
   );
 }
 
-function TracesBody() {
+/**
+ * 入口清单。点一个入口就从它的处理函数开始单步走读；服务端已按「能走到多远」排好序，
+ * 往下走不到别的函数的入口（只调库、或匿名闭包没有独立符号）收在最后。
+ */
+function EntriesBody() {
   const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
   const showNoise = useAppStore((s) => s.showNoise);
-  const openTrace = useAppStore((s) => s.openTrace);
-  const activeTrace = useAppStore((s) => s.traceId);
+  const openWalk = useAppStore((s) => s.openWalk);
+  const active = useAppStore((s) => s.walk?.stack[0]?.id ?? null);
   const [entries, setEntries] = useState<EntryPointDto[] | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [traces, setTraces] = useState<Record<string, TraceSummaryDto[]>>({});
-  const [showUntraced, setShowUntraced] = useState(false);
+  const [query, setQuery] = useState("");
+  const [showShallow, setShowShallow] = useState(false);
 
   useEffect(() => {
     let stale = false;
     setEntries(null);
-    setExpanded(null);
-    setTraces({});
-    setShowUntraced(false);
     void api.entries().then((value) => { if (!stale) setEntries(value); }).catch(() => { if (!stale) setEntries([]); });
     return () => { stale = true; };
   }, [repoId, repoRevision]);
 
-  const visibleEntries = useMemo(
-    () => sortEntries((entries ?? []).filter(
-      (entry) => showNoise || (entry.kind !== "test" && entry.fileRole !== "test"),
-    )),
-    [entries, showNoise],
-  );
-  const tracedEntries = visibleEntries.filter((entry) => entry.traceCount > 0);
-  const untracedEntries = visibleEntries.filter((entry) => entry.traceCount === 0);
-
-  const toggle = async (entry: EntryPointDto) => {
-    if (expanded === entry.id) { setExpanded(null); return; }
-    setExpanded(entry.id);
-    if (traces[entry.id]) return;
-    try {
-      const value = await api.traces(entry.id);
-      setTraces((current) => ({ ...current, [entry.id]: value }));
-    } catch {
-      setTraces((current) => ({ ...current, [entry.id]: [] }));
-    }
-  };
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return (entries ?? []).filter((entry) =>
+      (showNoise || (entry.kind !== "test" && entry.fileRole !== "test")) &&
+      (needle === "" || entry.label.toLowerCase().includes(needle) || entry.filePath.toLowerCase().includes(needle)));
+  }, [entries, showNoise, query]);
+  const deep = visible.filter((entry) => entry.symbolId && entry.reachSymbols > 0);
+  const shallow = visible.filter((entry) => !(entry.symbolId && entry.reachSymbols > 0));
 
   if (entries === null) return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>;
-  if (visibleEntries.length === 0) return (
+  if (entries.length === 0) return (
     <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
       {t("没有识别到入口。重新扫描后可识别 main、HTTP 路由、CLI、公共 API 与测试入口。")}
     </div>
   );
 
+  const row = (entry: EntryPointDto) => (
+    <EntryRow key={entry.id} entry={entry} active={entry.symbolId === active}
+      onOpen={() => entry.symbolId && openWalk(entry.symbolId, entry.label)} />
+  );
+
   return (
     <>
-      <div className="shrink-0 px-3 pt-2 text-[10.5px] text-[var(--color-ink-faint)]">
-        {t("可追踪入口 · 终点为数据库、网络、文件等 I/O")}
+      <div className="shrink-0 px-3 pt-2">
+        <div className="text-[10.5px] text-[var(--color-ink-faint)]">{t("从入口开始单步走读 · 越往下走得远的越靠前")}</div>
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={t("筛选入口或文件")}
+          className="mt-1.5 w-full rounded border border-[var(--color-line)] bg-[var(--color-canvas)] px-2 py-1 text-[11px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-faint)] focus:border-[var(--color-accent)]/60"
+        />
       </div>
       <div className="thin-scroll flex-1 overflow-y-auto py-1">
-        {tracedEntries.map((entry) => (
-          <TraceEntryRow
-            key={entry.id}
-            entry={entry}
-            expanded={expanded === entry.id}
-            activeTrace={activeTrace}
-            traces={traces[entry.id]}
-            onToggle={() => void toggle(entry)}
-            onOpen={openTrace}
-          />
-        ))}
-        {tracedEntries.length === 0 && (
+        {deep.map(row)}
+        {deep.length === 0 && (
           <div className="px-3 py-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-            {t("没有入口能沿当前静态调用关系到达 I/O 边界。")}
+            {query ? t("没有匹配的入口。") : t("没有入口能沿静态调用关系走到仓库里的其他函数。")}
           </div>
         )}
-        {untracedEntries.length > 0 && (
+        {shallow.length > 0 && (
           <div className="mt-1 border-t border-[var(--color-line)]/60 pt-1">
             <button
               type="button"
-              onClick={() => setShowUntraced((value) => !value)}
-              aria-expanded={showUntraced}
+              onClick={() => setShowShallow((value) => !value)}
+              aria-expanded={showShallow}
               className="flex w-full items-center px-3 py-1.5 text-left text-[10.5px] text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-ink-muted)]"
             >
-              <span>{t("未形成链路的入口")}</span>
-              <span className="ml-auto tabular-nums">{untracedEntries.length}</span>
-              <span className="ml-2 w-6 text-right">{showUntraced ? t("收起") : t("显示")}</span>
+              <span>{t("走不到其他函数的入口")}</span>
+              <span className="ml-auto tabular-nums">{shallow.length}</span>
+              <span className="ml-2 w-6 text-right">{showShallow ? t("收起") : t("显示")}</span>
             </button>
-            {showUntraced && untracedEntries.map((entry) => (
-              <TraceEntryRow
-                key={entry.id}
-                entry={entry}
-                expanded={false}
-                activeTrace={activeTrace}
-                traces={[]}
-                onToggle={() => {}}
-                onOpen={openTrace}
-              />
-            ))}
+            {showShallow && shallow.map(row)}
           </div>
         )}
       </div>
@@ -186,85 +165,45 @@ function TracesBody() {
   );
 }
 
-function TraceEntryRow({
-  entry,
-  expanded,
-  activeTrace,
-  traces,
-  onToggle,
-  onOpen,
-}: {
-  entry: EntryPointDto;
-  expanded: boolean;
-  activeTrace: string | null;
-  traces: TraceSummaryDto[] | undefined;
-  onToggle: () => void;
-  onOpen: (id: string, label: string) => void;
-}) {
+function EntryRow({ entry, active, onOpen }: { entry: EntryPointDto; active: boolean; onOpen: () => void }) {
   const t = useT();
   return (
-    <div>
-      <button
-        type="button"
-        onClick={onToggle}
-        disabled={entry.traceCount === 0}
-        aria-expanded={expanded}
-        title={entry.traceCount > 0 ? t("展开 {count} 条链路", { count: entry.traceCount }) : t("未追踪到 I/O 边界")}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left enabled:hover:bg-[var(--color-surface-raised)] disabled:cursor-default"
-      >
-        <span className="rounded border border-[var(--color-line)] px-1 text-[9px] uppercase text-[var(--color-accent)]">
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={!entry.symbolId}
+      title={entry.symbolId ? `${entry.filePath}:${entry.line}` : t("处理函数没有独立符号，无法走读")}
+      className={`block w-full px-3 py-1.5 text-left transition-colors enabled:hover:bg-[var(--color-surface-raised)] disabled:cursor-default disabled:opacity-60 ${
+        active ? "bg-[var(--color-surface-3)]" : ""
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 rounded border border-[var(--color-line)] px-1 text-[9px] uppercase text-[var(--color-accent)]">
           {entryKindLabel(entry.kind)}
         </span>
         <span className="min-w-0 flex-1 truncate text-[11.5px]">{entry.label}</span>
-        <span className="ml-auto text-[10px] tabular-nums text-[var(--color-ink-faint)]">
-          {entry.traceCount > 0 ? entry.traceCount : t("未形成")}
-        </span>
-      </button>
-      {expanded && (
-        <div className="border-y border-[var(--color-line)]/60 bg-[var(--color-canvas)]/30 py-1">
-          {!traces ? (
-            <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">{t("加载链路…")}</div>
-          ) : traces.length === 0 ? (
-            <div className="px-7 py-2 text-[10.5px] text-[var(--color-ink-faint)]">{t("未沿确定调用边到达 I/O 边界")}</div>
-          ) : traces.map((trace) => (
-            <button
-              key={trace.id}
-              type="button"
-              onClick={() => onOpen(trace.id, trace.label)}
-              className={`block w-full px-7 py-1.5 text-left hover:bg-[var(--color-surface-3)] ${
-                activeTrace === trace.id ? "bg-[var(--color-surface-3)]" : ""
-              }`}
-            >
-              <div className="truncate text-[11px]">{trace.label}</div>
-              <div className="mt-0.5 text-[9.5px] text-[var(--color-ink-faint)]">
-                {t("{count} 步", { count: trace.steps })} · {trace.confidence === "exact" ? t("确定") : t("含推断")}
-                {trace.hasNarrative ? ` · ${t("AI 已解释")}` : ""}
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+      </div>
+      <div className="mt-0.5 flex items-center gap-1.5 pl-0.5 text-[9.5px] text-[var(--color-ink-faint)]">
+        {entry.reachSymbols > 0 ? (
+          <span className="tabular-nums">
+            {t("{count} 个函数", { count: entry.reachSymbols >= 999 ? "999+" : entry.reachSymbols })}
+            {entry.reachFiles > 0 ? ` · ${t("跨 {count} 个文件", { count: entry.reachFiles })}` : ""}
+          </span>
+        ) : (
+          <span className="mono truncate">{entry.filePath.split("/").at(-1)}:{entry.line}</span>
+        )}
+        {entry.reachIo.map((kind) => (
+          <span key={kind} className="rounded border border-[var(--color-warn)]/30 px-1 text-[var(--color-warn)]">
+            {t(IO_LABELS[kind])}
+          </span>
+        ))}
+      </div>
+    </button>
   );
 }
 
 function entryKindLabel(kind: EntryPointDto["kind"]): string {
   return ({ main: "main", cli: "cli", http: "http", "public-api": "api", test: "test" })[kind];
-}
-
-const ENTRY_KIND_ORDER: Record<EntryPointDto["kind"], number> = {
-  http: 0, cli: 1, main: 2, "public-api": 3, test: 4,
-};
-
-function sortEntries(entries: readonly EntryPointDto[]): EntryPointDto[] {
-  return [...entries].sort((a, b) =>
-    Number(b.traceCount > 0) - Number(a.traceCount > 0) ||
-    ENTRY_KIND_ORDER[a.kind] - ENTRY_KIND_ORDER[b.kind] ||
-    b.traceCount - a.traceCount ||
-    a.label.localeCompare(b.label) ||
-    a.filePath.localeCompare(b.filePath) ||
-    a.line - b.line,
-  );
 }
 
 function PanelTab({

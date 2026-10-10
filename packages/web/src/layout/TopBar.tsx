@@ -64,7 +64,7 @@ export function TopBar() {
         </button>
 
         <FindingsPill />
-        <TracePill />
+        <EntriesPill />
         <ChangesPill />
         <LlmPill />
       </div>
@@ -96,7 +96,7 @@ export function TopBar() {
         在一张函数调用图上都无从谈起，留着它们只是让人误以为能用。
       */}
       <div className="flex shrink-0 items-center gap-1.5">
-        {store.traceId ? <TraceControls /> : store.callGraph ? <CallGraphControls /> : <StructureControls />}
+        {store.walk ? <WalkControls /> : store.callGraph ? <CallGraphControls /> : <StructureControls />}
 
         <button
           type="button"
@@ -543,14 +543,25 @@ function CallGraphControls() {
   );
 }
 
-function TraceControls() {
+function WalkControls() {
   const t = useT();
-  const close = useAppStore((s) => s.closeTrace);
+  const close = useAppStore((s) => s.closeWalk);
+  const allCalls = useAppStore((s) => s.walkAllCalls);
+  const setAllCalls = useAppStore((s) => s.setWalkAllCalls);
   return (
-    <button type="button" onClick={close}
-      className="rounded-md border border-[var(--color-line)] px-2.5 py-1 text-[11px] text-[var(--color-ink-muted)] hover:border-[var(--color-line-strong)]">
-      {t("返回结构图")}
-    </button>
+    <>
+      <Toggle
+        active={allCalls}
+        onClick={() => setAllCalls(!allCalls)}
+        title={t("把外部库和静态分析解析不了的调用也列为步骤")}
+      >
+        {t("全部调用")}
+      </Toggle>
+      <button type="button" onClick={close}
+        className="rounded-md border border-[var(--color-line)] px-2.5 py-1 text-[11px] text-[var(--color-ink-muted)] hover:border-[var(--color-line-strong)]">
+        {t("返回结构图")}
+      </button>
+    </>
   );
 }
 
@@ -567,11 +578,11 @@ function Breadcrumb() {
       onClick: () => store.closeCallGraph(),
     });
   }
-  if (store.traceId) {
+  if (store.walk) {
     parts.push({
-      key: "trace",
-      label: t("链路 {name}", { name: store.traceLabel ?? store.traceId }),
-      onClick: () => store.closeTrace(),
+      key: "walk",
+      label: t("走读 {name}", { name: store.walk.label }),
+      onClick: () => store.closeWalk(),
     });
   }
   if (store.focus !== null) {
@@ -613,16 +624,16 @@ function Breadcrumb() {
   );
 }
 
-function TracePill() {
+function EntriesPill() {
   const t = useT();
   const store = useAppStore();
-  const open = store.treeOpen && store.panelTab === "traces";
+  const open = store.treeOpen && store.panelTab === "entries";
   return (
-    <button type="button" onClick={() => { store.setPanelTab("traces"); store.setTreeOpen(!open); }}
+    <button type="button" onClick={() => { store.setPanelTab("entries"); store.setTreeOpen(!open); }}
       className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors"
       style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
-      title={t("入口到 I/O 边界的关键链路")} aria-label={t("链路")}>
-      ⇢<span data-topbar-optional="2">{t("链路")}</span>
+      title={t("从 main、路由、CLI 命令等入口开始，单步走读代码怎么跑")} aria-label={t("入口")}>
+      ⇢<span data-topbar-optional="2">{t("入口")}</span>
     </button>
   );
 }

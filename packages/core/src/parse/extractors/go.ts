@@ -10,6 +10,7 @@ import type {
 import {
   argumentTexts,
   attributeCalls,
+  calleeAt,
   childrenOfType,
   complexityOf,
   docCommentAbove,
@@ -354,9 +355,13 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
   const args = argumentTexts(fieldNode(node, "arguments"));
   const line = lineOf(node);
   const byte = node.startIndex;
+  const endByte = node.endIndex;
 
   if (target.type === "identifier") {
-    out.push({ callee: target.text, line, argCount, argumentTexts: args, kind: "call", byte });
+    out.push({
+      callee: target.text, line, argCount, argumentTexts: args, kind: "call", byte, endByte,
+      ...calleeAt(target, target.text),
+    });
     return;
   }
 
@@ -376,6 +381,8 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
       argumentTexts: args,
       kind: "method",
       byte,
+      endByte,
+      ...calleeAt(target, callee),
     });
   }
 }

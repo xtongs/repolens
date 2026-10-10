@@ -217,8 +217,13 @@ export interface ParsedCall {
   /** 完整点分路径，如 `["a","b","c"]` */
   calleePath?: string[] | undefined;
   line: number;
+  /** 调用表达式结束的字节偏移；同一行里的嵌套调用靠它排出求值先后 */
+  endByte: number;
+  /** 被调名本身的位置（列为 UTF-16 偏移），单步走读据此高亮 */
+  nameLine: number;
+  nameColumn: number;
   argCount: number;
-  /** 前几个实参的源码文本；用于入口识别和链路参数流，不做求值。 */
+  /** 前几个实参的源码文本；用于入口识别和单步走读的实参展示，不做求值。 */
   argumentTexts?: string[] | undefined;
   kind: CallKind;
 }
@@ -872,17 +877,18 @@ export interface PathQueryResultDto {
 }
 
 // ---------------------------------------------------------------------------
-// M4：关键链路与数据流
+// 入口与单步走读
 // ---------------------------------------------------------------------------
 
 export type EntryPointKind = "main" | "cli" | "http" | "public-api" | "test";
-export type BoundaryKind = "database" | "network" | "filesystem" | "message-queue" | "process";
-export type TraceEvidenceSource = "deterministic" | "inferred" | "ai";
+/** 调用点上认出的 I/O 访问 */
+export type IoKind = "database" | "network" | "filesystem" | "message-queue" | "process";
 
 export interface EntryPointDto {
   id: string;
   kind: EntryPointKind;
   framework?: string | null;
+  /** 处理函数；匿名闭包没有独立符号时为空，这样的入口无法走读 */
   symbolId?: string | null;
   fileId: string;
   filePath: string;
@@ -893,78 +899,70 @@ export interface EntryPointDto {
   route?: string | null;
   confidence: "exact" | "likely";
   evidence: string;
-  traceCount: number;
+  /** 从处理函数往下沿确定/可能的调用能走到的仓库内函数数（封顶 999） */
+  reachSymbols: number;
+  /** 上面那些函数分布在几个别的文件里，不含处理函数自己所在的文件 */
+  reachFiles: number;
+  /** 往下会碰到的 I/O 类型 */
+  reachIo: IoKind[];
 }
 
-export interface BoundaryDto {
+/** 某个函数往下最少几跳会碰到某类 I/O；0 表示它自己就在做 */
+export interface IoReachDto {
+  kind: IoKind;
+  depth: number;
+}
+
+/** 走读里一次调用指向的仓库内函数 */
+export interface WalkTargetDto {
   id: string;
-  kind: BoundaryKind;
-  symbolId?: string | null;
+  /** 带容器的全名，如 `IndexWriter.upsertFile` */
+  name: string;
+  kind: SymbolKind;
   fileId: string;
   filePath: string;
   line: number;
-  callee: string;
-  confidence: "exact" | "likely";
-  evidence: string;
-}
-
-export interface TraceStepDto {
-  ordinal: number;
-  kind: "entry" | "call" | "boundary";
-  source: TraceEvidenceSource;
-  confidence: "exact" | "likely";
-  label: string;
-  symbolId?: string | null;
-  fileId: string;
-  filePath: string;
-  line: number;
-  /** 调用发生在上一步的哪个位置；入口步骤为空。 */
-  callSite?: { fileId: string; filePath: string; line: number } | null;
-  callee?: string | null;
-  argCount: number;
-  arguments: string[];
-  params: ParamDto[];
-  returnType?: string | null;
-}
-
-/** 签名级类型流。它是静态近似，不冒充运行时污点分析。 */
-export interface TraceTypeFlowDto {
-  type: string;
-  source: "inferred";
-  through: Array<{ ordinal: number; symbolId?: string | null; label: string; role: "parameter" | "return" }>;
-}
-
-export interface TraceSummaryDto {
-  id: string;
-  entryId: string;
-  boundaryId: string;
-  label: string;
-  boundaryKind: BoundaryKind;
+  /** 它的函数体里还有几处可以继续走的调用；0 说明步入后就到底了 */
   steps: number;
-  confidence: "exact" | "likely";
-  hasNarrative: boolean;
+  /** 已缓存的 AI 一句话摘要；只读缓存，不为走读触发生成 */
+  summary?: string | null;
+  reaches: IoReachDto[];
 }
 
-export interface TraceNarrativeDto {
-  summary: string;
-  steps: Array<{ ordinal: number; narrative: string; parameterFlow?: string | null }>;
+/** 函数体里的一处调用，按执行顺序排在 WalkFrameDto.calls 里 */
+export interface WalkCallDto {
+  id: string;
+  /** 被调名所在行；跨行的链式调用里各段落在各自的行上 */
+  line: number;
+  /** 被调名在该行的起始列（UTF-16 偏移），界面据此高亮到具体位置 */
+  column: number;
+  callee: string;
+  receiver?: string | null;
+  kind: CallKind;
+  arguments: string[];
+  resolution: Confidence;
+  /** exact / likely 时的落点；ambiguous 时是候选里的第一个，以 candidates 为准 */
+  target?: WalkTargetDto | null;
+  candidates?: WalkTargetDto[] | null;
+  /** external 时的库名 */
+  external?: string | null;
+  io?: IoKind | null;
 }
 
-export interface TraceDto extends TraceSummaryDto {
-  fingerprint: string;
-  entry: EntryPointDto;
-  boundary: BoundaryDto;
-  orderedSteps: TraceStepDto[];
-  typeFlows: TraceTypeFlowDto[];
-  narrative?: TraceNarrativeDto | null;
-}
-
-export interface TraceNarrativeResultDto {
-  narrative: TraceNarrativeDto;
-  generated: boolean;
-  cacheHit: boolean;
-  model: string;
-  usage: LlmUsage;
+/** 单步走读的一帧：一个函数的源码范围，以及它体内依次发生的调用 */
+export interface WalkFrameDto {
+  id: string;
+  name: string;
+  kind: SymbolKind;
+  fileId: string;
+  filePath: string;
+  language: Language;
+  startLine: number;
+  endLine: number;
+  signature?: string | null;
+  summary?: string | null;
+  reaches: IoReachDto[];
+  calls: WalkCallDto[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,11 +1073,12 @@ export type ChatRefDto =
     }
   | {
       kind: "view";
-      mode: "structure" | "callgraph" | "trace";
+      mode: "structure" | "callgraph" | "walk";
       /** 结构视图的根作用域，或调用图的 `call:<symbolId>` */
       scope?: string | null;
       expanded?: string[] | null;
-      traceId?: string | null;
+      /** 单步走读的调用栈，自入口起；每帧是函数 id 和停在哪处调用上 */
+      walk?: Array<{ id: string; at: string | null }> | null;
     };
 
 export interface ChatMessageDto {

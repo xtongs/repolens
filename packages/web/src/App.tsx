@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { GraphCanvas } from "./graph/GraphCanvas";
 import { useLocale, useT } from "./i18n";
-import { TraceView } from "./trace/TraceView";
 import { DetailDrawer } from "./layout/DetailDrawer";
 import { TopBar } from "./layout/TopBar";
 import { TreePanel } from "./layout/TreePanel";
@@ -11,6 +10,7 @@ import { HelpSheet } from "./overlays/HelpSheet";
 import { SettingsDialog } from "./overlays/SettingsDialog";
 import { useAppStore } from "./store/useAppStore";
 import { useChatStore } from "./store/useChatStore";
+import { WalkView } from "./walk/WalkView";
 
 /** ⌘I：对话没开就打开并聚焦；开着但焦点不在输入框就拉回焦点；已在输入框里则收起 */
 function toggleChat(): void {
@@ -27,7 +27,7 @@ export function App() {
   const overview = useAppStore((s) => s.overview);
   const escape = useAppStore((s) => s.escape);
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
-  const traceId = useAppStore((s) => s.traceId);
+  const walking = useAppStore((s) => s.walk !== null);
   const repoRevision = useAppStore((s) => s.repoRevision);
   const noRepo = useAppStore((s) => s.noRepo);
   const locale = useLocale();
@@ -93,8 +93,8 @@ export function App() {
         ) : overview === null ? (
           <BootSkeleton />
         ) : (
-          traceId ? (
-            <TraceView key={`trace:${repoRevision}`} traceId={traceId} />
+          walking ? (
+            <WalkView key={`walk:${repoRevision}`} />
           ) : (
             <GraphCanvas key={`graph:${repoRevision}`} />
           )
@@ -118,7 +118,7 @@ function Welcome() {
       <div className="max-w-sm text-center">
         <div className="text-[15px] font-medium">{t("打开一个代码仓库")}</div>
         <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-ink-muted)]">
-          {t("选择本机的代码目录，RepoLens 会在本地建立索引，之后就能浏览架构分层、调用关系和关键链路。")}
+          {t("选择本机的代码目录，RepoLens 会在本地建立索引，之后就能浏览架构分层、调用关系，并从入口单步走读代码。")}
           {t("启用 AI 后，生成摘要和回答追问时会把相关代码发给你配置的模型服务。")}
         </p>
         <button

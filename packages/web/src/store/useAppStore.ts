@@ -22,6 +22,7 @@ const PREF = {
   confidence: "repolens:call-confidence",
   callDepth: "repolens:call-depth",
   callDirection: "repolens:call-direction",
+  walkAllCalls: "repolens:walk-all-calls",
 } as const;
 
 function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
@@ -67,7 +68,24 @@ export interface CallGraphMode {
   direction: "callers" | "callees" | "both";
 }
 
-export type PanelTab = "tree" | "findings" | "traces" | "changes";
+export type PanelTab = "tree" | "findings" | "entries" | "changes";
+
+/** 走读调用栈里的一帧 */
+export interface WalkFrameRef {
+  /** 函数 id，`sym:N` */
+  id: string;
+  /** 帧数据到之前顶栏和面包屑先用它 */
+  name: string;
+  /** 停在哪处调用上（`call:N`）；null 表示停在函数开头 */
+  at: string | null;
+}
+
+export interface WalkState {
+  /** 从哪里开始走的：入口名或函数名 */
+  label: string;
+  /** 自入口起的调用栈，最后一帧是正在看的函数 */
+  stack: WalkFrameRef[];
+}
 
 export interface DetailRequest {
   nodeId: string;
@@ -136,11 +154,14 @@ export interface AppState {
   setCallDirection: (direction: CallGraphMode["direction"]) => Promise<void>;
   setConfidence: (confidence: Confidence[]) => Promise<void>;
 
-  /** 非 null 时主区域切换到独立的时序/泳道链路视图。 */
-  traceId: string | null;
-  traceLabel: string | null;
-  openTrace: (id: string, label: string) => void;
-  closeTrace: () => void;
+  /** 非 null 时主区域换成单步走读：沿调用逐个看函数体，可以步入、步出 */
+  walk: WalkState | null;
+  openWalk: (symbolId: string, label: string) => void;
+  setWalkStack: (stack: WalkFrameRef[]) => void;
+  closeWalk: () => void;
+  /** 走读时把外部库和解析不了的调用也列为步骤 */
+  walkAllCalls: boolean;
+  setWalkAllCalls: (value: boolean) => void;
 
   boot: () => Promise<void>;
   loadScope: (scopeId: string, limitOverride?: number, keep?: string) => Promise<void>;
@@ -228,8 +249,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   confidence: savedConfidence(),
 
   callGraph: null,
-  traceId: null,
-  traceLabel: null,
+  walk: null,
+  walkAllCalls: readPref(PREF.walkAllCalls) === "on",
 
   hiddenNodes: [],
 
@@ -289,8 +310,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       hoverAnchor: null,
       drawerOpen: false,
       callGraph: null,
-      traceId: null,
-      traceLabel: null,
+      walk: null,
       hiddenNodes: [],
       revealed: null,
       detailRequest: null,
@@ -366,7 +386,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         savedChoice<CallGraphMode["direction"]>(PREF.callDirection, ["callers", "callees", "both"], "both"),
     };
     // 先切模式再取数：否则要等一个来回画布才有反应，看起来像点击丢了
-    set({ callGraph: mode, traceId: null, traceLabel: null, selected: `sym:${symbolId}`, drawerOpen: false });
+    set({ callGraph: mode, walk: null, selected: `sym:${symbolId}`, drawerOpen: false });
     await get().loadCallGraph(mode);
   },
 
@@ -374,12 +394,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ callGraph: null });
   },
 
-  openTrace(id, label) {
-    set({ traceId: id, traceLabel: label, callGraph: null, drawerOpen: false, selected: null });
+  openWalk(symbolId, label) {
+    // 侧栏是浮在内容上的，画布可以平移避开它，走读的步骤列表和源码不行
+    set({
+      walk: { label, stack: [{ id: symbolId, name: label, at: null }] },
+      callGraph: null, drawerOpen: false, selected: null, treeOpen: false,
+    });
   },
 
-  closeTrace() {
-    set({ traceId: null, traceLabel: null });
+  setWalkStack(stack) {
+    const walk = get().walk;
+    if (walk && stack.length > 0) set({ walk: { ...walk, stack } });
+  },
+
+  closeWalk() {
+    set({ walk: null });
+  },
+
+  setWalkAllCalls(value) {
+    writePref(PREF.walkAllCalls, value ? "on" : "off");
+    set({ walkAllCalls: value });
   },
 
   async setCallDepth(depth) {
@@ -453,8 +487,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const repoId = get().repoId;
     const isCurrentRepo = () => revision === get().repoRevision && repoId === get().repoId;
     // 调用图模式下坐标系完全不同，先退回结构视图再导航
-    if (get().callGraph !== null || get().traceId !== null) {
-      set({ callGraph: null, traceId: null, traceLabel: null });
+    if (get().callGraph !== null || get().walk !== null) {
+      set({ callGraph: null, walk: null });
     }
 
     try {
@@ -583,7 +617,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 对话叠在详情之上，先收起它；对话记录保留，再打开还在
     if (state.chatOpen) return set({ chatOpen: false });
     if (state.drawerOpen) return set({ drawerOpen: false });
-    if (state.traceId !== null) return set({ traceId: null, traceLabel: null });
+    if (state.walk !== null) return set({ walk: null });
     if (state.selected !== null) return set({ selected: null });
     if (state.focus !== null) return set({ focus: null });
     // 退出调用图排在展开状态之前：它是一次「换了张图」，比收起层级更外层

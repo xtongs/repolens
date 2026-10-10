@@ -17,7 +17,7 @@ interface ResizablePanelOptions {
 /**
  * 侧边栏没拖过时的宽度跟着顶栏走：左栏右缘对齐顶栏左侧那组按钮（最后一个是 AI 追问），
  * 右栏左缘对齐右侧操作区（第一个是「代码行」）。字号、语言、窗口宽度变了都会重新对齐。
- * 调用图和链路视图换掉了右侧那组控件，这时沿用上次量到的，免得切视图时抽屉跟着跳。
+ * 调用图和走读视图换掉了右侧那组控件，这时沿用上次量到的，免得切视图时抽屉跟着跳。
  */
 const useSidebarAnchors = create<Record<PanelSide, number | null>>(() => ({ left: null, right: null }));
 

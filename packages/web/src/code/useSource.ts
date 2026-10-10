@@ -17,6 +17,8 @@ export interface LoadedSource {
  * 键里带上仓库修订号，重扫或换仓库后自然失效。
  */
 const sliceCache = new Map<string, Promise<SourceSliceDto>>();
+/** 已到手的结果同步可取：走读里步入步出来回切函数，不该每次都闪一下「读取中」 */
+const loadedSlices = new Map<string, SourceSliceDto>();
 const SLICE_CACHE_SIZE = 16;
 
 function loadSlice(key: string, fileId: string, from?: number, to?: number): Promise<SourceSliceDto> {
@@ -25,10 +27,16 @@ function loadSlice(key: string, fileId: string, from?: number, to?: number): Pro
   // 没进索引的文件没有数字 id，节点 id 是 raw:<仓库相对路径>
   const task = fileId.startsWith("raw:") ? api.rawSource(fileId.slice(4)) : api.source(fileId, from, to);
   sliceCache.set(key, task);
-  task.catch(() => sliceCache.delete(key));
+  task.then(
+    (slice) => { if (sliceCache.get(key) === task) loadedSlices.set(key, slice); },
+    () => sliceCache.delete(key),
+  );
   if (sliceCache.size > SLICE_CACHE_SIZE) {
     const oldest = sliceCache.keys().next().value;
-    if (oldest !== undefined) sliceCache.delete(oldest);
+    if (oldest !== undefined) {
+      sliceCache.delete(oldest);
+      loadedSlices.delete(oldest);
+    }
   }
   return task;
 }
@@ -57,7 +65,7 @@ export function useSource(
     };
   }, [key, fileId, from, to]);
 
-  const slice = state.key === key ? state.slice : null;
+  const slice = state.key === key ? state.slice : loadedSlices.get(key) ?? null;
   const tokens = useHighlightedLines(slice?.code ?? null, slice ? shikiLanguage(slice.language, slice.path) : null);
 
   // 引用稳定才能被下游当作 effect 依赖；否则每次渲染都像是换了一份源码

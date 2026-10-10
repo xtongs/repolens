@@ -63,6 +63,9 @@ export interface CallSiteRow {
   argCount: number;
   argumentTexts: string[];
   line: number;
+  endByte: number;
+  nameLine: number;
+  nameColumn: number;
 }
 
 export interface EdgeRow {
@@ -184,9 +187,11 @@ export class IndexWriter {
       ),
       insertCallSite: db.prepare(
         `INSERT INTO call_sites
-           (file_id, caller_symbol_id, callee_name, receiver, callee_path, call_kind, arg_count, argument_texts, line)
+           (file_id, caller_symbol_id, callee_name, receiver, callee_path, call_kind, arg_count, argument_texts, line, end_byte,
+            name_line, name_col)
          VALUES
-           (@fileId, @callerSymbolId, @calleeName, @receiver, @calleePath, @callKind, @argCount, @argumentTexts, @line)`,
+           (@fileId, @callerSymbolId, @calleeName, @receiver, @calleePath, @callKind, @argCount, @argumentTexts, @line, @endByte,
+            @nameLine, @nameColumn)`,
       ),
       insertEntryHint: db.prepare(
         `INSERT INTO entry_hints
@@ -440,6 +445,9 @@ export class IndexWriter {
         argCount: site.argCount,
         argumentTexts: JSON.stringify(site.argumentTexts),
         line: site.line,
+        endByte: site.endByte,
+        nameLine: site.nameLine,
+        nameColumn: site.nameColumn,
       });
     }
   }
@@ -483,7 +491,7 @@ export class IndexWriter {
   /** 边、聚合边和体检结论都是全局派生的，每次链接前整表清空重算 */
   clearDerived(): void {
     this.db.exec(
-      "DELETE FROM trace_steps; DELETE FROM traces; DELETE FROM boundaries; DELETE FROM entry_points; DELETE FROM edges; DELETE FROM rollup_edges; DELETE FROM search_index; DELETE FROM findings",
+      "DELETE FROM io_reach; DELETE FROM entry_points; DELETE FROM edges; DELETE FROM rollup_edges; DELETE FROM search_index; DELETE FROM findings",
     );
   }
 

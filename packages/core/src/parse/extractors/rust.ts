@@ -11,6 +11,7 @@ import {
   argumentTexts,
   ancestorOfType,
   attributeCalls,
+  calleeAt,
   complexityOf,
   docCommentAbove,
   dottedPath,
@@ -390,9 +391,13 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
   const args = argumentTexts(fieldNode(node, "arguments"));
   const line = lineOf(node);
   const byte = node.startIndex;
+  const endByte = node.endIndex;
 
   if (target.type === "identifier") {
-    out.push({ callee: target.text, line, argCount, argumentTexts: args, kind: "call", byte });
+    out.push({
+      callee: target.text, line, argCount, argumentTexts: args, kind: "call", byte, endByte,
+      ...calleeAt(target, target.text),
+    });
     return;
   }
 
@@ -410,6 +415,8 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
       argumentTexts: args,
       kind: "call",
       byte,
+      endByte,
+      ...calleeAt(target, callee),
     });
     return;
   }
@@ -428,12 +435,15 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
       argumentTexts: args,
       kind: "method",
       byte,
+      endByte,
+      ...calleeAt(target, callee),
     });
   }
 }
 
 function collectMacro(node: TsNode, out: RawCallSite[]): void {
-  const callee = typeNameOf(fieldNode(node, "macro"));
+  const macro = fieldNode(node, "macro");
+  const callee = typeNameOf(macro);
   if (callee === undefined) return;
   const tree = firstOfType(node, "token_tree");
   out.push({
@@ -443,6 +453,8 @@ function collectMacro(node: TsNode, out: RawCallSite[]): void {
     line: lineOf(node),
     kind: "macro",
     byte: node.startIndex,
+    endByte: node.endIndex,
+    ...calleeAt(macro ?? node, callee),
   });
 }
 

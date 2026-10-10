@@ -44,7 +44,7 @@ export {
 
 export { getFileTree, readRepoFile, RepoFileError } from "./db/file-tree.js";
 
-export { getEntryPoints, getTrace, getTraceSummaries } from "./db/traces.js";
+export { getEntryPoints, getWalkFrame } from "./db/walk.js";
 
 // RegisteredRepo / RepoEntry / RepoStatus 这几个类型由 types.js 的 `export *`
 // 带出，这里不重复导出，否则同一个名字有两条来路。
@@ -72,7 +72,6 @@ export {
   enrichRepository,
   generateFileSummary,
   generateSymbolSemantics,
-  generateTraceNarrative,
   semanticInputOutdated,
 } from "./llm/enrich.js";
 export {

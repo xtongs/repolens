@@ -11,6 +11,7 @@ import {
   ancestorOfType,
   argumentTexts,
   attributeCalls,
+  calleeAt,
   complexityOf,
   dottedPath,
   fieldNode,
@@ -408,9 +409,13 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
   const args = argumentTexts(fieldNode(node, "arguments"));
   const line = lineOf(node);
   const byte = node.startIndex;
+  const endByte = node.endIndex;
 
   if (fn.type === "identifier") {
-    out.push({ callee: fn.text, line, argCount, argumentTexts: args, kind: "call", byte });
+    out.push({
+      callee: fn.text, line, argCount, argumentTexts: args, kind: "call", byte, endByte,
+      ...calleeAt(fn, fn.text),
+    });
     return;
   }
 
@@ -428,6 +433,8 @@ function collectCall(node: TsNode, out: RawCallSite[]): void {
       argumentTexts: args,
       kind: "method",
       byte,
+      endByte,
+      ...calleeAt(fn, callee),
     });
   }
   // `handlers[k]()` / `f()()` 的被调方无法静态命名，不记录

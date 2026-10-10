@@ -72,6 +72,7 @@ describe("parseChatRequest", () => {
           { kind: "quote", text: "返回结果", nodeId: "file:3", lines: [9, 4] },
           { kind: "view", mode: "hack" },
           { kind: "view", mode: "trace", traceId: "trace:7" },
+          { kind: "view", mode: "walk", walk: [{ id: "sym:3", at: "call:9" }, { id: "file:2", at: null }, { id: "sym:4", at: "x" }] },
         ],
       }],
     });
@@ -79,7 +80,7 @@ describe("parseChatRequest", () => {
       { kind: "node", id: "sym:12" },
       { kind: "node", id: "dir:src/db" },
       { kind: "quote", text: "返回结果", nodeId: "file:3", lines: null },
-      { kind: "view", mode: "trace", scope: null, expanded: null, traceId: "trace:7" },
+      { kind: "view", mode: "walk", scope: null, expanded: null, walk: [{ id: "sym:3", at: "call:9" }, { id: "sym:4", at: null }] },
     ]);
   });
 

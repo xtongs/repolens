@@ -333,6 +333,33 @@ export interface RawCallSite {
   kind: CallKind;
   /** 调用点在文件中的字节偏移，用于定位所属符号 */
   byte: number;
+  /** 调用表达式的结束字节；实参先于外层调用结束，按它排就是求值顺序 */
+  endByte: number;
+  /** 被调名所在行；跨行的链式调用里它和 line（整条表达式的起始行）不同 */
+  nameLine: number;
+  /** 被调名在该行的起始列，UTF-16 偏移 */
+  nameColumn: number;
+}
+
+/**
+ * 被调名在源码里的位置：从 target 子树最右侧往左找第一个文本等于 callee 的叶子。
+ * web-tree-sitter 按 JS 字符串解析，列是 UTF-16 偏移，前端按行切出的字符串可以直接用。
+ */
+export function calleeAt(target: TsNode, callee: string): Pick<RawCallSite, "nameLine" | "nameColumn"> {
+  // 找不到（如名字被 cleanIdentifier 改写过）时退回 target 起点；限额防止长链里反复走大回调
+  let budget = 64;
+  const visit = (node: TsNode): TsNode | null => {
+    if (budget-- <= 0) return null;
+    if (node.childCount === 0) return node.text === callee ? node : null;
+    for (let i = node.childCount - 1; i >= 0; i--) {
+      const child = node.child(i);
+      const hit = child ? visit(child) : null;
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const hit = visit(target) ?? target;
+  return { nameLine: hit.startPosition.row + 1, nameColumn: hit.startPosition.column };
 }
 
 /**
@@ -357,6 +384,9 @@ export function attributeCalls(symbols: readonly ParsedSymbol[], sites: readonly
       receiver: site.receiver,
       calleePath: site.calleePath,
       line: site.line,
+      endByte: site.endByte,
+      nameLine: site.nameLine,
+      nameColumn: site.nameColumn,
       argCount: site.argCount,
       argumentTexts: site.argumentTexts,
       kind: site.kind,

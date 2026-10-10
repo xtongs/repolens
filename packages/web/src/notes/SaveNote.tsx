@@ -27,7 +27,7 @@ export interface NoteDraft {
 
 /**
  * 一条回答可以记到哪儿：就是提问时带着的那些上下文，越具体的越靠前——
- * 引用的代码行、节点、当前视图。笔记只挂在具体代码上，仓库根和链路视图都不算。
+ * 引用的代码行、节点、当前视图。笔记只挂在具体代码上，仓库根不算；走读挂在栈顶那个函数上。
  */
 export function noteTargets(attachments: ChatAttachment[], labels: Record<string, string>): NoteTarget[] {
   const quoted: NoteTarget[] = [];
@@ -47,7 +47,9 @@ export function noteTargets(attachments: ChatAttachment[], labels: Record<string
       const scope = item.ref.scope ?? null;
       const nodeId = item.ref.mode === "callgraph" && scope?.startsWith("call:")
         ? `sym:${scope.slice(5)}`
-        : item.ref.mode === "structure" && scope !== null && NODE_ID.test(scope) ? scope : null;
+        : item.ref.mode === "walk"
+          ? item.ref.walk?.at(-1)?.id ?? null
+          : item.ref.mode === "structure" && scope !== null && NODE_ID.test(scope) ? scope : null;
       if (nodeId !== null && nodeId !== ROOT_SCOPE) {
         views.push({ key: nodeId, nodeId, lines: null, label: item.label, marker: "▦" });
       }
@@ -77,7 +79,7 @@ function sourceOf(messageId: number): { question: string | null; targets: NoteTa
   return { question: question?.content ?? null, targets: noteTargets(question?.attachments ?? [], labels) };
 }
 
-/** 提问时没带代码上下文（仓库根、链路视图下什么都没选）的回答没有地方可记 */
+/** 提问时没带代码上下文（停在仓库根、什么都没选）的回答没有地方可记 */
 export function hasNoteTarget(messageId: number): boolean {
   return (sourceOf(messageId)?.targets.length ?? 0) > 0;
 }

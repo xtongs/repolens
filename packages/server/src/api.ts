@@ -16,11 +16,9 @@ import {
   getSource,
   getSymbolDetail,
   getTree,
-  getTrace,
-  getTraceSummaries,
+  getWalkFrame,
   generateFileSummary,
   generateSymbolSemantics,
-  generateTraceNarrative,
   NoteInputError,
   addNote,
   deleteNote,
@@ -126,18 +124,12 @@ export function createApi(deps: ApiDeps): Hono {
 
   app.get("/entries", (c) => c.json(getEntryPoints(db)));
 
-  app.get("/traces", (c) => {
-    const raw = c.req.query("entry");
-    const entryId = raw === undefined ? undefined : numericId(raw);
-    if (raw !== undefined && entryId === null) return c.json({ error: "非法的入口 id" }, 400);
-    return c.json(getTraceSummaries(db, entryId ?? undefined));
-  });
-
-  app.get("/trace/:id", (c) => {
+  // 单步走读一次只取一帧：步入时前端再按落点 id 取下一帧，调用栈由前端持有
+  app.get("/walk/:id", (c) => {
     const id = numericId(c.req.param("id"));
-    if (id === null) return c.json({ error: "非法的链路 id" }, 400);
-    const trace = getTrace(db, id);
-    return trace ? c.json(trace) : c.json({ error: "链路不存在" }, 404);
+    if (id === null) return c.json({ error: "非法的符号 id" }, 400);
+    const frame = getWalkFrame(db, id);
+    return frame ? c.json(frame) : c.json({ error: "符号不存在" }, 404);
   });
 
   app.get("/file/:id", (c) => {
@@ -189,23 +181,6 @@ export function createApi(deps: ApiDeps): Hono {
           force: parseBool(c.req.query("refresh")),
         }));
       } catch (err) {
-        const message = (err as Error).message;
-        const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
-        return c.json({ error: message }, status);
-      }
-    });
-  });
-
-  app.post("/semantic/trace/:id", async (c) => {
-    if (c.req.header("x-repolens-intent") !== "generate-semantic") {
-      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
-    }
-    const id = numericId(c.req.param("id"));
-    if (id === null) return c.json({ error: "非法的链路 id" }, 400);
-    if (getTrace(db, id) === null) return c.json({ error: "链路不存在" }, 404);
-    return withWritableDb(repoRoot, async (writeDb) => {
-      try { return c.json(await generateTraceNarrative(writeDb, repoRoot, id)); }
-      catch (err) {
         const message = (err as Error).message;
         const status = /未设置环境变量|LLM 已.*关闭/.test(message) ? 503 : 502;
         return c.json({ error: message }, status);

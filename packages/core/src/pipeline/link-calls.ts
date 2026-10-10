@@ -100,11 +100,12 @@ export function linkCallEdges(db: Db, insert: (edges: EdgeRow[]) => void): CallL
 
   const rows = db
     .prepare(
-      `SELECT c.file_id AS fileId, c.caller_symbol_id AS callerId, c.callee_name AS callee,
+      `SELECT c.id, c.file_id AS fileId, c.caller_symbol_id AS callerId, c.callee_name AS callee,
               c.receiver, c.callee_path AS calleePath, c.call_kind AS callKind, c.line
        FROM call_sites c`,
     )
     .all() as Array<{
+    id: number;
     fileId: number;
     callerId: number | null;
     callee: string;
@@ -113,12 +114,24 @@ export function linkCallEdges(db: Db, insert: (edges: EdgeRow[]) => void): CallL
     callKind: string;
     line: number;
   }>;
+  const record = db.prepare(
+    `UPDATE call_sites SET resolution = @confidence, target_symbol_id = @symbolId,
+       target_name = @externalName, candidates = @candidates
+     WHERE id = @id`,
+  );
 
   for (const row of rows) {
     stats.callSites++;
     const scope = index.scopes.get(row.fileId);
     const target = resolveCall(index, scope, row);
     stats.byConfidence[target.confidence]++;
+    record.run({
+      id: row.id,
+      confidence: target.confidence,
+      symbolId: target.symbolId,
+      externalName: target.externalName,
+      candidates: target.candidates ? JSON.stringify(target.candidates) : null,
+    });
     if (target.confidence === "unresolved") continue;
 
     // 调用者可能是模块顶层代码，这时归到文件头上而不是编一个假的调用者

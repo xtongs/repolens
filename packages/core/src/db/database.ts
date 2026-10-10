@@ -30,7 +30,7 @@ export function openDb(dbPath: string, opts: OpenOptions = {}): Db {
       db.close();
       throw new Error(
         `索引版本过期（当前 ${version ?? "未知"}，需要 ${SCHEMA_VERSION}）：${dbPath}\n` +
-          "运行 `repolens scan --fresh` 重建索引",
+          "运行 `repolens scan` 更新索引",
       );
     }
     db.pragma("journal_mode = WAL");
@@ -54,13 +54,56 @@ export function openDb(dbPath: string, opts: OpenOptions = {}): Db {
 
   const existing = readSchemaVersion(db);
   if (existing !== null && existing !== SCHEMA_VERSION) {
-    db.close();
-    return openDb(dbPath, { ...opts, fresh: true });
+    const migrate = MIGRATIONS[existing];
+    if (!migrate) {
+      db.close();
+      return openDb(dbPath, { ...opts, fresh: true });
+    }
+    transact(db, () => migrate(db));
   }
 
   db.exec(SCHEMA_SQL);
   setMeta(db, "schema_version", SCHEMA_VERSION);
   return db;
+}
+
+/**
+ * 只加列、删派生表的变更就地迁移，不整库重建：summaries 里的 AI 结果是花钱生成的。
+ * 迁移后旧行的新列只有默认值，靠同时调高 EXTRACTOR_VERSION 让下次扫描全部重新解析。
+ */
+const MIGRATIONS: Record<string, (db: Db) => void> = {
+  "5": (db) => {
+    addColumns(db, "call_sites", {
+      end_byte: "INTEGER NOT NULL DEFAULT 0",
+      name_line: "INTEGER NOT NULL DEFAULT 0",
+      name_col: "INTEGER NOT NULL DEFAULT 0",
+      resolution: "TEXT NOT NULL DEFAULT 'unresolved'",
+      target_symbol_id: "INTEGER REFERENCES symbols(id) ON DELETE SET NULL",
+      target_name: "TEXT",
+      candidates: "TEXT",
+      io_kind: "TEXT",
+    });
+    addColumns(db, "entry_points", {
+      reach_symbols: "INTEGER NOT NULL DEFAULT 0",
+      reach_files: "INTEGER NOT NULL DEFAULT 0",
+      reach_io: "TEXT NOT NULL DEFAULT ''",
+    });
+    db.exec(`
+      DROP TABLE IF EXISTS trace_steps;
+      DROP TABLE IF EXISTS traces;
+      DROP TABLE IF EXISTS boundaries;
+      DELETE FROM summaries WHERE target_kind = 'trace';
+    `);
+  },
+};
+
+function addColumns(db: Db, table: string, columns: Record<string, string>): void {
+  const present = new Set(
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
+  );
+  for (const [name, definition] of Object.entries(columns)) {
+    if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  }
 }
 
 /** `open` 用它判断已有索引能否直接服务；只读探测，不触发迁移或重建。 */
