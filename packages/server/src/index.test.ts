@@ -200,7 +200,7 @@ describe("startServer", () => {
     expect(events[4]?.data).toMatchObject({ model: "mock", usage: { requests: 2 } });
   });
 
-  it("理解账本、确认分层、批准依赖都要带意图标记；确认分层写进团队约定并就地重算倒置", async () => {
+  it("理解账本、确认分层、批准依赖都要带意图标记；确认分层写进约定并就地重算倒置", async () => {
     const repo = join(home, "mono");
     const files: Record<string, string> = {
       ".repolens.json": JSON.stringify({ llm: { enabled: false } }),

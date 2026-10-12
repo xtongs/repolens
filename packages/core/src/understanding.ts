@@ -5,8 +5,6 @@ import { inBatches, resolveScope, scopeFunctions } from "./db/scope.js";
 import { JsonListFile } from "./json-file.js";
 import type {
   LensValueDto,
-  NextReadDto,
-  NextReadReason,
   UnderstandingCountsDto,
   UnderstandingDto,
   UnderstandingHow,
@@ -14,9 +12,10 @@ import type {
 } from "./types.js";
 
 const FILE = "understanding.json";
-const NEXT_LISTED = 15;
 const STALE_LISTED = 50;
 const KEY_ENTRY_KINDS = ["http", "cli", "main", "public-api"];
+/** 热点入口能走遍大半个仓库：每条调用链只数离入口最近的这么多个函数，免得每次都把整张调用图走一遍 */
+const ENTRY_FLOW_CAP = 1000;
 
 interface StoredMark {
   key: string;
@@ -54,31 +53,25 @@ export function unmark(root: string, key: string): boolean {
   return ledger(root).remove((mark) => mark.key === key);
 }
 
-/** 账本全貌：整体和主干的覆盖、看懂后又被改过的、下一步最值得读的 */
+/** 账本全貌：整体和主干的覆盖、看懂后又被改过的、每个入口那条调用链看懂了多少 */
 export function getUnderstanding(db: Db, root: string): UnderstandingDto {
   const marks = readMarks(root);
   const index = markIndex(marks);
   const functions = allFunctions(db);
-  const key = keyFunctions(db);
-  const status = (fn: FunctionRow) => statusOf(fn, index);
-
-  const counts = (list: readonly FunctionRow[]): UnderstandingCountsDto => {
-    let understood = 0;
-    let stale = 0;
-    for (const fn of list) {
-      const s = status(fn);
-      if (s === "understood") understood++;
-      else if (s === "stale") stale++;
-    }
-    return { total: list.length, understood, stale };
-  };
+  const calls = callGraph(db);
+  const entries = entrySymbols(db);
+  const key = reachable(calls, entries);
 
   const cache = new Map<string, string | null>();
   const presented = marks.map((mark) => present(db, mark, cache));
   return {
-    summary: { all: counts(functions), key: counts(functions.filter((fn) => key.has(fn.id))), marks: marks.length },
+    summary: {
+      all: countStatus(functions, index),
+      key: countStatus(functions.filter((fn) => key.has(fn.id)), index),
+      marks: marks.length,
+    },
     stale: presented.filter((m) => m.status === "stale").sort((a, b) => b.at.localeCompare(a.at)).slice(0, STALE_LISTED),
-    next: nextReads(db, functions.filter((fn) => key.has(fn.id) && status(fn) !== "understood"), index),
+    entries: marks.length === 0 ? {} : entryProgress(entries, calls, functions, index),
   };
 }
 
@@ -134,9 +127,6 @@ interface FunctionRow {
   path: string;
   hash: string;
   fileHash: string;
-  name: string;
-  line: number;
-  complexity: number;
 }
 
 interface MarkIndex {
@@ -173,26 +163,24 @@ function symbolKeyOf(path: string, container: string | null, name: string, kind:
 
 function allFunctions(db: Db): FunctionRow[] {
   return (db.prepare(
-    `SELECT s.id, s.name, s.container, s.kind, s.hash, s.complexity, s.start_line AS line, f.path, f.hash AS fileHash
+    `SELECT s.id, s.name, s.container, s.kind, s.hash, f.path, f.hash AS fileHash
      FROM symbols s JOIN files f ON f.id = s.file_id
      WHERE f.role = 'source' AND s.kind IN ('function', 'method') AND s.implemented = 1`,
-  ).all() as Array<{ id: number; name: string; container: string | null; kind: string; hash: string; complexity: number; line: number; path: string; fileHash: string }>)
+  ).all() as Array<{ id: number; name: string; container: string | null; kind: string; hash: string; path: string; fileHash: string }>)
     .map((row) => ({
-      id: row.id, key: symbolKeyOf(row.path, row.container, row.name, row.kind), path: row.path, hash: row.hash,
-      fileHash: row.fileHash, name: row.container ? `${row.container}.${row.name}` : row.name, line: row.line, complexity: row.complexity,
+      id: row.id, key: symbolKeyOf(row.path, row.container, row.name, row.kind), path: row.path, hash: row.hash, fileHash: row.fileHash,
     }));
 }
 
 function withKey(db: Db, symbolId: number, fileHashes: ReadonlyMap<number, string>): FunctionRow | null {
   const row = db.prepare(
-    `SELECT s.id, s.name, s.container, s.kind, s.hash, s.complexity, s.start_line AS line, s.file_id AS fileId, f.path
+    `SELECT s.id, s.name, s.container, s.kind, s.hash, s.file_id AS fileId, f.path
      FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`,
-  ).get(symbolId) as { id: number; name: string; container: string | null; kind: string; hash: string; complexity: number; line: number; fileId: number; path: string } | undefined;
+  ).get(symbolId) as { id: number; name: string; container: string | null; kind: string; hash: string; fileId: number; path: string } | undefined;
   if (!row) return null;
   return {
     id: row.id, key: symbolKeyOf(row.path, row.container, row.name, row.kind), path: row.path, hash: row.hash,
-    fileHash: fileHashes.get(row.fileId) ?? "", name: row.container ? `${row.container}.${row.name}` : row.name,
-    line: row.line, complexity: row.complexity,
+    fileHash: fileHashes.get(row.fileId) ?? "",
   };
 }
 
@@ -203,24 +191,45 @@ function fileHashesOf(db: Db, fileIds: readonly number[]): Map<number, string> {
   ).all(...batch) as Array<{ id: number; hash: string }>).map((row) => [row.id, row.hash]));
 }
 
-/** 主入口（HTTP、CLI、main、公共 API）沿确定/可能的调用能走到的函数：系统真正在跑的那部分 */
-function keyFunctions(db: Db): Set<number> {
-  const adjacency = new Map<number, number[]>();
+function countStatus(list: readonly FunctionRow[], index: MarkIndex): UnderstandingCountsDto {
+  let understood = 0;
+  let stale = 0;
+  for (const fn of list) {
+    const status = statusOf(fn, index);
+    if (status === "understood") understood++;
+    else if (status === "stale") stale++;
+  }
+  return { total: list.length, understood, stale };
+}
+
+type CallGraph = Map<number, number[]>;
+
+/** 确定和可能的调用；多义边是猜的，不拿它推「走得到」 */
+function callGraph(db: Db): CallGraph {
+  const graph: CallGraph = new Map();
   for (const edge of db.prepare(
     `SELECT src_id AS "from", dst_id AS "to" FROM edges
      WHERE type = 'calls' AND src_kind = 'symbol' AND dst_kind = 'symbol' AND confidence IN ('exact', 'likely')`,
   ).all() as Array<{ from: number; to: number }>) {
-    const bucket = adjacency.get(edge.from);
-    if (bucket) bucket.push(edge.to); else adjacency.set(edge.from, [edge.to]);
+    const bucket = graph.get(edge.from);
+    if (bucket) bucket.push(edge.to); else graph.set(edge.from, [edge.to]);
   }
-  const starts = (db.prepare(
+  return graph;
+}
+
+/** 主入口（HTTP、CLI、main、公共 API）的处理函数；从它们沿调用走得到的就是主干，系统真正在跑的那部分 */
+function entrySymbols(db: Db): number[] {
+  return (db.prepare(
     `SELECT DISTINCT symbol_id AS id FROM entry_points WHERE symbol_id IS NOT NULL AND kind IN (${KEY_ENTRY_KINDS.map(() => "?").join(",")})`,
   ).all(...KEY_ENTRY_KINDS) as Array<{ id: number }>).map((row) => row.id);
+}
+
+/** 从这些函数出发沿调用走得到的函数，含出发点。给了上限时离出发点近的先数，数够为止 */
+function reachable(graph: CallGraph, starts: readonly number[], cap = Number.POSITIVE_INFINITY): Set<number> {
   const seen = new Set(starts);
   const queue = [...starts];
-  while (queue.length > 0) {
-    const id = queue.pop()!;
-    for (const next of adjacency.get(id) ?? []) {
+  for (let i = 0; i < queue.length && seen.size < cap; i++) {
+    for (const next of graph.get(queue[i]!) ?? []) {
       if (seen.has(next)) continue;
       seen.add(next);
       queue.push(next);
@@ -229,45 +238,21 @@ function keyFunctions(db: Db): Set<number> {
   return seen;
 }
 
-/**
- * 下一步最值得读的函数：主干上的、还没看懂（或看懂后被改过）的里面，复杂、被很多地方调用、
- * 最近改得勤、没有测试的排前面。一次只给十几个，读完再来要。
- */
-function nextReads(db: Db, candidates: readonly FunctionRow[], index: MarkIndex): NextReadDto[] {
-  if (candidates.length === 0) return [];
-  const callers = new Map((db.prepare(
-    `SELECT dst_id AS id, COUNT(DISTINCT src_id) AS n FROM edges
-     WHERE type = 'calls' AND src_kind = 'symbol' AND dst_kind = 'symbol' AND confidence IN ('exact', 'likely') GROUP BY dst_id`,
-  ).all() as Array<{ id: number; n: number }>).map((row) => [row.id, row.n]));
-  const recent = new Map((db.prepare("SELECT path, recent FROM file_history").all() as Array<{ path: string; recent: number }>)
-    .map((row) => [row.path, row.recent]));
-  const tested = new Set((db.prepare("SELECT symbol_id AS id FROM test_coverage").all() as Array<{ id: number }>).map((row) => row.id));
-  const entries = new Set((db.prepare("SELECT symbol_id AS id FROM entry_points WHERE symbol_id IS NOT NULL AND kind != 'test'").all() as Array<{ id: number }>)
-    .map((row) => row.id));
-  const hasHistory = recent.size > 0;
-
-  return candidates
-    .map((fn) => {
-      const fanIn = callers.get(fn.id) ?? 0;
-      const hot = recent.get(fn.path) ?? 0;
-      const stale = statusOf(fn, index) === "stale";
-      const reasons: NextReadReason[] = [];
-      if (stale) reasons.push("stale");
-      if (entries.has(fn.id)) reasons.push("entry");
-      if (fn.complexity >= 8) reasons.push("complex");
-      if (fanIn >= 5) reasons.push("central");
-      if (hasHistory && hot >= 3) reasons.push("hot");
-      if (!tested.has(fn.id) && fn.complexity >= 3) reasons.push("untested");
-      const score = Math.log2(1 + fn.complexity) * 2 + Math.log2(1 + fanIn) * 1.5 + Math.log2(1 + hot) * 2 +
-        (stale ? 4 : 0) + (entries.has(fn.id) ? 2 : 0) + (tested.has(fn.id) ? 0 : 1);
-      return { fn, fanIn, hot, stale, reasons, score };
-    })
-    .sort((a, b) => b.score - a.score || a.fn.path.localeCompare(b.fn.path) || a.fn.line - b.fn.line)
-    .slice(0, NEXT_LISTED)
-    .map(({ fn, fanIn, hot, stale, reasons }) => ({
-      id: `sym:${fn.id}`, name: fn.name, path: fn.path, line: fn.line, complexity: fn.complexity,
-      callers: fanIn, recentCommits: hot, stale, reasons,
-    }));
+/** 每个入口从处理函数往下那条调用链上，看懂了几个函数、几个看懂后又被改过 */
+function entryProgress(
+  entries: readonly number[],
+  calls: CallGraph,
+  functions: readonly FunctionRow[],
+  index: MarkIndex,
+): Record<string, UnderstandingCountsDto> {
+  const byId = new Map(functions.map((fn) => [fn.id, fn]));
+  const out: Record<string, UnderstandingCountsDto> = {};
+  for (const entry of entries) {
+    const flow = [...reachable(calls, [entry], ENTRY_FLOW_CAP)].flatMap((id) => byId.get(id) ?? []);
+    const counts = countStatus(flow, index);
+    if (counts.understood + counts.stale > 0) out[`sym:${entry}`] = counts;
+  }
+  return out;
 }
 
 function describe(db: Db, nodeId: string, how: UnderstandingHow): StoredMark {

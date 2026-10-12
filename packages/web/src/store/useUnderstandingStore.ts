@@ -4,7 +4,7 @@ import { api } from "../api/client";
 import { useAppStore } from "./useAppStore";
 
 interface UnderstandingState {
-  /** 账本全貌；理解页签打开时才取 */
+  /** 账本全貌；入口页签打开时才取 */
   ledger: UnderstandingDto | null;
   status: "idle" | "loading" | "ready" | "error";
   error: string | null;

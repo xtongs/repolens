@@ -4,7 +4,7 @@ import { buildIgnoreMatcher, HARD_IGNORED_DIRS } from "./discovery/ignore.js";
 const CONVENTION_FILES = new Set([CONFIG_FILENAME, LOCAL_CONFIG_FILENAME, LOCK_FILENAME]);
 
 /**
- * 盯着文件变化时，哪些改动值得刷新一次索引。忽略规则和扫描一致；根目录下的团队约定、
+ * 盯着文件变化时，哪些改动值得刷新一次索引。忽略规则和扫描一致；根目录下的约定、
  * 个人配置和依赖锁就算被 .gitignore 掉也算，体检结论由它们决定。
  * `file` 是 fs.watch 报上来的相对路径，平台没给出路径时按「可能有关」处理。
  */

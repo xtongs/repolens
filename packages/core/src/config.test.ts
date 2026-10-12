@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CONFIG, globalConfigPath, loadConfig, loadLock, updateTeamConfig, writeLock } from "./config.js";
+import { DEFAULT_CONFIG, globalConfigPath, loadConfig, loadLock, updateRepoConfig, writeLock } from "./config.js";
 
 const roots: string[] = [];
 
@@ -94,14 +94,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig(repo)).toThrow(path);
   });
 
-  it("团队约定在下、个人覆盖在上；个人覆盖同样不能改服务地址", () => {
+  it("仓库里的约定在下、个人覆盖在上；个人覆盖同样不能改服务地址", () => {
     vi.stubEnv("XDG_CONFIG_HOME", tempDir("repolens-local-config-"));
     const repo = tempDir("repolens-local-repo-");
     writeFileSync(join(repo, ".repolens.json"), JSON.stringify({
       rules: [{ from: "web/**", disallow: ["server/**"] }],
       layers: [{ name: "界面", members: ["dir:web"] }, { name: "服务", members: ["dir:server"], description: "后端" }],
       ratchet: { fail: ["cycle", "nonsense"], warn: ["cycle", "oversized"] },
-      llm: { model: "team-model" },
+      llm: { model: "repo-model" },
     }));
     writeFileSync(join(repo, ".repolens.local.json"), JSON.stringify({
       history: false,
@@ -115,7 +115,7 @@ describe("loadConfig", () => {
     ]);
     expect(config.ratchet).toEqual({ fail: ["cycle"], warn: ["oversized"] });
     expect(config.history).toBe(false);
-    expect(config.llm).toMatchObject({ model: "team-model", enabled: false, baseUrl: DEFAULT_CONFIG.llm.baseUrl });
+    expect(config.llm).toMatchObject({ model: "repo-model", enabled: false, baseUrl: DEFAULT_CONFIG.llm.baseUrl });
   });
 
   it("分层写错直接报错，不悄悄少查一层", () => {
@@ -125,14 +125,16 @@ describe("loadConfig", () => {
     expect(() => loadConfig(repo)).toThrow("第 1 个分层缺少 name 或 members");
   });
 
-  it("改团队约定只动给出的键；依赖锁按顺序写、读回来一样", () => {
-    const repo = tempDir("repolens-team-repo-");
-    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({ exclude: ["fixtures/**"], tours: [{ title: "x", steps: [] }] }));
-    updateTeamConfig(repo, { layers: [{ name: "核心", description: null, members: ["pkg:core"] }], tours: [] });
+  it("改约定只动给出的键；依赖锁按顺序写、读回来一样", () => {
+    const repo = tempDir("repolens-repo-config-");
+    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({ exclude: ["fixtures/**"], layers: [{ name: "旧", members: ["pkg:web"] }] }));
+    updateRepoConfig(repo, { layers: [{ name: "核心", description: null, members: ["pkg:core"] }] });
     expect(JSON.parse(readFileSync(join(repo, ".repolens.json"), "utf8"))).toEqual({
       exclude: ["fixtures/**"],
       layers: [{ name: "核心", description: null, members: ["pkg:core"] }],
     });
+    updateRepoConfig(repo, { layers: [] });
+    expect(JSON.parse(readFileSync(join(repo, ".repolens.json"), "utf8"))).toEqual({ exclude: ["fixtures/**"] });
 
     expect(loadLock(repo)).toBeNull();
     writeLock(repo, {

@@ -51,8 +51,6 @@ export const EN: Record<string, Translation> = {
   "聚焦 {name}": "Focus {name}",
   "已展开 {count} 层": (params) => `${count(params)} ${plural(params, "level", "levels")} expanded`,
   "已隐藏 {count} 项": "{count} hidden",
-  "从 main、路由、CLI 命令等入口开始，单步走读代码怎么跑":
-    "Start from an entry point such as main, a route or a CLI command, and step through how the code runs",
   "入口": "Entries",
   "全部调用": "All calls",
   "把外部库和静态分析解析不了的调用也列为步骤": "Also step through library calls and calls static analysis can't resolve",
@@ -609,7 +607,7 @@ export const EN: Record<string, Translation> = {
   "只能抓取 http 或 https 网址": "Only http and https URLs can be fetched",
   "网址里不能带账号密码": "URLs can't include a username or password",
 
-  // 看清、吃透、守住：契约、名片、理解账本、导览、视角、走读骨架、变更审阅、团队约定
+  // 看清、吃透、守住：契约、名片、理解账本、视角、走读骨架、变更审阅、约定
   ...EN_INSIGHT,
 };
 

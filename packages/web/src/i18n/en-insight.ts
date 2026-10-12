@@ -3,7 +3,7 @@ import { count, counted, plural } from "./plural";
 
 /**
  * 看清、吃透、守住这一组功能的英文：边即契约、模块名片、测试即规格、改动历史、理解账本、
- * 导览、视角、走读骨架、变更审阅和团队约定。键是界面上的中文原文。
+ * 视角、走读骨架、变更审阅和约定。键是界面上的中文原文。
  */
 export const EN_INSIGHT: Record<string, Translation> = {
   // 画布与视角
@@ -18,19 +18,23 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "看懂了 {understood}/{total} 个函数，{stale} 个看懂后又被改过": "Understood {understood}/{total} functions; {stale} changed since",
   "你标过看懂了": "You marked this as understood",
   "看懂之后又被改过": "Changed since you understood it",
-  "无视角": "No lens",
   "我的理解": "My understanding",
   "改动热度": "Change heat",
   "视角": "Lens",
   "在节点底边叠一条细条：看懂了几成、改得勤不勤、测到了几成": "Adds a thin bar under each node: how much you understand, how often it changes, how much is tested",
+  "给图上每个节点的底边叠一条细条": "Draws a thin bar along the bottom of every node",
+  "看懂了几成；看懂后又被改过的那截标黄": "How much you understand; the part that changed since is yellow",
+  "近 90 天改得越勤，条越长越红": "The busier in the last 90 days, the longer and redder the bar",
+  "有测试走到的函数占几成": "Share of functions reached by tests",
+  "不叠加": "Off",
 
   // 顶栏
   "只算参与分析的源码；连同测试、文档、配置共 {loc} 行": "Source code only; {loc} lines including tests, docs and config",
   "源码 {loc} 行": counted("source line", "source lines", "loc"),
   "文件监视出错：{error}": "File watching failed: {error}",
   "盯着文件变化：改动后自动刷新结构索引": "Watching files: the structure index refreshes after every change",
-  "我看懂了多少、哪些看懂后又被改过、下一步读什么，以及团队的阅读导览": "How much you understand, what changed since, what to read next, and the team's reading tours",
-  "理解": "Understanding",
+  "从 main、路由、CLI 命令等入口开始单步走读；顶上是你看懂了多少、哪些看懂后又被改过":
+    "Step through the code from entry points such as main, routes and CLI commands; the top shows how much you understand and what changed since",
   "跳过提前 return / throw 的守卫分支和 catch，先把正常流程读通": "Skip guard branches that return or throw early and catch blocks; read the normal flow first",
   "主路径": "Main path",
   "实时": "Live",
@@ -82,7 +86,7 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "无依赖": "no link",
 
   // 模块名片
-  "团队确认过的分层": "Layer confirmed by the team",
+  "确认过的分层": "Confirmed layer",
   "AI 提议的分层，还没有人确认": "Layer proposed by AI, not yet confirmed",
   "{count} 个函数直接做这类 I/O": (params) => `${count(params)} ${plural(params, "function does", "functions do")} this I/O directly`,
   "它依赖 ({count})": "Depends on ({count})",
@@ -160,12 +164,7 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "我看懂了接口": "I understand the interface",
   "我看懂了": "I understand this",
 
-  // 理解页签
-  "复杂": "complex",
-  "改得勤": "busy",
-  "很多地方调": "widely called",
-  "改过了": "changed",
-  "没测试": "untested",
+  // 我的理解：入口页签顶上
   "主干": "Main code",
   "从 HTTP、命令行、main 和公共 API 入口沿调用走得到的函数：系统真正在跑的那部分":
     "Functions reachable through calls from HTTP, CLI, main and public API entry points: the part of the system that actually runs",
@@ -175,54 +174,19 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "共 {count} 条标记，存在 .repolens/understanding.json，只记在你本机。": (params) =>
     `${count(params)} ${plural(params, "mark", "marks")}, stored in .repolens/understanding.json on this machine only.`,
   "{understood}/{total} · {share}": "{understood}/{total} · {share}",
-  "{count} 个看懂后又被改过": (params) => `${count(params)} changed since understood`,
-  "阅读导览": "Reading tours",
-  "{count} 步": counted("step", "steps"),
-  "自动": "auto",
-  "团队": "team",
-  "自动生成的导览按入口、核心类型、分层和热点排好；改过、加上说明后保存，就写进 .repolens.json 随代码提交。":
-    "The generated tour walks through entry points, core types, layers and hotspots. Edit it, add notes and save to write it into .repolens.json and commit it with the code.",
   "看懂后又被改过 ({count})": "Changed since understood ({count})",
   "重新看过了，按现在的代码重新记": "Reviewed again; record it against the current code",
   "重新看过": "Reviewed",
-  "下一步读什么": "What to read next",
-  "主干上的函数都看过了。": "You've covered every function on the main code paths.",
-  "详情": "Details",
+  "还有 {count} 个": (params) => `${count(params)} more`,
+  "这条调用链上看懂了 {understood}/{total} 个函数": "Understood {understood}/{total} functions along this call chain",
+  "这条调用链上看懂了 {understood}/{total} 个函数，{stale} 个看懂后又被改过":
+    "Understood {understood}/{total} functions along this call chain; {stale} changed since",
 
-  // 导览
-  "自动生成的阅读路径": "Generated reading path",
-  "全部导览": "All tours",
-  "改成团队导览…": "Turn into a team tour…",
-  "编辑": "Edit",
-  "第 {index}/{total} 步": "Step {index}/{total}",
-  "这一步指向的代码已经不在了（被删或改名）": "The code this step points to is gone (deleted or renamed)",
-  "这条导览还没有步骤": "This tour has no steps yet",
-  "删除导览": "Delete tour",
-  "标题": "Title",
-  "比如：新人第一天": "For example: day one for new teammates",
-  "说明": "Description",
-  "这一步的标题": "Step title",
-  "删掉这一步": "Remove this step",
-  "写给读者：看这里时该注意什么": "For the reader: what to pay attention to here",
-  "先在图上或结构树里选中一个函数、文件或模块": "Select a function, file or module on the graph or in the tree first",
-  "加入当前选中的": "Add the current selection",
-  "保存中…": "Saving…",
-  "保存到 .repolens.json": "Save to .repolens.json",
-  "随代码提交，团队里每个人看到的是同一条": "Committed with the code, so everyone on the team sees the same tour",
-  "先看仓库自述和整体结构": "Start with the README and the overall structure",
-  "入口：往下走得到 {count} 个函数": (params) => `Entry point: reaches ${count(params)} ${plural(params, "function", "functions")}`,
-  "核心数据结构：{count} 个函数的签名里用到它": (params) => `Core data structure: used in the signatures of ${count(params)} ${plural(params, "function", "functions")}`,
-  "模块：属于「{layer}」层，{count} 个模块依赖它": (params) =>
-    `Module in the “${String(params["layer"] ?? "")}” layer; ${count(params)} ${plural(params, "module depends", "modules depend")} on it`,
-  "模块：{count} 个模块依赖它": (params) => `Module: ${count(params)} ${plural(params, "module depends", "modules depend")} on it`,
-  "热点：近 90 天改过 {count} 次，复杂度 {complexity}": (params) =>
-    `Hotspot: changed ${count(params)} ${plural(params, "time", "times")} in 90 days, complexity ${String(params["complexity"] ?? "")}`,
-
-  // 团队约定
-  "团队约定": "Team conventions",
+  // 约定
+  "约定": "Conventions",
   "分层": "Layers",
   "还没有": "none yet",
-  "团队确认": "team-confirmed",
+  "已确认": "confirmed",
   "AI 提议，未确认": "AI proposal, unconfirmed",
   "{count} 处倒置": (params) => `${count(params)} ${plural(params, "inversion", "inversions")}`,
   "调整": "Adjust",
@@ -249,6 +213,7 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "确认，写进 .repolens.json": "Confirm and write to .repolens.json",
 
   // 变更审阅
+  "没测试": "untested",
   "对外接口": "public API",
   "签名变化": "signature",
   "新 I/O": "new I/O",
@@ -293,6 +258,7 @@ export const EN_INSIGHT: Record<string, Translation> = {
   // 随手笔记
   "随手记一笔：这段在干什么、为什么这么写、要小心什么": "Jot a note: what this does, why it's written this way, what to watch out for",
   "记下": "Save",
+  "保存中…": "Saving…",
   "{shortcut} 保存 · 在哪都能按 N 记一笔": "{shortcut} to save · press N anywhere to jot a note",
 
   // 手势说明
@@ -301,8 +267,8 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "随手记一笔：记在选中的节点上，没选中就记在整个仓库上": "Jot a note on the selected node, or on the whole repository when nothing is selected",
   "顶栏的「视角」在节点底边叠一条细条：我看懂了几成、近 90 天改得勤不勤、测试走到了几成。":
     "The Lens menu in the top bar adds a thin bar under each node: how much you understand, how busy it was in the last 90 days, how much tests reach. ",
-  "「理解」页签记着你看懂了什么：代码一改，标记自动过期，提醒你重新看。":
-    "The Understanding tab tracks what you understand: when the code changes, the mark expires and reminds you to review it again.",
+  "「入口」页签顶上记着你看懂了多少：代码一改，标记自动过期，提醒你重新看。":
+    "The top of the Entries tab tracks how much you understand: when the code changes, the mark expires and reminds you to review it again.",
 
   // 走读骨架
   "同一块里还在第 {lines} 行调了它": "Also called in this block on line(s) {lines}",
@@ -331,9 +297,6 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "未知的视角": "Unknown lens",
   "缺少节点": "Missing node",
   "没有这条标记": "No such mark",
-  "导览格式不正确": "Invalid tour",
-  "导览不存在": "Tour not found",
-  "导览需要一个标题": "A tour needs a title",
   "分层格式不正确：每层要有名字和至少一个 pkg: / dir: 成员": "Invalid layers: each layer needs a name and at least one pkg: or dir: member",
   "缺少本地写操作标记": "Missing the local write marker",
   "只能标记函数、文件、包或目录": "Only functions, files, packages and folders can be marked",

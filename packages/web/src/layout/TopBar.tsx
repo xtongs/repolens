@@ -1,4 +1,4 @@
-import type { FindingSummaryDto } from "@repolens/core/types";
+import type { FindingSummaryDto, LensKind } from "@repolens/core/types";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useNodeScope } from "../graph/useNodeScope";
@@ -66,7 +66,6 @@ export function TopBar() {
         <FindingsPill />
         <EntriesPill />
         <ChangesPill />
-        <UnderstandingPill />
         <LlmPill />
       </div>
 
@@ -465,40 +464,122 @@ function StructureControls() {
         {t("外部依赖")}
       </Toggle>
 
-      <LensSelect />
+      <LensMenu />
     </>
   );
 }
 
-const LENS_OPTIONS = [
-  { key: "none", label: msg("无视角") },
-  { key: "understanding", label: msg("我的理解") },
-  { key: "heat", label: msg("改动热度") },
-  { key: "tests", label: msg("测试覆盖") },
-] as const;
+/** 取值要在渲染时过 t() */
+const LENS_OPTIONS: ReadonlyArray<{ key: LensKind; label: string; hint: string }> = [
+  { key: "understanding", label: msg("我的理解"), hint: msg("看懂了几成；看懂后又被改过的那截标黄") },
+  { key: "heat", label: msg("改动热度"), hint: msg("近 90 天改得越勤，条越长越红") },
+  { key: "tests", label: msg("测试覆盖"), hint: msg("有测试走到的函数占几成") },
+];
 
-/** 图上叠加一层视角：哪里我看懂了、哪里改得勤、哪里有测试兜着 */
-function LensSelect() {
+/**
+ * 图上叠加一层视角：哪里我看懂了、哪里改得勤、哪里有测试兜着。关着时按钮只写「视角」，
+ * 开着时带上当前视角的名字；每一项是什么意思写在菜单里，不用先选了再猜。
+ */
+function LensMenu() {
   const t = useT();
   const lens = useAppStore((s) => s.lens);
   const setLens = useAppStore((s) => s.setLens);
-  return (
-    <select
-      value={lens ?? "none"}
-      onChange={(event) => {
-        const value = event.target.value;
-        setLens(value === "understanding" || value === "heat" || value === "tests" ? value : null);
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const active = LENS_OPTIONS.find((option) => option.key === lens) ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
+    // capture：点到画布时 React Flow 会先把事件吃掉，菜单就关不上了
+    const onDown = (event: PointerEvent) => {
+      if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [open]);
+
+  const close = () => {
+    setOpen(false);
+    buttonRef.current?.focus();
+  };
+
+  const onMenuKey = (event: React.KeyboardEvent) => {
+    if (event.key === "Escape") {
+      // 不让全局的 Esc 顺带把侧栏也收起来
+      event.stopPropagation();
+      close();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])];
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    items[(current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+  };
+
+  const item = (key: LensKind | null, label: string, hint?: string) => (
+    <button
+      key={key ?? "none"}
+      type="button"
+      role="menuitemradio"
+      aria-checked={lens === key}
+      onClick={() => {
+        setLens(key);
+        close();
       }}
-      aria-label={t("视角")}
-      title={t("在节点底边叠一条细条：看懂了几成、改得勤不勤、测到了几成")}
-      className={`h-[26px] rounded-md border bg-[var(--color-surface)] px-1.5 text-[11px] outline-none transition-colors ${
-        lens ? "border-[var(--color-accent)] text-[var(--color-accent)]" : "border-[var(--color-line)] text-[var(--color-ink-faint)] hover:border-[var(--color-line-strong)]"
-      }`}
+      className="flex w-full items-start gap-2 px-3 py-1.5 text-left outline-none transition-colors hover:bg-[var(--color-surface-3)] focus-visible:bg-[var(--color-surface-3)]"
     >
-      {LENS_OPTIONS.map((option) => (
-        <option key={option.key} value={option.key}>{t(option.label)}</option>
-      ))}
-    </select>
+      <span className="w-3 shrink-0 text-[11px] leading-[18px] text-[var(--color-accent)]">{lens === key ? "✓" : ""}</span>
+      <span className="min-w-0 whitespace-normal">
+        <span className="block text-[11.5px] leading-[18px] text-[var(--color-ink)]">{label}</span>
+        {hint && <span className="block text-[10.5px] leading-snug text-[var(--color-ink-faint)]">{hint}</span>}
+      </span>
+    </button>
+  );
+
+  return (
+    <div ref={boxRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" && !open) {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+        title={t("在节点底边叠一条细条：看懂了几成、改得勤不勤、测到了几成")}
+        className={`flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] transition-colors ${
+          active
+            ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+            : "border-[var(--color-line)] text-[var(--color-ink-faint)] hover:border-[var(--color-line-strong)] hover:text-[var(--color-ink-muted)]"
+        }`}
+      >
+        {t("视角")}
+        {active && <span data-topbar-optional="1">· {t(active.label)}</span>}
+        <span aria-hidden="true" className="text-[8px] opacity-70">▼</span>
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label={t("视角")}
+          onKeyDown={onMenuKey}
+          className="anim-fade absolute right-0 top-full z-50 mt-1 w-64 overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-surface-2)] py-1 shadow-xl"
+        >
+          <div className="whitespace-normal px-3 pb-1 pt-0.5 text-[10px] text-[var(--color-ink-faint)]">{t("给图上每个节点的底边叠一条细条")}</div>
+          {LENS_OPTIONS.map((option) => item(option.key, t(option.label), t(option.hint)))}
+          <div className="my-1 border-t border-[var(--color-line)]" />
+          {item(null, t("不叠加"))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -520,20 +601,6 @@ function LiveBadge() {
       <span className={`h-1.5 w-1.5 rounded-full ${status.refreshing ? "animate-pulse" : ""}`} style={{ background: color }} />
       {status.refreshing ? t("刷新中…") : t("实时")}
     </span>
-  );
-}
-
-function UnderstandingPill() {
-  const t = useT();
-  const store = useAppStore();
-  const open = store.treeOpen && store.panelTab === "understanding";
-  return (
-    <button type="button" onClick={() => { store.setPanelTab("understanding"); store.setTreeOpen(!open); }}
-      className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors"
-      style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
-      title={t("我看懂了多少、哪些看懂后又被改过、下一步读什么，以及团队的阅读导览")} aria-label={t("理解")}>
-      ◐<span data-topbar-optional="2">{t("理解")}</span>
-    </button>
   );
 }
 
@@ -721,7 +788,7 @@ function EntriesPill() {
     <button type="button" onClick={() => { store.setPanelTab("entries"); store.setTreeOpen(!open); }}
       className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors"
       style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
-      title={t("从 main、路由、CLI 命令等入口开始，单步走读代码怎么跑")} aria-label={t("入口")}>
+      title={t("从 main、路由、CLI 命令等入口开始单步走读；顶上是你看懂了多少、哪些看懂后又被改过")} aria-label={t("入口")}>
       ⇢<span data-topbar-optional="2">{t("入口")}</span>
     </button>
   );

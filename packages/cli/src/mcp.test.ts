@@ -168,8 +168,8 @@ describe("RepoLens MCP", () => {
   });
 
   it("没有约定时说明怎么加；写进规则和依赖锁后，check 拦下新长出来的依赖，conventions 读得到约定", async () => {
-    expect(await text("conventions")).toContain("还没有写下团队约定");
-    expect(await text("check")).toContain("没有可检查的团队约定");
+    expect(await text("conventions")).toContain("还没有写下约定");
+    expect(await text("check")).toContain("没有可检查的约定");
 
     write(".repolens.json", JSON.stringify({
       rules: [{ name: "存储层不依赖接口层", from: "src/store/**", disallow: ["src/api/**"], reason: "接口层调存储层，反过来就成环了" }],
@@ -184,11 +184,11 @@ describe("RepoLens MCP", () => {
     expect(conventions).toContain("存储层不依赖接口层：src/store/** 不许依赖 src/api/**");
     expect(conventions).toContain("理由：接口层调存储层，反过来就成环了");
     expect(conventions).toContain("src/api → src/store");
-    expect(await text("check")).toContain("团队约定检查：通过");
+    expect(await text("check")).toContain("约定检查：通过");
 
     write("src/store/audit.ts", 'import { createOrder } from "../api/routes";\nexport const audit = () => createOrder;\n');
     const report = await text("check");
-    expect(report).toContain("团队约定检查：未通过");
+    expect(report).toContain("约定检查：未通过");
     expect(report).toContain("src/store/audit.ts:1 → src/api/routes.ts");
     expect(report).toContain("✗ src/store → src/api  1 处");
 

@@ -19,7 +19,7 @@ disallow 可以写仓库内路径 glob，也可以写外部包名；allow 列例
 需要一并禁止时加 "includeTypeOnly": true。
 `;
 
-export const NOTHING_TO_CHECK = `没有可检查的团队约定。三种约定可以任选：
+export const NOTHING_TO_CHECK = `没有可检查的约定。三种约定可以任选：
 
   1. 依赖规则：.repolens.json 的 rules，写明哪些模块不许依赖哪些
   2. 依赖锁：运行 repolens lock，把现在的模块间依赖记成批准过的清单，之后新长出来的依赖都要先批准
@@ -32,7 +32,7 @@ ${RULES_HINT}`;
 
 export function formatCheckReport(report: CheckReport): string {
   const lines: string[] = [];
-  lines.push(report.passed ? "团队约定检查：通过" : "团队约定检查：未通过", "");
+  lines.push(report.passed ? "约定检查：通过" : "约定检查：未通过", "");
   if (report.rules.length > 0) lines.push(formatRuleReports(report.rules));
   if (report.lock) {
     lines.push(report.unapproved.length === 0

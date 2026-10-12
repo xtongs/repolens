@@ -6,7 +6,7 @@ import { useAppStore } from "../store/useAppStore";
 import { Chip, LinkButton, Section } from "../ui/panel";
 
 /**
- * 团队约定：AI 提议的分层由人确认后写进 .repolens.json，此后「下层依赖上层」就是体检问题；
+ * 约定：AI 提议的分层由人确认后写进 .repolens.json，此后「下层依赖上层」就是体检问题；
  * 依赖锁把现在的模块间依赖记成批准过的清单，新长出来的依赖要先批准。两份文件都随代码提交。
  */
 export function ConventionsSection({ overview }: { overview: OverviewDto }) {
@@ -47,7 +47,7 @@ export function ConventionsSection({ overview }: { overview: OverviewDto }) {
   };
 
   return (
-    <Section title={t("团队约定")}>
+    <Section title={t("约定")}>
       <div className="space-y-2.5">
         <div>
           <div className="flex items-center gap-1.5">
@@ -55,7 +55,7 @@ export function ConventionsSection({ overview }: { overview: OverviewDto }) {
             {layers.length === 0 ? (
               <Chip>{t("还没有")}</Chip>
             ) : overview.layersConfirmed ? (
-              <Chip tone="success">{t("团队确认")}</Chip>
+              <Chip tone="success">{t("已确认")}</Chip>
             ) : (
               <Chip tone="accent">{t("AI 提议，未确认")}</Chip>
             )}

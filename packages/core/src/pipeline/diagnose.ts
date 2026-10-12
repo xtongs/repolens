@@ -31,7 +31,7 @@ export interface DiagnoseStats {
   staleDoc: number;
 }
 
-/** 团队写下的约定：依赖规则、依赖锁、确认过的分层。都来自随代码提交的文件 */
+/** 写下的约定：依赖规则、依赖锁、确认过的分层。都来自随代码提交的文件 */
 export interface DiagnosePolicy {
   rules?: readonly ArchitectureRule[];
   lock?: ArchitectureLock | null;

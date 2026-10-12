@@ -32,7 +32,7 @@ const PREF = {
   lens: "repolens:lens",
 } as const;
 
-const PANEL_TABS: readonly PanelTab[] = ["tree", "findings", "entries", "changes", "understanding"];
+const PANEL_TABS: readonly PanelTab[] = ["tree", "findings", "entries", "changes"];
 const LENSES: readonly LensKind[] = ["understanding", "heat", "tests"];
 
 function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
@@ -86,7 +86,7 @@ export interface CallGraphMode {
   direction: "callers" | "callees" | "both";
 }
 
-export type PanelTab = "tree" | "findings" | "entries" | "changes" | "understanding";
+export type PanelTab = "tree" | "findings" | "entries" | "changes";
 
 /** 走读调用栈里的一帧 */
 export interface WalkFrameRef {

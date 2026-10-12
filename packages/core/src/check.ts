@@ -17,16 +17,16 @@ export interface CheckReport {
   lock: { level: ArchitectureLock["level"]; dependencies: number } | null;
   /** 依赖锁里没有的模块间依赖 */
   unapproved: ModuleDependency[];
-  /** 相对基线新增的问题：按团队约定的棘轮分成拦下的和只提示的 */
+  /** 相对基线新增的问题：按约定里的棘轮分成拦下的和只提示的 */
   ratchet: { base: { ref: string; commit: string }; failed: FindingChangeDto[]; warned: FindingChangeDto[] } | null;
   passed: boolean;
 }
 
 /**
- * 团队约定的全部检查，CLI、CI 和 MCP 用的是同一份：
+ * 约定的全部检查，CLI、CI 和 MCP 用的是同一份：
  * 1. 依赖规则（.repolens.json 的 rules）
  * 2. 依赖锁（.repolens.lock.json）：锁里没有的模块间依赖要先批准
- * 3. 棘轮（给了基线时）：相对基线不许新增团队约定里拦下的那几类问题
+ * 3. 棘轮（给了基线时）：相对基线不许新增约定里拦下的那几类问题
  *
  * 先做一次只建结构的增量扫描，检查的永远是工作区里现在的代码。
  */

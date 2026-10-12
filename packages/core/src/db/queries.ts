@@ -155,7 +155,7 @@ export function getOverview(db: Db): OverviewDto {
   };
 }
 
-/** 团队确认过的分层（扫描时从 .repolens.json 记进索引，界面上确认时也会写进来） */
+/** 确认过的分层（扫描时从 .repolens.json 记进索引，界面上确认时也会写进来） */
 export function confirmedLayers(db: Db): ConfirmedLayer[] {
   return getMetaJson<ConfirmedLayer[]>(db, "confirmed_layers", []);
 }
@@ -1665,7 +1665,7 @@ export function getScopeSummary(db: Db, nodeId: string): string | null {
   return null;
 }
 
-/** 给图节点挂上扫描期摘要与架构层；结构事实不依赖这些字段。团队确认过的分层优先于 AI 的提议 */
+/** 给图节点挂上扫描期摘要与架构层；结构事实不依赖这些字段。确认过的分层优先于 AI 的提议 */
 function attachSemantics(db: Db, nodes: GraphNodeDto[]): void {
   if (nodes.length === 0) return;
   const layerByNode = new Map<string, string>();

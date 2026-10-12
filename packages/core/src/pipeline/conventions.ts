@@ -4,7 +4,7 @@ import { IndexWriter, type FindingRow } from "../db/writer.js";
 import type { ArchitectureLock, ConfirmedLayer } from "../types.js";
 
 /**
- * 团队约定改了（界面上确认了分层、批准了当前依赖）之后就地重算相关的体检，
+ * 约定改了（界面上确认了分层、批准了当前依赖）之后就地重算相关的体检，
  * 不必为此重扫一遍仓库：只依赖已经链接好的 import，毫秒级。
  */
 export function refreshConventions(
@@ -31,7 +31,7 @@ const NODE_MANAGERS = new Set(["pnpm", "npm", "yarn"]);
 const NODE_LANGUAGES = new Set(["typescript", "tsx", "javascript", "jsx", "vue", "svelte", "astro"]);
 
 /**
- * 依赖锁里没有的模块间依赖。锁是团队批准过的那份依赖清单，新长出来的依赖要么是
+ * 依赖锁里没有的模块间依赖。锁是批准过的那份依赖清单，新长出来的依赖要么是
  * 合理的演进（批准后 `repolens lock` 更新锁），要么是 AI 顺手越了界——两种都该被人看一眼。
  */
 export function detectUnapproved(db: Db, lock: ArchitectureLock | null, out: FindingRow[]): number {
@@ -70,7 +70,7 @@ interface LayerMember {
 }
 
 /**
- * 分层倒置：团队确认过的分层自上而下排，下层的源码 import 了上层的源码。
+ * 分层倒置：确认过的分层自上而下排，下层的源码 import 了上层的源码。
  * 只看人确认过的分层——AI 提议的分层可能分错，拿它判违规等于让模型替人定规矩。
  */
 export function detectLayering(db: Db, layers: readonly ConfirmedLayer[], out: FindingRow[]): number {
@@ -122,7 +122,7 @@ export function detectLayering(db: Db, layers: readonly ConfirmedLayer[], out: F
       path: group.from.path,
       title: `分层倒置：「${fromLayer}」的 ${group.from.label} 依赖了上层「${toLayer}」的 ${group.to.label}`,
       detail: [
-        `团队确认的分层里「${fromLayer}」在「${toLayer}」之下，下层不该依赖上层。共 ${group.count} 处：`,
+        `确认过的分层里「${fromLayer}」在「${toLayer}」之下，下层不该依赖上层。共 ${group.count} 处：`,
         ...group.samples,
       ].join("\n"),
       related: [group.from.id, group.to.id],

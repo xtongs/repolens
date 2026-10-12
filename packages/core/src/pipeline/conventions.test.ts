@@ -45,7 +45,7 @@ function monorepo(extra: Record<string, unknown> = {}): string {
   return root;
 }
 
-describe("团队约定", () => {
+describe("约定", () => {
   it("依赖锁：锁住现状之后，新长出来的模块间依赖进体检", async () => {
     const root = monorepo();
     await scanRepo({ root });

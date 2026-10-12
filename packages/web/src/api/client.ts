@@ -28,7 +28,6 @@ import type {
   SourceSliceDto,
   SpecDto,
   SymbolDetailDto,
-  TourDto,
   TreeNodeDto,
   TypeFlowDto,
   EntryPointDto,
@@ -302,13 +301,6 @@ export const api = {
     send<UnderstandingMarkDto>("POST", "/understanding", "understanding", { nodeId, how }),
 
   unmarkUnderstood: (key: string) => send<{ ok: true }>("DELETE", "/understanding", "understanding", undefined, { key }),
-
-  tours: () => get<{ tours: TourDto[] }>("/tours"),
-
-  /** 写进仓库根目录的 .repolens.json，随代码提交 */
-  saveTour: (tour: TourDto) => send<TourDto>("POST", "/tours", "save-tour", { tour }),
-
-  deleteTour: (id: string) => send<{ ok: true }>("DELETE", `/tours/${encodeURIComponent(id)}`, "save-tour"),
 
   confirmLayers: (layers: ConfirmedLayer[]) =>
     send<{ layers: ConfirmedLayer[] }>("POST", "/layers/confirm", "confirm-layers", { layers }),

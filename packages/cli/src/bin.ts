@@ -174,9 +174,9 @@ program
 
 program
   .command("check")
-  .description("检查团队约定：依赖规则、依赖锁，给了基线时再加棘轮（不许新增依赖环、分层倒置等）。不通过时退出码为 1，可直接放进 CI 或提交钩子")
+  .description("检查约定：依赖规则、依赖锁，给了基线时再加棘轮（不许新增依赖环、分层倒置等）。不通过时退出码为 1，可直接放进 CI 或提交钩子")
   .argument("[path]", "仓库路径", ".")
-  .option("-b, --baseline <ref>", "棘轮基线：相对这个提交不许新增团队约定里拦下的问题，如 origin/main")
+  .option("-b, --baseline <ref>", "棘轮基线：相对这个提交不许新增约定里拦下的问题，如 origin/main")
   .option("--json", "输出完整 JSON", false)
   .action(async (path: string, opts: { baseline?: string; json: boolean }) => {
     const root = resolve(path);
@@ -235,7 +235,7 @@ program
 
 program
   .command("mcp")
-  .description("以 MCP（stdio）把结构索引交给 AI 编程助手：模块名片、调用关系、团队约定、变更报告和约定检查")
+  .description("以 MCP（stdio）把结构索引交给 AI 编程助手：模块名片、调用关系、约定、变更报告和约定检查")
   .argument("[path]", "仓库路径", ".")
   .action(async (path: string) => {
     const root = resolve(path);

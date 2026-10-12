@@ -75,7 +75,7 @@ export function HelpSheet() {
           </div>
           <div className="mt-2 text-[10.5px] leading-relaxed text-[var(--color-ink-faint)]">
             {t("顶栏的「视角」在节点底边叠一条细条：我看懂了几成、近 90 天改得勤不勤、测试走到了几成。")}
-            {t("「理解」页签记着你看懂了什么：代码一改，标记自动过期，提醒你重新看。")}
+            {t("「入口」页签顶上记着你看懂了多少：代码一改，标记自动过期，提醒你重新看。")}
           </div>
         </div>
       </div>

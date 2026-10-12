@@ -215,7 +215,7 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
       if (history) stats.history = history;
     }
     const lock = loadLock(root);
-    // 查询只握着索引，团队约定的分层和依赖锁概况记进 meta，界面不必再去读配置文件
+    // 查询只握着索引，约定里的分层和依赖锁概况记进 meta，界面不必再去读配置文件
     setMetaJson(db, "confirmed_layers", config.layers);
     setMetaJson(db, "lock", lock ? { level: lock.level, dependencies: lock.dependencies.length } : null);
     const linkStats = transact(db, () => linkGraph(db, writer, { rules: config.rules, lock, layers: config.layers, root }));

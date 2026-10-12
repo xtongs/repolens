@@ -1,13 +1,11 @@
 import {
   BaselineError,
   FINDING_KINDS,
-  TourInputError,
   UnderstandingInputError,
   buildChangeReport,
   buildLock,
   confirmedLayers,
   currentLlmStatus,
-  deleteTour,
   getBoundary,
   getCallGraph,
   getEntryPoints,
@@ -31,7 +29,6 @@ import {
   getWalkFrame,
   generateFileSummary,
   generateSymbolSemantics,
-  listTours,
   markUnderstood,
   NoteInputError,
   addNote,
@@ -47,18 +44,16 @@ import {
   recordChatUsage,
   refreshConventions,
   RepoFileError,
-  saveTour,
   search,
   streamRepositoryChat,
   unmark,
-  updateTeamConfig,
+  updateRepoConfig,
   writeLock,
   type Confidence,
   type ConfirmedLayer,
   type Db,
   type FileRole,
   type LensKind,
-  type TourDto,
   type UnderstandingHow,
 } from "@repolens/core";
 import { Hono, type Context } from "hono";
@@ -229,31 +224,7 @@ export function createApi(deps: ApiDeps): Hono {
     return unmark(repoRoot, c.req.query("key") ?? "") ? c.json({ ok: true }) : c.json({ error: "没有这条标记" }, 404);
   });
 
-  // 导览存进团队约定（.repolens.json），随代码提交
-  app.get("/tours", (c) => c.json({ tours: listTours(db, repoRoot) }));
-
-  app.post("/tours", async (c) => {
-    if (c.req.header("x-repolens-intent") !== "save-tour") {
-      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
-    }
-    const body = await jsonBody(c);
-    const tour = parseTour(body?.["tour"]);
-    if (tour === null) return c.json({ error: "导览格式不正确" }, 400);
-    try {
-      return c.json(saveTour(db, repoRoot, tour));
-    } catch (err) {
-      return c.json({ error: (err as Error).message }, err instanceof TourInputError ? 400 : 500);
-    }
-  });
-
-  app.delete("/tours/:id", (c) => {
-    if (c.req.header("x-repolens-intent") !== "save-tour") {
-      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
-    }
-    return deleteTour(repoRoot, c.req.param("id")) ? c.json({ ok: true }) : c.json({ error: "导览不存在" }, 404);
-  });
-
-  // AI 提议的分层由人确认后写进团队约定，之后的分层倒置检查只认这一份
+  // AI 提议的分层由人确认后写进约定，之后的分层倒置检查只认这一份
   app.post("/layers/confirm", async (c) => {
     if (c.req.header("x-repolens-intent") !== "confirm-layers") {
       return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
@@ -261,7 +232,7 @@ export function createApi(deps: ApiDeps): Hono {
     const body = await jsonBody(c);
     const layers = parseLayers(body?.["layers"]);
     if (layers === null) return c.json({ error: "分层格式不正确：每层要有名字和至少一个 pkg: / dir: 成员" }, 400);
-    updateTeamConfig(repoRoot, { layers });
+    updateRepoConfig(repoRoot, { layers });
     await withWritableDb(repoRoot, async (writeDb) => refreshConventions(writeDb, { layers }));
     return c.json({ layers: confirmedLayers(db) });
   });
@@ -450,31 +421,7 @@ async function jsonBody(c: Context): Promise<Record<string, unknown> | null> {
 }
 
 function isHow(value: unknown): value is UnderstandingHow {
-  return value === "manual" || value === "walk" || value === "review" || value === "tour";
-}
-
-function parseTour(raw: unknown): TourDto | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const tour = raw as Record<string, unknown>;
-  if (typeof tour["title"] !== "string" || !Array.isArray(tour["steps"])) return null;
-  const steps = (tour["steps"] as unknown[]).flatMap((item) => {
-    if (typeof item !== "object" || item === null) return [];
-    const step = item as Record<string, unknown>;
-    const nodeId = typeof step["nodeId"] === "string" ? step["nodeId"] : null;
-    const target = typeof step["target"] === "string" ? step["target"] : "";
-    if (nodeId === null && target === "") return [];
-    return [{
-      target, nodeId,
-      title: typeof step["title"] === "string" ? step["title"].slice(0, 200) : "",
-      note: typeof step["note"] === "string" ? step["note"].slice(0, 4000) : null,
-    }];
-  });
-  return {
-    id: typeof tour["id"] === "string" ? tour["id"].slice(0, 80) : "",
-    title: tour["title"].slice(0, 200),
-    description: typeof tour["description"] === "string" ? tour["description"].slice(0, 2000) : null,
-    steps: steps.slice(0, 100),
-  };
+  return value === "manual" || value === "walk" || value === "review";
 }
 
 function parseLayers(raw: unknown): ConfirmedLayer[] | null {

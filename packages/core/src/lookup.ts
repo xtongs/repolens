@@ -1,6 +1,5 @@
 import type { Db } from "./db/database.js";
 import { ROOT_SCOPE } from "./db/queries.js";
-import { resolveRef } from "./tours.js";
 import type { FileRole, SymbolKind } from "./types.js";
 
 export type LookupResult =
@@ -53,6 +52,32 @@ function explicitRef(db: Db, ref: string): { kind: "scope" | "symbol"; id: strin
   if (ref.startsWith("symbol:")) return { kind: "symbol", id: resolveRef(db, ref) };
   if (ref.startsWith("path:")) return { kind: "scope", id: resolveRef(db, ref) };
   if (ref.includes("#")) return { kind: "symbol", id: resolveRef(db, `symbol:${ref}`) };
+  return null;
+}
+
+/** 按路径和名字写的引用换回当前索引里的节点：节点 id 每次扫描都会变，路径和名字不会；对象不存在时为 null */
+function resolveRef(db: Db, ref: string): string | null {
+  if (ref.startsWith("pkg:")) return db.prepare("SELECT 1 FROM packages WHERE name = ?").get(ref.slice(4)) ? ref : null;
+  if (ref.startsWith("dir:")) return db.prepare("SELECT 1 FROM directories WHERE path = ?").get(ref.slice(4)) ? ref : null;
+  if (ref.startsWith("path:")) {
+    const row = db.prepare("SELECT id FROM files WHERE path = ?").get(ref.slice(5)) as { id: number } | undefined;
+    return row ? `file:${row.id}` : null;
+  }
+  if (ref.startsWith("symbol:")) {
+    const rest = ref.slice(7);
+    const hash = rest.lastIndexOf("#");
+    if (hash < 0) return null;
+    const path = rest.slice(0, hash);
+    const qualified = rest.slice(hash + 1);
+    const dot = qualified.lastIndexOf(".");
+    const container = dot >= 0 ? qualified.slice(0, dot) : null;
+    const name = dot >= 0 ? qualified.slice(dot + 1) : qualified;
+    const row = db.prepare(
+      `SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
+       WHERE f.path = ? AND s.name = ? AND s.container IS ? ORDER BY s.start_line LIMIT 1`,
+    ).get(path, name, container) as { id: number } | undefined;
+    return row ? `sym:${row.id}` : null;
+  }
   return null;
 }
 

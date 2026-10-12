@@ -5,6 +5,7 @@ import type {
   FindingDto,
   FindingKind,
   TreeNodeDto,
+  UnderstandingCountsDto,
 } from "@repolens/core/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type FindingsResponse, api } from "../api/client";
@@ -13,7 +14,8 @@ import { useNodeScope } from "../graph/useNodeScope";
 import { msg, t, useT } from "../i18n";
 import { formatCount, IO_LABELS, languageColor } from "../ui/visual";
 import { useAppStore } from "../store/useAppStore";
-import { UnderstandingBody } from "../insight/UnderstandingPanel";
+import { useUnderstandingStore } from "../store/useUnderstandingStore";
+import { FlowProgress, UnderstandingSummary } from "../insight/UnderstandingSummary";
 import { ChangesBody } from "./ChangesPanel";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 import { TabStrip } from "./TabStrip";
@@ -66,7 +68,6 @@ export function TreePanel() {
           <PanelTab active={tab === "findings"} onClick={() => setTab("findings")} label={t("体检")} />
           <PanelTab active={tab === "entries"} onClick={() => setTab("entries")} label={t("入口")} />
           <PanelTab active={tab === "changes"} onClick={() => setTab("changes")} label={t("变更")} />
-          <PanelTab active={tab === "understanding"} onClick={() => setTab("understanding")} label={t("理解")} />
         </TabStrip>
         <button
           type="button"
@@ -77,15 +78,13 @@ export function TreePanel() {
         </button>
       </div>
 
-      {tab !== "tree" && tab !== "understanding" && focus && <FocusScopeBar scope={focus} />}
+      {(tab === "findings" || tab === "changes") && focus && <FocusScopeBar scope={focus} />}
       {tab === "tree" ? (
         <TreeBody key={`tree:${repoId ?? ""}:${repoRevision}`} />
       ) : tab === "findings" ? (
         <FindingsBody key={`findings:${repoId ?? ""}:${repoRevision}`} scope={focus} />
       ) : tab === "changes" ? (
         <ChangesBody key={`changes:${repoId ?? ""}:${repoRevision}`} scope={focus} />
-      ) : tab === "understanding" ? (
-        <UnderstandingBody key={`understanding:${repoId ?? ""}:${repoRevision}`} />
       ) : (
         <EntriesBody key={`entries:${repoId ?? ""}:${repoRevision}`} scope={focus} />
       )}
@@ -110,8 +109,9 @@ function FocusScopeBar({ scope }: { scope: NodeScope }) {
 }
 
 /**
- * 入口清单。点一个入口就从它的处理函数开始单步走读；服务端已按「能走到多远」排好序，
- * 往下走不到别的函数的入口（只调库、或匿名闭包没有独立符号）收在最后。
+ * 入口清单，顶上是理解账本。点一个入口就从它的处理函数开始单步走读；服务端已按「能走到多远」排好序，
+ * 往下走不到别的函数的入口（只调库、或匿名闭包没有独立符号）收在最后。账本算的是整个仓库，
+ * 聚焦只筛下面的入口。
  */
 function EntriesBody({ scope }: { scope: NodeScope | null }) {
   const t = useT();
@@ -121,6 +121,7 @@ function EntriesBody({ scope }: { scope: NodeScope | null }) {
   const showNoise = useAppStore((s) => s.showNoise);
   const openWalk = useAppStore((s) => s.openWalk);
   const active = useAppStore((s) => s.walk?.stack[0]?.id ?? null);
+  const progress = useUnderstandingStore((s) => s.ledger?.entries);
   const [entries, setEntries] = useState<EntryPointDto[] | null>(null);
   const [query, setQuery] = useState("");
   const [showShallow, setShowShallow] = useState(false);
@@ -151,65 +152,71 @@ function EntriesBody({ scope }: { scope: NodeScope | null }) {
   const locationOf = (entry: EntryPointDto) =>
     duplicated.has(entry.label) ? entryLocation(entry.filePath, packages ?? []) : null;
 
-  if (entries === null) return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>;
-  if (entries.length === 0) return (
-    <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
-      {t("没有识别到入口。重新扫描后可识别 main、HTTP 路由、CLI、公共 API 与测试入口。")}
-    </div>
-  );
-
   const row = (entry: EntryPointDto) => (
     <EntryRow key={entry.id} entry={entry} active={entry.symbolId === active} location={locationOf(entry)}
+      progress={entry.symbolId ? progress?.[entry.symbolId] : undefined}
       onOpen={() => entry.symbolId && openWalk(entry.symbolId, entry.label)} />
   );
 
   return (
-    <>
-      <div className="shrink-0 px-3 pt-2">
-        <div className="text-[10.5px] text-[var(--color-ink-faint)]">{t("从入口开始单步走读 · 越往下走得远的越靠前")}</div>
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={t("筛选入口或文件")}
-          className="mt-1.5 w-full rounded border border-[var(--color-line)] bg-[var(--color-canvas)] px-2 py-1 text-[11px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-faint)] focus:border-[var(--color-accent)]/60"
-        />
-      </div>
-      <div className="thin-scroll flex-1 overflow-y-auto py-1">
-        {deep.map(row)}
-        {deep.length === 0 && (
-          <div className="px-3 py-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-            {query
-              ? t("没有匹配的入口。")
-              : scope && shallow.length === 0
-                ? t("{name} 里没有入口。", { name: scope.label })
-                : t("没有入口能沿静态调用关系走到仓库里的其他函数。")}
+    <div className="thin-scroll flex-1 overflow-y-auto pb-1">
+      <UnderstandingSummary />
+      {scope && <FocusScopeBar scope={scope} />}
+      {entries === null ? (
+        <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>
+      ) : entries.length === 0 ? (
+        <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
+          {t("没有识别到入口。重新扫描后可识别 main、HTTP 路由、CLI、公共 API 与测试入口。")}
+        </div>
+      ) : (
+        <>
+          <div className="sticky top-0 z-10 bg-[var(--color-surface)] px-3 pb-1.5 pt-2">
+            <div className="text-[10.5px] text-[var(--color-ink-faint)]">{t("从入口开始单步走读 · 越往下走得远的越靠前")}</div>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("筛选入口或文件")}
+              className="mt-1.5 w-full rounded border border-[var(--color-line)] bg-[var(--color-canvas)] px-2 py-1 text-[11px] text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-faint)] focus:border-[var(--color-accent)]/60"
+            />
           </div>
-        )}
-        {shallow.length > 0 && (
-          <div className="mt-1 border-t border-[var(--color-line)]/60 pt-1">
-            <button
-              type="button"
-              onClick={() => setShowShallow((value) => !value)}
-              aria-expanded={showShallow}
-              className="flex w-full items-center px-3 py-1.5 text-left text-[10.5px] text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-ink-muted)]"
-            >
-              <span>{t("走不到其他函数的入口")}</span>
-              <span className="ml-auto tabular-nums">{shallow.length}</span>
-              <span className="ml-2 w-6 text-right">{showShallow ? t("收起") : t("显示")}</span>
-            </button>
-            {showShallow && shallow.map(row)}
-          </div>
-        )}
-      </div>
-    </>
+          {deep.map(row)}
+          {deep.length === 0 && (
+            <div className="px-3 py-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
+              {query
+                ? t("没有匹配的入口。")
+                : scope && shallow.length === 0
+                  ? t("{name} 里没有入口。", { name: scope.label })
+                  : t("没有入口能沿静态调用关系走到仓库里的其他函数。")}
+            </div>
+          )}
+          {shallow.length > 0 && (
+            <div className="mt-1 border-t border-[var(--color-line)]/60 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowShallow((value) => !value)}
+                aria-expanded={showShallow}
+                className="flex w-full items-center px-3 py-1.5 text-left text-[10.5px] text-[var(--color-ink-faint)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-ink-muted)]"
+              >
+                <span>{t("走不到其他函数的入口")}</span>
+                <span className="ml-auto tabular-nums">{shallow.length}</span>
+                <span className="ml-2 w-6 text-right">{showShallow ? t("收起") : t("显示")}</span>
+              </button>
+              {showShallow && shallow.map(row)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
-function EntryRow({ entry, active, location, onOpen }: {
+function EntryRow({ entry, active, location, progress, onOpen }: {
   entry: EntryPointDto;
   active: boolean;
   /** 和别的入口重名时才有：所在包和文件 */
   location: string | null;
+  /** 这条调用链上看懂了多少；一个都没看懂过时没有 */
+  progress?: UnderstandingCountsDto;
   onOpen: () => void;
 }) {
   const t = useT();
@@ -231,6 +238,7 @@ function EntryRow({ entry, active, location, onOpen }: {
         {location && (
           <span className="mono min-w-0 flex-1 truncate-start truncate text-[10px] text-[var(--color-ink-faint)]">{location}</span>
         )}
+        {progress && <FlowProgress counts={progress} />}
       </div>
       <div className="mt-0.5 flex items-center gap-1.5 pl-0.5 text-[9.5px] text-[var(--color-ink-faint)]">
         {entry.reachSymbols > 0 ? (

@@ -10,7 +10,7 @@ export {
   loadConfig,
   loadGlobalConfig,
   loadLock,
-  updateTeamConfig,
+  updateRepoConfig,
   writeLock,
 } from "./config.js";
 export {
@@ -34,16 +34,6 @@ export {
   understandingPath,
   unmark,
 } from "./understanding.js";
-export {
-  GENERATED_TOUR_ID,
-  TourInputError,
-  deleteTour,
-  generateTour,
-  listTours,
-  resolveRef,
-  saveTour,
-  stableRef,
-} from "./tours.js";
 export { getLens } from "./lens.js";
 export { lookupNode, type LookupCandidate, type LookupResult } from "./lookup.js";
 export { runCheck, type CheckOptions, type CheckReport } from "./check.js";

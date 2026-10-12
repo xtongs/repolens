@@ -42,7 +42,7 @@ export function ModuleCardSection({ nodeId }: { nodeId: string }) {
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <UnderstandButton nodeId={nodeId} />
         {card.layer && (
-          <Chip tone={card.layer.confirmed ? "success" : "accent"} title={card.layer.confirmed ? t("团队确认过的分层") : t("AI 提议的分层，还没有人确认")}>
+          <Chip tone={card.layer.confirmed ? "success" : "accent"} title={card.layer.confirmed ? t("确认过的分层") : t("AI 提议的分层，还没有人确认")}>
             {card.layer.name}
             {card.layer.confirmed ? "" : " · AI"}
           </Chip>

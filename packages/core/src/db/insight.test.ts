@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCheck } from "../check.js";
 import { writeLock } from "../config.js";
 import { getLens } from "../lens.js";
+import { lookupNode } from "../lookup.js";
 import { scanRepo } from "../pipeline/scan.js";
-import { GENERATED_TOUR_ID, listTours, resolveRef, saveTour, stableRef } from "../tours.js";
 import { getUnderstanding, markUnderstood, understandingLens } from "../understanding.js";
 import { buildLock } from "./architecture.js";
 import { getBoundary, getModuleCard } from "./boundary.js";
@@ -202,15 +202,18 @@ describe("测试即规格与数据骨架", () => {
   });
 });
 
-describe("理解账本与导览", () => {
-  it("看懂后代码改了就过期；主干覆盖和下一步该读的", async () => {
+describe("理解账本", () => {
+  it("看懂后代码改了就过期；主干覆盖，以及每个入口那条调用链看懂了几个", async () => {
     const { root, db, id } = await fixture();
+    expect(getUnderstanding(db, root).entries).toEqual({});
     markUnderstood(db, root, `sym:${id("add")}`);
     markUnderstood(db, root, `file:${(db.prepare("SELECT id FROM files WHERE path = 'packages/store/src/index.ts'").get() as { id: number }).id}`);
     const before = getUnderstanding(db, root);
     // 包入口里导出的函数都是公共 API 入口，九个函数全在主干上
     expect(before.summary.key).toEqual({ total: 9, understood: 4, stale: 0 });
-    expect(before.next.map((n) => n.name)).not.toContain("add");
+    // main → addAll → add → makeItem / saveItem / log，main → listOpen → log / loadItems
+    expect(before.entries[`sym:${id("main")}`]).toEqual({ total: 8, understood: 4, stale: 0 });
+    expect(before.entries[`sym:${id("log")}`]).toBeUndefined();
     db.close();
 
     write(root, { "packages/service/src/index.ts": readFileSync(join(root, "packages/service/src/index.ts"), "utf8").replace('log("added");', 'log("added!");') });
@@ -219,7 +222,8 @@ describe("理解账本与导览", () => {
     try {
       const understanding = getUnderstanding(after, root);
       expect(understanding.stale.map((m) => [m.label, m.status])).toEqual([["add", "stale"]]);
-      expect(understanding.next[0]).toMatchObject({ name: "add", stale: true });
+      const main = (after.prepare("SELECT id FROM symbols WHERE name = 'main'").get() as { id: number }).id;
+      expect(understanding.entries[`sym:${main}`]).toEqual({ total: 8, understood: 3, stale: 1 });
       const lens = understandingLens(after, root, ["pkg:@x/store", "pkg:@x/service"]);
       expect(lens["pkg:@x/store"]).toMatchObject({ total: 3, understood: 3, stale: 0 });
       expect(lens["pkg:@x/service"]).toMatchObject({ total: 5, understood: 0, stale: 1 });
@@ -229,23 +233,20 @@ describe("理解账本与导览", () => {
     }
   });
 
-  it("导览用稳定引用，保存进团队约定后换个扫描照样找得到", async () => {
-    const { root, db, id } = await fixture();
-    try {
-      const generated = listTours(db, root).find((t) => t.id === GENERATED_TOUR_ID)!;
-      expect(generated.steps[0]).toMatchObject({ target: "repo", reason: { kind: "overview" } });
-      expect(generated.steps.some((s) => s.reason?.kind === "entry" && s.title === "main")).toBe(true);
-      expect(stableRef(db, `sym:${id("add")}`)).toBe("symbol:packages/service/src/index.ts#add");
-      expect(resolveRef(db, "symbol:packages/service/src/index.ts#add")).toBe(`sym:${id("add")}`);
+});
 
-      const saved = saveTour(db, root, {
-        id: GENERATED_TOUR_ID, title: "上手", description: null,
-        steps: [{ target: "", nodeId: `sym:${id("add")}`, title: "新增", note: "先看校验" }],
-      });
-      expect(saved.id).not.toBe(GENERATED_TOUR_ID);
-      expect(JSON.parse(readFileSync(join(root, ".repolens.json"), "utf8")).tours).toEqual([
-        { id: saved.id, title: "上手", description: null, steps: [{ target: "symbol:packages/service/src/index.ts#add", title: "新增", note: "先看校验" }] },
-      ]);
+describe("按引用找节点", () => {
+  it("按路径和名字写的引用对上当前索引里的节点；对象不在、要的种类不对都算找不到", async () => {
+    const { db, id } = await fixture();
+    try {
+      const add = { kind: "found", id: `sym:${id("add")}` };
+      expect(lookupNode(db, "symbol:packages/service/src/index.ts#add")).toEqual(add);
+      expect(lookupNode(db, "packages/service/src/index.ts#add", "symbol")).toEqual(add);
+      const file = (db.prepare("SELECT id FROM files WHERE path = 'packages/app/src/main.ts'").get() as { id: number }).id;
+      expect(lookupNode(db, "path:packages/app/src/main.ts")).toEqual({ kind: "found", id: `file:${file}` });
+      expect(lookupNode(db, "path:packages/app/src/main.ts", "symbol")).toEqual({ kind: "missing" });
+      expect(lookupNode(db, "symbol:packages/service/src/index.ts#remove")).toEqual({ kind: "missing" });
+      expect(lookupNode(db, "dir:packages/service")).toEqual({ kind: "found", id: "dir:packages/service" });
     } finally {
       db.close();
     }

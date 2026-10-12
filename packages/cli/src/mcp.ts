@@ -32,13 +32,13 @@ import { ENTRY_NAMES, FINDING_NAMES, IO_NAMES } from "./labels.js";
 /** 新的在前；客户端要的版本我们认识就照它回，否则回最新的 */
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS = `RepoLens 从语法树建出这个仓库的结构索引：模块、依赖、调用关系、入口、测试覆盖、改动历史和团队约定。
+const INSTRUCTIONS = `RepoLens 从语法树建出这个仓库的结构索引：模块、依赖、调用关系、入口、测试覆盖、改动历史和写进仓库的架构约定。
 结构由解析器决定，不是模型猜的，可以当事实用。
 
-改代码之前：conventions 读团队约定（依赖规则、确认过的分层、批准过的模块间依赖），module 看要动的模块对外暴露什么、
+改代码之前：conventions 读约定（依赖规则、确认过的分层、批准过的模块间依赖），module 看要动的模块对外暴露什么、
 谁在用它，symbol 看函数的调用方和走得到它的测试，boundary 看两个模块之间到底依赖了什么。
 改完之后：changes 看这次改动在结构上做了什么（新依赖、新 I/O、受影响的入口、没被测试走到的改动），
-check 跑团队约定检查；不通过就修，别绕过。新增模块间依赖需要人运行 repolens lock 批准。`;
+check 跑约定检查；不通过就修，别绕过。新增模块间依赖需要人运行 repolens lock 批准。`;
 
 type JsonRpcId = string | number;
 
@@ -260,14 +260,14 @@ export class RepoLensMcp {
       {
         name: "overview",
         title: "仓库全貌",
-        description: "仓库的全貌：规模（源码行和总行数分开）、包、分层（团队确认过的优先于 AI 提议）、主要入口、体检概况、团队约定和改动历史概况。刚接触这个仓库时先调它。",
+        description: "仓库的全貌：规模（源码行和总行数分开）、包、分层（确认过的优先于 AI 提议）、主要入口、体检概况、约定和改动历史概况。刚接触这个仓库时先调它。",
         inputSchema: { type: "object", properties: {} },
         run: () => this.read((db) => overviewText(db, root)),
       },
       {
         name: "conventions",
-        title: "团队约定",
-        description: "团队写进仓库的架构约定：依赖规则（哪些模块不许依赖哪些）、确认过的分层（下层不许依赖上层）、依赖锁（批准过的模块间依赖，新增的要人批准）和棘轮（相对基线不许新增的问题）。写代码前先读，别写出违反约定的依赖。",
+        title: "约定",
+        description: "写进仓库的架构约定：依赖规则（哪些模块不许依赖哪些）、确认过的分层（下层不许依赖上层）、依赖锁（批准过的模块间依赖，新增的要人批准）和棘轮（相对基线不许新增的问题）。写代码前先读，别写出违反约定的依赖。",
         inputSchema: { type: "object", properties: {} },
         run: async () => conventionsText(root),
       },
@@ -401,8 +401,8 @@ export class RepoLensMcp {
       },
       {
         name: "check",
-        title: "团队约定检查",
-        description: "跑团队约定检查：依赖规则、依赖锁（锁里没有的模块间依赖）、给了基线时再加棘轮（相对基线新增的依赖环、分层倒置等）。和 CI 里的 repolens check 是同一套。不通过时按报告修，新依赖确实合理就请人运行 repolens lock 批准。",
+        title: "约定检查",
+        description: "跑约定检查：依赖规则、依赖锁（锁里没有的模块间依赖）、给了基线时再加棘轮（相对基线新增的依赖环、分层倒置等）。和 CI 里的 repolens check 是同一套。不通过时按报告修，新依赖确实合理就请人运行 repolens lock 批准。",
         inputSchema: {
           type: "object",
           properties: { baseline: { type: "string", description: "做棘轮检查的基线：分支、tag 或 sha；缺省只查规则和依赖锁" } },
@@ -468,7 +468,7 @@ function overviewText(db: Db, root: string): string {
   if (overview.summary) lines.push(`概述（AI 生成）：${overview.summary}`);
 
   if (overview.layers && overview.layers.length > 0) {
-    lines.push("", overview.layersConfirmed ? "分层（团队确认，自上而下；下层不许依赖上层）：" : "分层（AI 提议，未经团队确认）：");
+    lines.push("", overview.layersConfirmed ? "分层（已确认，自上而下；下层不许依赖上层）：" : "分层（AI 提议，还没确认）：");
     overview.layers.forEach((layer, index) => {
       lines.push(`  ${index + 1}. ${layer.name}${layer.description ? ` — ${layer.description}` : ""}：${layer.nodeIds.join(", ")}`);
     });
@@ -495,7 +495,7 @@ function overviewText(db: Db, root: string): string {
     overview.layersConfirmed ? "分层已确认" : "",
     overview.lock ? `依赖锁 ${overview.lock.dependencies} 条${overview.lock.level === "package" ? "包" : "模块"}间依赖` : "",
   ].filter(Boolean);
-  lines.push(`团队约定：${conventions.length > 0 ? conventions.join("，") : "还没有（见 conventions）"}`);
+  lines.push(`约定：${conventions.length > 0 ? conventions.join("，") : "还没有（见 conventions）"}`);
   if (overview.history) lines.push(`历史：近一年 ${overview.history.commits} 次提交，其中 ${overview.history.aiCommits} 次标明有 AI 参与`);
   return lines.join("\n");
 }
@@ -505,7 +505,7 @@ function conventionsText(root: string): string {
   const lock = loadLock(root);
   const lines: string[] = [];
   if (config.rules.length === 0 && config.layers.length === 0 && lock === null) {
-    return "这个仓库还没有写下团队约定（.repolens.json 的 rules / layers，.repolens.lock.json 的依赖锁）。照现有的依赖方向写，别引入新的模块间依赖和环。";
+    return "这个仓库还没有写下约定（.repolens.json 的 rules / layers，.repolens.lock.json 的依赖锁）。照现有的依赖方向写，别引入新的模块间依赖和环。";
   }
   if (config.rules.length > 0) {
     lines.push(`依赖规则（${config.rules.length}）：`);
@@ -518,7 +518,7 @@ function conventionsText(root: string): string {
     lines.push("");
   }
   if (config.layers.length > 0) {
-    lines.push("分层（团队确认，自上而下；下层依赖上层算分层倒置）：");
+    lines.push("分层（已确认，自上而下；下层依赖上层算分层倒置）：");
     config.layers.forEach((layer, index) => {
       lines.push(`  ${index + 1}. ${layer.name}${layer.description ? ` — ${layer.description}` : ""}：${layer.members.join(", ")}`);
     });
@@ -536,7 +536,7 @@ function conventionsText(root: string): string {
 
 function moduleText(card: NonNullable<ReturnType<typeof getModuleCard>>): string {
   const lines: string[] = [];
-  lines.push(`模块 ${card.label}（${card.path}）[${card.id}]${card.layer ? `  分层：${card.layer.name}${card.layer.confirmed ? "（团队确认）" : "（AI 提议）"}` : ""}`);
+  lines.push(`模块 ${card.label}（${card.path}）[${card.id}]${card.layer ? `  分层：${card.layer.name}${card.layer.confirmed ? "（已确认）" : "（AI 提议）"}` : ""}`);
   if (card.api.length > 0) {
     lines.push("", `对外接口（被模块外用到的 ${card.apiTotal} 个，按外部调用方数排）：`);
     for (const api of card.api.slice(0, 30)) {

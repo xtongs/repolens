@@ -417,10 +417,8 @@ export interface RepolensConfig {
   defaultRoles: FileRole[];
   /** 仓库声明的依赖禁令，违反的 import 进体检 */
   rules: ArchitectureRule[];
-  /** 团队确认过的分层，自上而下；下层依赖上层算分层倒置 */
+  /** 确认过的分层，自上而下；下层依赖上层算分层倒置 */
   layers: ConfirmedLayer[];
-  /** 团队写下的阅读路径 */
-  tours: TourDto[];
   /** `repolens check --baseline` 里哪些新增问题让检查失败 */
   ratchet: RatchetConfig;
   /** 读 git 历史算改动热点和协同变更；仓库很大或不想读历史时可以关掉 */
@@ -429,8 +427,8 @@ export interface RepolensConfig {
 }
 
 /**
- * 团队确认过的一层。成员是图节点 id（`pkg:名字` / `dir:路径`），和界面上的节点一一对应。
- * AI 只负责提议，写进团队约定的分层才拿来做确定性的倒置检查。
+ * 确认过的一层。成员是图节点 id（`pkg:名字` / `dir:路径`），和界面上的节点一一对应。
+ * AI 只负责提议，写进约定的分层才拿来做确定性的倒置检查。
  */
 export interface ConfirmedLayer {
   name: string;
@@ -449,7 +447,7 @@ export interface RatchetConfig {
 }
 
 /**
- * 依赖锁：团队批准过的模块间依赖。和 package-lock 一个道理——新出现的内部依赖
+ * 依赖锁：批准过的模块间依赖。和 package-lock 一个道理——新出现的内部依赖
  * 要当成一次需要审的变更，而不是悄悄长出来。
  */
 export interface ArchitectureLock {
@@ -563,7 +561,7 @@ export interface NodeMetrics {
 
 /**
  * - duplicate / cycle / oversized：结构本身的气味
- * - violation / unapproved / layering：违反了团队写下的约定（依赖规则、依赖锁、确认的分层）
+ * - violation / unapproved / layering：违反了写下的约定（依赖规则、依赖锁、确认的分层）
  * - bypass：绕过别的包的入口直接引它的内部文件
  * - coupling：git 历史里总是一起改、代码里却没有依赖关系的文件
  * - stale-doc：文档里引用的路径在仓库里已经不存在
@@ -719,7 +717,7 @@ export interface OverviewDto {
   /** 仓库概览缺失时，上次扫描记录的具体原因。 */
   summaryUnavailableReason?: string | null;
   layers?: Array<{ name: string; description: string; nodeIds: string[] }> | null;
-  /** layers 来自团队确认的约定（.repolens.json），而不是 AI 的提议 */
+  /** layers 来自确认过的约定（.repolens.json），而不是 AI 的提议 */
   layersConfirmed?: boolean;
   /** 依赖锁的概况；没有锁文件时为 null */
   lock?: { level: ArchitectureLock["level"]; dependencies: number } | null;
@@ -1223,7 +1221,7 @@ export interface DataAccessRefDto {
 // 理解账本：人自己看懂了什么
 // ---------------------------------------------------------------------------
 
-export type UnderstandingHow = "manual" | "walk" | "review" | "tour";
+export type UnderstandingHow = "manual" | "walk" | "review";
 
 /**
  * 一条「我看懂了」。按稳定的路径和名字记，带上当时内容的指纹：代码改了指纹就对不上，
@@ -1259,26 +1257,12 @@ export interface UnderstandingDto {
   summary: UnderstandingSummaryDto;
   /** 看懂之后又被改过的 */
   stale: UnderstandingMarkDto[];
-  /** 下一步最值得读的：入口能走到、复杂、改得勤、还没看过 */
-  next: NextReadDto[];
+  /**
+   * 入口往下那条调用链上的函数看懂了多少，键是处理函数的节点 id。测试入口不算；
+   * 一个都没看懂、也没有改过的入口不列
+   */
+  entries: Record<string, UnderstandingCountsDto>;
 }
-
-export interface NextReadDto {
-  id: string;
-  name: string;
-  path: string;
-  line: number;
-  complexity: number;
-  /** 调用它的函数数 */
-  callers: number;
-  recentCommits: number;
-  /** 看懂过、后来又被改了 */
-  stale: boolean;
-  /** 为什么推荐它 */
-  reasons: NextReadReason[];
-}
-
-export type NextReadReason = "entry" | "complex" | "hot" | "central" | "untested" | "stale";
 
 /** 图上叠加的一层视角：每个节点一组数，界面按视角取用 */
 export type LensKind = "heat" | "tests" | "understanding";
@@ -1297,43 +1281,6 @@ export interface LensValueDto {
   mark?: "understood" | "stale" | null;
   /** 生效的那条标记，撤销时用；函数随整个文件被标过时是文件那条 */
   key?: string;
-}
-
-// ---------------------------------------------------------------------------
-// 导览
-// ---------------------------------------------------------------------------
-
-/**
- * 一条阅读路径。步骤指向的是稳定引用（路径和名字），不是每次扫描都会变的节点 id，
- * 这样写进仓库的导览在代码演进后照样能用。
- */
-export interface TourDto {
-  id: string;
-  title: string;
-  description: string | null;
-  steps: TourStepDto[];
-  /** 按当前结构自动生成的，还没被人改过 */
-  generated?: boolean;
-}
-
-export interface TourStepDto {
-  /** `repo` / `pkg:名字` / `dir:路径` / `path:文件路径` / `symbol:文件路径#容器.名字` */
-  target: string;
-  /** 当前索引里对应的节点；找不到时为 null */
-  nodeId?: string | null;
-  title: string;
-  /** 人写的说明 */
-  note: string | null;
-  /** 自动生成时给出的理由，界面按它组织文案 */
-  reason?: TourReasonDto | null;
-}
-
-export interface TourReasonDto {
-  kind: "overview" | "entry" | "type" | "module" | "hotspot";
-  /** entry：往下走到的函数数；type：引用它的函数数；module：依赖它的模块数；hotspot：近 90 天提交数 */
-  count?: number;
-  /** module：所在分层；hotspot：复杂度 */
-  extra?: string | number;
 }
 
 // ---------------------------------------------------------------------------
