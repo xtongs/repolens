@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import { ACCESS_TOKEN_COOKIE, ACCESS_TOKEN_HEADER, sameToken } from "./auth.js";
 import { DirectoryPickerUnavailableError, pickDirectory } from "./directory-picker.js";
+import { LiveUpdates } from "./live.js";
 import { RepoPool, RepoUnavailableError } from "./repo-pool.js";
 import { InvalidScanRootError, ScanBusyError, ScanManager } from "./scan-manager.js";
 
@@ -41,6 +42,8 @@ export interface ServeOptions {
    * 命令行用户自己在终端里起服务可以接受这一点，常驻后台的桌面应用不行。
    */
   accessToken?: string;
+  /** 启动时就盯着启动仓库的文件变化，改动后自动刷新结构索引 */
+  watch?: boolean;
 }
 
 export interface RunningServer {
@@ -63,6 +66,7 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
 
   const pool = new RepoPool(repoRoot);
   const scans = new ScanManager();
+  const live = new LiveUpdates(scans);
   const pick = options.pickDirectory ?? pickDirectory;
   const app = new Hono();
 
@@ -130,6 +134,8 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     }
   });
 
+  live.mount(app, pool);
+
   // 只从清单里移除，不动仓库和索引。仓库被删或移走后清单里会留下死条目，
   // 没有这个端点就只能手改 ~/.repolens/repos.json。
   app.delete("/api/repos/:id", (c) => {
@@ -170,12 +176,14 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
 
   const host = options.host ?? "127.0.0.1";
   const { server, port } = await listen(app, options.port, host);
+  if (options.watch && repoRoot !== null && pool.currentId !== null) live.watch(pool.currentId, repoRoot);
 
   return {
     url: `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`,
     port,
     close: () =>
       new Promise<void>((done) => {
+        live.close();
         server.close(() => {
           void scans.close().finally(() => {
             pool.close();

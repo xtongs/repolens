@@ -96,14 +96,28 @@ repolens/
 ```
 core/src/
 ├── types.ts              纯类型，零运行时依赖（web 也从这里取类型）
-├── config.ts             RepolensConfig 与 .repolens.json 加载
+├── config.ts             RepolensConfig：全局 → .repolens.json（团队）→ .repolens.local.json（个人）；依赖锁读写
+├── json-file.ts          .repolens/ 下的本地 JSON 列表（笔记、理解账本）与原子写
 ├── registry.ts           扫过的仓库清单（~/.repolens/repos.json）
+├── check.ts              团队约定检查：规则 + 依赖锁 + 棘轮，CLI / CI / MCP 共用
+├── understanding.ts      理解账本：按内容指纹记「我看懂了」，过期判断、覆盖率、下一步读什么
+├── tours.ts              阅读导览：稳定引用 ↔ 节点、自动生成、保存进团队约定
+├── lens.ts               图上的视角：热度、测试覆盖、我的理解
+├── lookup.ts             把随手写的引用（名字、路径、id）换成节点，MCP 用
+├── watch.ts              文件变化里哪些值得刷新索引
 ├── db/
 │   ├── schema.ts         DDL
 │   ├── database.ts       打开 / 迁移 / WAL / 事务
-│   ├── writer.ts         批量写入
+│   ├── writer.ts         批量写入；重新解析的文件沿用原有符号 id
 │   ├── queries.ts        读查询（server 消费）
 │   ├── walk.ts           入口列表与单步走读帧的读查询
+│   ├── architecture.ts   架构的模块层、模块间依赖、依赖锁、包入口
+│   ├── boundary.ts       边即契约（两个节点之间由什么连着）与模块名片
+│   ├── spec.ts           测试即规格：走得到某处的用例
+│   ├── skeleton.ts       类型流与仓库骨架（核心类型、数据表）
+│   ├── scope.ts          节点 id → 它覆盖的文件和函数
+│   ├── grounding.ts      AI 文字里的名字对上代码里的哪个节点
+│   ├── file-history.ts   文件的 git 历史、按提交去重的模块提交数
 │   ├── semantic.ts       AI 生成内容的存取（summaries 表、输出语言、AI 状态）
 │   └── semantic-format.ts AI 内容的存储格式：写入和读出时共用的规整与解析
 ├── discovery/
@@ -114,15 +128,21 @@ core/src/
 │   └── walk.ts           目录遍历
 ├── parse/
 │   ├── parser-pool.ts    web-tree-sitter 实例复用
-│   └── extractors/       每语言一个：符号 / import / 导出 / 调用点
+│   ├── control-flow.ts   调用所在的控制结构（if / else / 循环 / try / 回调）与守卫分支
+│   └── extractors/       每语言一个：符号 / import / 导出 / 调用点；测试回调合成为用例符号
 ├── resolve/              每语言一个模块解析器：import 说明符 → 文件 → 符号
 ├── pipeline/
-│   ├── scan.ts           扫描编排：发现 → 内容指纹增量 → 解析 → 链接 → 语义
+│   ├── scan.ts           扫描编排：发现 → 内容指纹增量 → 解析 → 历史 → 链接 → 语义
 │   ├── link.ts           链接阶段编排：import 边与目录/包汇总、类型关系，再依次调下面几步
 │   ├── link-calls.ts     调用点 → 符号级调用边，打置信度；逐调用点的解析结果写回 call_sites
 │   ├── entries.ts        入口识别、调用点 I/O 分类、每个函数到各类 I/O 的距离、入口可达规模
 │   ├── http-links.ts     前端请求 URL ↔ 后端路由的推断边
-│   ├── diagnose.ts       体检：重复实现、模块环、巨石函数/文件、规则违规
+│   ├── tests.ts          用例沿调用走得到哪些源码函数（静态覆盖）
+│   ├── data-access.ts    SQL 字面量里读写的表
+│   ├── history.ts        git 历史：文件热度、AI 参与、提交明细、协同变更
+│   ├── diagnose.ts       体检编排：重复实现、模块环、巨石函数/文件、规则违规，再调下面两步
+│   ├── conventions.ts    依赖锁之外的新依赖、分层倒置、绕过包入口
+│   ├── drift.ts          隐性耦合（总是一起改却没有依赖）、指向已删除文件的文档
 │   ├── rules.ts          .repolens.json 依赖规则的核对
 │   └── metrics.ts        LOC / 圈复杂度
 ├── diff/
@@ -142,14 +162,32 @@ core/src/
 2. fingerprint 计算内容哈希，与上次扫描比对，得出 changed / unchanged / deleted
 3. parse       对 changed 文件跑 tree-sitter，提取符号、import、导出、调用点
 4. resolve     import 说明符 → 目标文件 id；导入名 → 目标符号 id（构建符号索引）
-5. link        整体重算派生数据，顺序固定：
+5. history     （完整扫描）git log 近一年：文件热度、AI 参与、提交明细、协同变更
+6. link        整体重算派生数据，顺序固定：
                  import 边与目录/包汇总 → 调用边（打 confidence）→ 类型关系
-                 → 入口与 I/O 标注 → HTTP 推断边 → 搜索索引 → 体检
-6. rollup      目录级行数、复杂度等指标汇总
-7. enrich      （M3）LLM 生成仓库总览、包摘要和架构分层；函数级摘要与伪代码按需生成
+                 → 入口与 I/O 标注 → HTTP 推断边 → 测试覆盖 → SQL 表 → 搜索索引 → 体检
+7. rollup      目录级行数、复杂度等指标汇总
+8. enrich      （M3）LLM 生成仓库总览、包摘要和架构分层；函数级摘要与伪代码按需生成
 ```
 
-第 3-5 步是纯函数式的，输入相同必然输出相同，这是增量更新和结果可复现的基础。
+第 3-4、6 步是纯函数式的，输入相同必然输出相同，这是增量更新和结果可复现的基础。历史只在完整扫描里读：
+基线快照不在 git 里，watch 的增量刷新也不该每次跑一遍 git log，跳过时保留上次读到的。
+
+解析时每处调用还记下它所在的控制结构（`call_sites.blocks`，自外向内的 if / else / case / 循环 / try /
+catch / 回调）和返回值有没有人用（`discarded`）。判断只依赖语法树的字段名（condition / consequence /
+alternative / body），各家 tree-sitter 语法一致；`a && f()` 记成「a 成立时」、`a ?? f()` 记成「a 为空时」。
+if 分支以 return / throw / break / continue 收尾、又没有 else 的，标成守卫分支——走读的「主路径」跳过它们。
+认不出的结构不记，宁可少分一组，也不把调用塞进编出来的分支。
+
+`describe` / `it` / `test` 的回调合成为用例符号（标题当名字，`test_kind` 记 case / suite），Python 的
+`test_*`、Go 的 `TestXxx` 这类按约定命名的也算。链接期从每个用例沿确定 / 可能的调用往下最多走 4 层，
+记下每个源码函数被几个用例走到、哪几个离得最近（`test_coverage`）。这是静态推算，不是运行时覆盖率，
+界面上照实这么说。合成的用例符号不进调用候选：`describe("startServer")` 和被测的 `startServer` 同名，
+同文件优先的规则会让它抢走调用。
+
+重新解析一个文件时，还在的符号沿用原来的 id（按种类、容器、名字和出现顺序认）：界面上选中的函数、
+走读到一半的调用栈在 watch 刷新之后照样指得到。沿用 id 的先插——表没有 AUTOINCREMENT，新符号自动
+分到的 id 可能正好是刚腾出来、还没还回去的那个。
 
 入口和 I/O 标注在 HTTP 连线之前算，所以可达规模和单步走读都不跨网络边界：前端的 `fetch`
 停在「访问网络」，不会一步跳进后端路由。HTTP 边让两端在图上接得上，但不冒充一条连续的执行轨迹。
@@ -209,17 +247,67 @@ git 提交 ──git archive──▶ 临时快照 ──scanRepo(仅结构)─�
 - 文件按路径配对，内容哈希相同的「删除 + 新增」认作移动；符号按「文件 + 容器.名字 + 类型」
   配对，同名的按出现顺序，再比内容哈希。
 - 影响面：从每个入口沿调用边往下最多走几跳，碰到改过的符号就记下来，回答「哪些入口会走到这次改的代码」。
+  入口往下能碰到的 I/O 两边各算一遍，新碰到的（`ioAdded`）是行为面和安全面的变化。
+- 行为变化：配对上的函数比较前后的出边——新调了谁、不再调谁、开始碰哪类 I/O。语言内置和派生的
+  链式调用（`readFileSync(p).split()` 的 `split`）不算，免得淹没真正的新依赖。
+- 改动单元：从没被其他改动调用的上游函数出发，沿调用往下认领改过的函数（最多 3 层、20 个），被 4 个以上
+  改动调用的工具函数自成一组，不当桥把不相干的事连起来；类型、常量按文件归组。每组的风险由导出接口、签名变化、
+  新 I/O、新调用（每个函数封顶）、复杂度上升、没有测试和走到的入口数加起来，排在最前的最该先看。
+- 体检差异里不含隐性耦合和文档过期：它们来自 git 历史，基线快照里没有，比出来全是「新增」。
 - 全程不经过模型。审 AI 写的代码时最需要的是一份不会被「解释」掉的客观变化清单。
 
-## 架构规则
+## 团队约定
 
-`.repolens.json` 的 `rules` 声明哪些模块不许依赖哪些（仓库内路径 glob、外部包名都可以），
-`diagnose` 阶段逐条核对已解析到确定目标的 import，违规作为 `violation` 体检落库，
-和其他体检一样挂在节点上；`repolens check` 复用同一份核对，不通过时退出码为 1。
+约定写进仓库、随代码提交，CI、界面和 MCP 读的是同一份：
+
+- `.repolens.json`：依赖规则 `rules`、确认过的分层 `layers`、阅读导览 `tours`、棘轮 `ratchet`
+- `.repolens.lock.json`：依赖锁，批准过的模块间依赖（多包仓库按包，单包按 `architectureModules` 认出的目录）
+- `.repolens.local.json`：个人覆盖，不提交
+
+规则：`rules` 声明哪些模块不许依赖哪些（仓库内路径 glob、外部包名都可以），`diagnose` 阶段逐条核对已解析到
+确定目标的 import，违规作为 `violation` 体检落库，和其他体检一样挂在节点上。
 
 - 只约束源码文件，测试跨层引用被测对象是常态
 - `import type` 默认不算违规（共享 DTO 类型不构成运行时耦合），`includeTypeOnly: true` 可以打开
 - 报告里给出每条规则命中的文件数：为 0 多半是 glob 写错了，规则等于没生效
+
+另外三类约定体检（`pipeline/conventions.ts`），确认、批准之后只需重算这几类，不必重扫（`refreshConventions`）：
+
+- `unapproved`：模块间依赖不在锁里。AI 顺手加的新依赖要被人看一眼——要么批准（重写锁、进代码评审），要么改掉
+- `layering`：确认过的分层里下层依赖上层。分层由 AI 提议、人在界面里确认后才生效，之前只是建议
+- `bypass`：绕过对方包在 package.json 里声明的入口，直接引了内部文件。只认 pnpm / npm / yarn 的 JS/TS 包，
+  Python、Rust 里直接引子模块是惯用写法；相对路径跨包引用定为高危
+
+`repolens check` 依次跑规则、依赖锁，给了 `--baseline` 时再对基线做一次变更对比，新增的体检问题按 `ratchet`
+分成拦下的和只提示的。只拦新长出来的问题，已有的债可以慢慢还。
+
+## 理解账本与导览
+
+理解账本存在 `.repolens/understanding.json`（只在本机，不进 index.db：索引随时可能被重建），
+一条标记按稳定的「路径 + 容器.名字 + 种类」记下当时的内容指纹。函数和文件看内容，模块看对外接口签名的指纹
+（`apiHash`）——接口没变，内部怎么改都还算看懂了接口。指纹对不上就是过期：AI 改过的地方，人得重新看过才算数。
+
+覆盖率分两层：全部源码函数，以及从 HTTP / CLI / main / 公共 API 入口沿调用走得到的「主干」。「下一步读什么」在主干里
+没看懂（或看懂后被改）的函数中，按复杂度、调用方数、近 90 天改动、是否有测试、是否入口打分，一次给十几个。
+
+导览的步骤存稳定引用（`repo`、`pkg:`、`dir:`、`path:<文件>`、`symbol:<文件>#<容器.名字>`），不存每次扫描都会变的
+节点 id，写进仓库的导览在代码演进后照样能用；被删或改名的步骤显示为失效。自动生成的导览依次是仓库自述、
+往下走得最远的几个入口、被签名引用最多的核心类型、按分层自上而下的模块、改得勤又复杂的热点，每一步带着理由。
+
+## 实时刷新
+
+`serve --watch` 或界面里打开「实时」后，服务端用 `fs.watch`（递归）盯着仓库，忽略规则和扫描一致，团队约定文件
+就算被 gitignore 也算。改动停 700ms 后做一次只建结构的增量扫描（在 worker 里，同一仓库串行，扫描中再有改动就
+跑完补一次），然后通过 `GET /api/repos/:id/events`（SSE）告诉界面。界面收到后递增 `indexRevision`：
+已取过的子图、详情、走读帧、源码、体检原地重取，展开、选中和走读位置都保留；开着的变更报告跟着重算。
+
+## MCP
+
+`repolens mcp` 是一个 stdio 上按行分隔的 JSON-RPC 服务（没有额外依赖），给 AI 编程助手十个只读工具：
+`overview`、`conventions`、`module`、`find`、`symbol`、`boundary`、`spec`、`findings`、`changes`、`check`。
+输出是给模型读的紧凑文本，每个对象都带节点 id，方便接着查；同名符号不替调用方猜，列出候选。
+助手两次调用之间多半改过代码：服务同样盯着文件，有改动就先增量扫描再回答，扫描和读索引排成一队，
+不会两次扫描同时写库，也不会读到扫了一半的图。
 
 ### 语言能力分层
 

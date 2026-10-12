@@ -4,7 +4,7 @@ packages/desktop/app/
 packages/desktop/release/
 *.tsbuildinfo
 .repolens/
-.repolens.json
+.repolens.local.json
 .DS_Store
 *.log
 coverage/

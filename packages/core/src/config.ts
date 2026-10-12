@@ -1,13 +1,32 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ArchitectureRule, FileRole, RepolensConfig } from "./types.js";
+import { writeJsonAtomically } from "./json-file.js";
+import type {
+  ArchitectureLock,
+  ArchitectureRule,
+  ConfirmedLayer,
+  FileRole,
+  LockedDependency,
+  RatchetConfig,
+  RatchetKind,
+  RepolensConfig,
+  TourDto,
+  TourStepDto,
+} from "./types.js";
 
+/** 团队约定：依赖规则、确认过的分层、导览。随代码提交，所有人和 CI 读到的是同一份 */
 export const CONFIG_FILENAME = ".repolens.json";
+/** 个人在这个仓库上的覆盖，不提交 */
+export const LOCAL_CONFIG_FILENAME = ".repolens.local.json";
+/** 依赖锁：团队批准过的模块间依赖，由 `repolens lock` 生成，随代码提交 */
+export const LOCK_FILENAME = ".repolens.lock.json";
 export const GLOBAL_CONFIG_DIR = "repolens";
 export const GLOBAL_CONFIG_FILENAME = "config.json";
 
 export const DEFAULT_ROLES: FileRole[] = ["source"];
+
+const RATCHET_KINDS: readonly RatchetKind[] = ["cycle", "violation", "unapproved", "layering", "bypass", "duplicate", "oversized"];
 
 export const DEFAULT_CONFIG: RepolensConfig = {
   exclude: [],
@@ -17,6 +36,11 @@ export const DEFAULT_CONFIG: RepolensConfig = {
   maxNodesPerView: 30,
   defaultRoles: DEFAULT_ROLES,
   rules: [],
+  layers: [],
+  tours: [],
+  // 违反团队写下的约定一律拦下；重复和巨石先提示，等团队决定要不要收紧
+  ratchet: { fail: ["cycle", "violation", "unapproved", "layering", "bypass"], warn: ["duplicate", "oversized"] },
+  history: true,
   llm: {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
@@ -45,16 +69,76 @@ export function globalConfigPath(): string {
 }
 
 /**
- * 三级配置继承：内置默认值 → 用户级共享配置 → 仓库级覆盖。
+ * 四级配置继承：内置默认值 → 用户级共享配置 → 仓库的团队约定 → 个人在这个仓库上的覆盖。
  *
- * 两个文件都可以缺失；仓库级尤其适合 exclude/include，以及显式关闭某个
- * 仓库的 LLM。凭据始终只由 apiKeyEnv 指向环境变量，不在这里读取明文 key。
+ * 文件都可以缺失。团队约定（.repolens.json）随代码提交：依赖规则、确认过的分层、
+ * 导览、exclude 和文件角色，CI 里的 `repolens check` 读的也是它。个人覆盖
+ * （.repolens.local.json）不提交，适合只在自己机器上关掉某个仓库的 LLM。
+ * 凭据始终只由 apiKeyEnv 指向环境变量，不在这里读取明文 key。
  */
 export function loadConfig(repoRoot: string): RepolensConfig {
   let config = loadGlobalConfig();
-  const repoPath = join(repoRoot, CONFIG_FILENAME);
-  if (existsSync(repoPath)) config = mergeConfig(config, withoutCredentialRouting(readConfig(repoPath)));
+  for (const name of [CONFIG_FILENAME, LOCAL_CONFIG_FILENAME]) {
+    const path = join(repoRoot, name);
+    if (existsSync(path)) config = mergeConfig(config, withoutCredentialRouting(readConfig(path)));
+  }
   return config;
+}
+
+/**
+ * 改团队约定文件里的几个键，其余原样保留。界面上「确认分层」「保存导览」走这里：
+ * 这些是团队的决定，落在随代码提交的文件里，评审时看得见。
+ */
+export function updateTeamConfig(repoRoot: string, patch: Partial<Pick<RepolensConfig, "layers" | "tours">>): void {
+  const path = join(repoRoot, CONFIG_FILENAME);
+  let current: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(`RepoLens 配置不是 JSON 对象：${path}`);
+    }
+    current = parsed as Record<string, unknown>;
+  }
+  const next: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value) && value.length === 0) delete next[key];
+    else next[key] = value;
+  }
+  writeJsonAtomically(path, next);
+}
+
+/** 依赖锁不存在时为 null；文件写坏了直接报错，不能当成「没有锁」放过所有新依赖 */
+export function loadLock(repoRoot: string): ArchitectureLock | null {
+  const path = join(repoRoot, LOCK_FILENAME);
+  if (!existsSync(path)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    throw new Error(`依赖锁解析失败：${path}：${(err as Error).message}`);
+  }
+  const raw = (typeof parsed === "object" && parsed !== null ? parsed : {}) as Record<string, unknown>;
+  const level = raw["level"] === "directory" ? "directory" : raw["level"] === "package" ? "package" : null;
+  if (level === null || !Array.isArray(raw["dependencies"])) throw new Error(`依赖锁格式不对：${path}`);
+  const dependencies = (raw["dependencies"] as unknown[]).flatMap((item): LockedDependency[] => {
+    const dep = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+    const from = nonEmpty(dep["from"]);
+    const to = nonEmpty(dep["to"]);
+    if (from === null || to === null) return [];
+    return [{ from, to, type: dep["type"] === "http" ? "http" : "imports" }];
+  });
+  return { version: 1, level, modules: globList(raw["modules"]), dependencies };
+}
+
+export function writeLock(repoRoot: string, lock: ArchitectureLock): void {
+  const sorted: ArchitectureLock = {
+    ...lock,
+    modules: [...lock.modules].sort(),
+    dependencies: [...lock.dependencies].sort((a, b) =>
+      a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.type.localeCompare(b.type)),
+  };
+  writeJsonAtomically(join(repoRoot, LOCK_FILENAME), sorted);
 }
 
 /**
@@ -87,8 +171,12 @@ function readConfig(path: string): unknown {
   } catch (err) {
     throw new Error(`RepoLens 配置解析失败：${path}：${(err as Error).message}`);
   }
-  if (typeof parsed === "object" && parsed !== null && "rules" in parsed) {
-    (parsed as { rules: unknown }).rules = normalizeRules((parsed as { rules: unknown }).rules, path);
+  if (typeof parsed === "object" && parsed !== null) {
+    const record = parsed as Record<string, unknown>;
+    if ("rules" in record) record["rules"] = normalizeRules(record["rules"], path);
+    if ("layers" in record) record["layers"] = normalizeLayers(record["layers"], path);
+    if ("tours" in record) record["tours"] = normalizeTours(record["tours"]);
+    if ("ratchet" in record) record["ratchet"] = normalizeRatchet(record["ratchet"]);
   }
   return parsed;
 }
@@ -104,8 +192,51 @@ function mergeConfig(base: RepolensConfig, patch: unknown): RepolensConfig {
     maxNodesPerView: p.maxNodesPerView ?? base.maxNodesPerView,
     defaultRoles: p.defaultRoles ?? base.defaultRoles,
     rules: p.rules ?? base.rules,
+    layers: p.layers ?? base.layers,
+    tours: p.tours ?? base.tours,
+    ratchet: p.ratchet ?? base.ratchet,
+    history: typeof p.history === "boolean" ? p.history : base.history,
     llm: normalizeLlmConfig({ ...base.llm, ...(p.llm ?? {}) }),
   };
+}
+
+/** 分层写错同样直接报错：漏掉一层，倒置检查就静默地少查一块 */
+function normalizeLayers(value: unknown, path: string): ConfirmedLayer[] {
+  if (!Array.isArray(value)) throw new Error(`RepoLens 配置里的 layers 必须是数组：${path}`);
+  return value.map((raw, index) => {
+    const layer = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    const name = nonEmpty(layer["name"]);
+    const members = globList(layer["members"]).filter((id) => /^(?:pkg|dir):./.test(id));
+    if (name === null || members.length === 0) {
+      throw new Error(`RepoLens 配置里第 ${index + 1} 个分层缺少 name 或 members（成员写成 pkg:包名 或 dir:目录）：${path}`);
+    }
+    return { name, description: nonEmpty(layer["description"]), members };
+  });
+}
+
+/** 导览是人写的说明，个别步骤写坏了跳过那一步，不连累整份配置 */
+function normalizeTours(value: unknown): TourDto[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw, index): TourDto[] => {
+    const tour = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    const title = nonEmpty(tour["title"]);
+    if (title === null || !Array.isArray(tour["steps"])) return [];
+    const steps = (tour["steps"] as unknown[]).flatMap((item): TourStepDto[] => {
+      const step = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+      const target = nonEmpty(step["target"]);
+      if (target === null || !/^(?:repo$|pkg:|dir:|path:|symbol:)/.test(target)) return [];
+      return [{ target, title: nonEmpty(step["title"]) ?? target, note: nonEmpty(step["note"]) }];
+    });
+    return [{ id: nonEmpty(tour["id"]) ?? `tour-${index + 1}`, title, description: nonEmpty(tour["description"]), steps }];
+  });
+}
+
+function normalizeRatchet(value: unknown): RatchetConfig {
+  const raw = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  const kinds = (list: unknown, fallback: RatchetKind[]) =>
+    Array.isArray(list) ? list.filter((kind): kind is RatchetKind => RATCHET_KINDS.includes(kind as RatchetKind)) : fallback;
+  const fail = kinds(raw["fail"], DEFAULT_CONFIG.ratchet.fail);
+  return { fail, warn: kinds(raw["warn"], DEFAULT_CONFIG.ratchet.warn).filter((kind) => !fail.includes(kind)) };
 }
 
 /**

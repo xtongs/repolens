@@ -906,12 +906,13 @@ function buildIndex(db: Db): RepoIndex {
   };
 
   // 只索引可调用的符号。把 interface / type 放进候选池会让
-  // `parse(x)` 连到一个同名的类型别名上。
+  // `parse(x)` 连到一个同名的类型别名上。测试用例和用例组是按标题合成的符号，
+  // `describe("startServer")` 会和被测的 startServer 同名，而且同文件优先，不排除就会抢走调用
   const symbols = db
     .prepare(
       `SELECT id, file_id AS fileId, name, container, exported, params, return_type AS returnType, signature
        FROM symbols
-       WHERE kind IN ('function', 'method', 'class', 'struct', 'constructor', 'enum')`,
+       WHERE kind IN ('function', 'method', 'class', 'struct', 'constructor', 'enum') AND test_kind IS NULL`,
     )
     .all() as Array<{
     id: number;

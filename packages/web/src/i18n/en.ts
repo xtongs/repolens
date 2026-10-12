@@ -1,18 +1,6 @@
-import type { MessageParams, Translation } from "./index";
-
-/** 数字可能已经带了千分位，按去掉逗号后的值判断单复数 */
-function count(params: MessageParams, key = "count"): string {
-  return String(params[key] ?? "");
-}
-
-function plural(params: MessageParams, one: string, many: string, key = "count"): string {
-  return Number(count(params, key).replace(/,/g, "")) === 1 ? one : many;
-}
-
-/** `{count} 个文件` 这类只差一个名词单复数的词条 */
-function counted(one: string, many: string, key = "count"): Translation {
-  return (params) => `${count(params, key)} ${plural(params, one, many, key)}`;
-}
+import { EN_INSIGHT, EN_INSIGHT_PATTERNS } from "./en-insight";
+import type { Translation } from "./index";
+import { count, counted, plural } from "./plural";
 
 /**
  * 英文词典，键是界面上的中文原文。
@@ -620,6 +608,9 @@ export const EN: Record<string, Translation> = {
   "不是合法的网址": "Not a valid URL",
   "只能抓取 http 或 https 网址": "Only http and https URLs can be fetched",
   "网址里不能带账号密码": "URLs can't include a username or password",
+
+  // 看清、吃透、守住：契约、名片、理解账本、导览、视角、走读骨架、变更审阅、团队约定
+  ...EN_INSIGHT,
 };
 
 /** 嵌着路径、名字的报错，整句查不到时按这些模式翻译 */
@@ -658,4 +649,5 @@ export const EN_PATTERNS: Array<[RegExp, (...groups: string[]) => string]> = [
   [/^网页抓取失败：(.*)$/s, (detail) => `Couldn't fetch the page: ${detail}`],
   [/^网页返回 HTTP (\d+)$/, (status) => `The page returned HTTP ${status}`],
   [/^不是文本网页（(.+)）$/s, (type) => `Not a text page (${type})`],
+  ...EN_INSIGHT_PATTERNS,
 ];

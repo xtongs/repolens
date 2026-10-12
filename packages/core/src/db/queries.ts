@@ -4,6 +4,7 @@ import { baseName, depthOf, dirOf, isWithin } from "../resolve/path-utils.js";
 import type {
   CallGraphOptions,
   Confidence,
+  ConfirmedLayer,
   FileDetailDto,
   FileRole,
   FindingDto,
@@ -34,7 +35,10 @@ import type {
   LlmStatusDto,
 } from "../types.js";
 import { getMeta, getMetaJson, type Db } from "./database.js";
+import { fileHistory } from "./file-history.js";
+import { groundText } from "./grounding.js";
 import { readLlmStatus, semanticLanguage } from "./semantic.js";
+import { casesReaching, testCoverageOf } from "./spec.js";
 import {
   normalizeSemanticContent,
   parsePseudocodeSteps,
@@ -113,14 +117,19 @@ export function getOverview(db: Db): OverviewDto {
     files: row.files,
   }));
 
-  const layers = (db
-    .prepare("SELECT name, description, members FROM layers ORDER BY ordinal, id")
-    .all() as Array<{ name: string; description: string; members: string }>).map((row) => ({
-      name: row.name,
-      description: row.description,
-      nodeIds: parseStringArray(row.members),
-    }));
+  const confirmed = confirmedLayers(db);
+  const layers = confirmed.length > 0
+    ? confirmed.map((layer) => ({ name: layer.name, description: layer.description ?? "", nodeIds: layer.members }))
+    : (db
+      .prepare("SELECT name, description, members FROM layers ORDER BY ordinal, id")
+      .all() as Array<{ name: string; description: string; members: string }>).map((row) => ({
+        name: row.name,
+        description: row.description,
+        nodeIds: parseStringArray(row.members),
+      }));
   const llmStatus = readLlmStatus(db);
+  const lock = getMetaJson<{ level: "package" | "directory"; dependencies: number } | null>(db, "lock", null);
+  const history = getMetaJson<{ commits: number; aiCommits: number } | null>(db, "history", null);
 
   return {
     repoName: getMeta(db, "repo_name") ?? "repo",
@@ -139,8 +148,16 @@ export function getOverview(db: Db): OverviewDto {
     summary: readSummary(db, "repo", "."),
     summaryUnavailableReason: lastRun.llm?.reason ?? null,
     layers: layers.length > 0 ? layers : null,
+    layersConfirmed: confirmed.length > 0,
+    lock,
+    history: history ? { commits: history.commits, aiCommits: history.aiCommits } : null,
     llm: llmStatus as LlmStatusDto | null,
   };
+}
+
+/** 团队确认过的分层（扫描时从 .repolens.json 记进索引，界面上确认时也会写进来） */
+export function confirmedLayers(db: Db): ConfirmedLayer[] {
+  return getMetaJson<ConfirmedLayer[]>(db, "confirmed_layers", []);
 }
 
 /** 索引总量一律现算。存下来的数只会在下一次增量扫描后变成谎话。 */
@@ -161,6 +178,8 @@ export function getIndexTotals(db: Db): IndexTotals {
   return {
     files: one("SELECT COUNT(*) AS v FROM files WHERE role != 'asset'", 0),
     loc: one("SELECT COALESCE(SUM(loc), 0) AS v FROM files WHERE role != 'asset'", 0),
+    sourceFiles: one("SELECT COUNT(*) AS v FROM files WHERE role = 'source'", 0),
+    sourceLoc: one("SELECT COALESCE(SUM(loc), 0) AS v FROM files WHERE role = 'source'", 0),
     symbols: one("SELECT COUNT(*) AS v FROM symbols", 0),
     calls: one("SELECT COUNT(*) AS v FROM call_sites", 0),
     imports: imports.total,
@@ -1165,11 +1184,12 @@ function packageDir(db: Db, name: string): string | null {
 // 详情
 // ---------------------------------------------------------------------------
 
-export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
+/** repoRoot 给了才读源码原文，用来判断 AI 摘要里提到的名字是不是编的 */
+export function getFileDetail(db: Db, fileId: number, repoRoot?: string): FileDetailDto | null {
   const file = db
     .prepare(
       `SELECT f.id, f.path, f.language, f.role, f.loc, f.bytes, f.hash, f.parse_error AS parseError,
-              p.name AS packageName
+              p.name AS packageName, p.dir AS packageDir
        FROM files f LEFT JOIN packages p ON p.id = f.package_id
        WHERE f.id = ?`,
     )
@@ -1184,6 +1204,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
         hash: string;
         parseError: string | null;
         packageName: string | null;
+        packageDir: string | null;
       }
     | undefined;
 
@@ -1192,7 +1213,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
   const symbols = db
     .prepare(
       `SELECT s.id, s.name, s.kind, s.container, s.exported, s.signature,
-              s.start_line AS startLine, s.end_line AS endLine, s.complexity,
+              s.start_line AS startLine, s.end_line AS endLine, s.complexity, s.implemented,
               (SELECT COUNT(*) FROM edges e WHERE e.type = 'calls' AND e.dst_kind = 'symbol' AND e.dst_id = s.id) AS callerCount,
               (SELECT COUNT(*) FROM edges e WHERE e.type = 'calls' AND e.src_kind = 'symbol' AND e.src_id = s.id) AS calleeCount
        FROM symbols s WHERE s.file_id = ? ORDER BY s.start_line`,
@@ -1207,6 +1228,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
     startLine: number;
     endLine: number;
     complexity: number;
+    implemented: number;
     callerCount: number;
     calleeCount: number;
   }>;
@@ -1227,6 +1249,7 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
   }>;
 
   const specStmt = db.prepare("SELECT local FROM import_specifiers WHERE import_id = ?");
+  const summary = readSummary(db, "file", file.path, "summary-v2", file.hash);
 
   return {
     id: `file:${file.id}`,
@@ -1271,23 +1294,48 @@ export function getFileDetail(db: Db, fileId: number): FileDetailDto | null {
         )
         .all(fileId) as Array<{ id: number; path: string }>
     ).map((row) => ({ id: `file:${row.id}`, path: row.path })),
-    summary: readSummary(db, "file", file.path, "summary-v2", file.hash),
+    summary,
     shortSummary: readSummary(db, "file", file.path, "tooltip-summary", file.hash),
     ...readPseudocode(db, "file", file.path, file.hash),
+    grounding: groundText(db, summary, {
+      fileId,
+      packageDir: file.packageDir,
+      source: repoRoot === undefined ? undefined : readSourceText(repoRoot, file.path),
+    }),
+    tests: fileTests(db, symbols.filter((s) => (s.kind === "function" || s.kind === "method") && s.implemented === 1).map((s) => s.id)),
+    history: fileHistory(db, fileId),
   };
 }
 
-export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | null {
+function fileTests(db: Db, functionIds: readonly number[]): FileDetailDto["tests"] {
+  if (functionIds.length === 0) return null;
+  const covered = (db.prepare(
+    `SELECT COUNT(*) AS n FROM test_coverage WHERE symbol_id IN (${functionIds.map(() => "?").join(",")})`,
+  ).get(...functionIds) as { n: number }).n;
+  return { functions: functionIds.length, covered, cases: casesReaching(db, functionIds).size };
+}
+
+function readSourceText(repoRoot: string, path: string): string | undefined {
+  try {
+    return readFileSync(join(repoRoot, path), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/** repoRoot 给了才读源码原文，用来判断 AI 摘要里提到的名字是不是编的 */
+export function getSymbolDetail(db: Db, symbolId: number, repoRoot?: string): SymbolDetailDto | null {
   const row = db
     .prepare(
-      `SELECT s.*, f.path AS filePath, f.id AS fileId, f.language
-       FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?`,
+      `SELECT s.*, f.path AS filePath, f.id AS fileId, f.language, p.dir AS packageDir
+       FROM symbols s JOIN files f ON f.id = s.file_id LEFT JOIN packages p ON p.id = f.package_id WHERE s.id = ?`,
     )
     .get(symbolId) as
     | (Record<string, unknown> & {
         filePath: string;
         fileId: number;
         language: string;
+        packageDir: string | null;
       })
     | undefined;
 
@@ -1379,6 +1427,7 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
     name,
     row["start_line"] as number,
   );
+  const summary = readSummary(db, "symbol", summaryKey, "summary-v2", row["hash"] as string);
 
   return {
     id: `sym:${symbolId}`,
@@ -1406,9 +1455,18 @@ export function getSymbolDetail(db: Db, symbolId: number): SymbolDetailDto | nul
       target: t.target,
       targetId: t.targetId !== null ? `sym:${t.targetId}` : null,
     })),
-    summary: readSummary(db, "symbol", summaryKey, "summary-v2", row["hash"] as string),
+    summary,
     shortSummary: readSummary(db, "symbol", summaryKey, "tooltip-summary", row["hash"] as string),
     ...readPseudocode(db, "symbol", summaryKey, row["hash"] as string),
+    grounding: groundText(db, summary, {
+      fileId: row.fileId,
+      packageDir: row.packageDir,
+      source: repoRoot === undefined
+        ? undefined
+        : readSourceText(repoRoot, row.filePath)?.split("\n").slice((row["start_line"] as number) - 1, row["end_line"] as number).join("\n"),
+    }),
+    tests: testCoverageOf(db, symbolId),
+    testKind: (row["test_kind"] as SymbolDetailDto["testKind"]) ?? null,
   };
 }
 
@@ -1607,12 +1665,17 @@ export function getScopeSummary(db: Db, nodeId: string): string | null {
   return null;
 }
 
-/** 给图节点挂上扫描期摘要与架构层；结构事实不依赖这些字段。 */
+/** 给图节点挂上扫描期摘要与架构层；结构事实不依赖这些字段。团队确认过的分层优先于 AI 的提议 */
 function attachSemantics(db: Db, nodes: GraphNodeDto[]): void {
   if (nodes.length === 0) return;
   const layerByNode = new Map<string, string>();
-  for (const row of db.prepare("SELECT name, members FROM layers ORDER BY ordinal").all() as Array<{ name: string; members: string }>) {
-    for (const id of parseStringArray(row.members)) if (!layerByNode.has(id)) layerByNode.set(id, row.name);
+  const confirmed = confirmedLayers(db);
+  if (confirmed.length > 0) {
+    for (const layer of confirmed) for (const id of layer.members) if (!layerByNode.has(id)) layerByNode.set(id, layer.name);
+  } else {
+    for (const row of db.prepare("SELECT name, members FROM layers ORDER BY ordinal").all() as Array<{ name: string; members: string }>) {
+      for (const id of parseStringArray(row.members)) if (!layerByNode.has(id)) layerByNode.set(id, row.name);
+    }
   }
 
   const lang = semanticLanguage(db);
@@ -1748,12 +1811,9 @@ export function getFindings(db: Db, options: FindingQuery = {}): FindingDto[] {
               MIN(title) AS title, MIN(detail) AS detail, MIN(related) AS related,
               COUNT(*) AS members
        FROM findings ${clause}
-       GROUP BY group_key
-       ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-                members DESC, groupKey
-       LIMIT ?`,
+       GROUP BY group_key`,
     )
-    .all(...args, options.limit ?? 200) as Array<{
+    .all(...args) as Array<{
     groupKey: string;
     kind: string;
     severity: string;
@@ -1766,18 +1826,40 @@ export function getFindings(db: Db, options: FindingQuery = {}): FindingDto[] {
     members: number;
   }>;
 
-  return rows.map((r) => ({
-    groupKey: r.groupKey,
-    kind: r.kind as FindingKind,
-    severity: r.severity as FindingSeverity,
-    scopeKind: r.scopeKind as FindingDto["scopeKind"],
-    scopeKey: r.scopeKey,
-    path: r.path,
-    title: r.title,
-    detail: r.detail,
-    related: JSON.parse(r.related) as string[],
-    members: r.members,
-  }));
+  // 同一严重程度里，落在近期改得勤的代码上的排前面：那里的问题最可能继续长大，也最该先看
+  const recent = recentCommitsByPath(db);
+  const rank = (severity: string) => (severity === "high" ? 0 : severity === "medium" ? 1 : 2);
+  return rows
+    .map((r) => ({
+      groupKey: r.groupKey,
+      kind: r.kind as FindingKind,
+      severity: r.severity as FindingSeverity,
+      scopeKind: r.scopeKind as FindingDto["scopeKind"],
+      scopeKey: r.scopeKey,
+      path: r.path,
+      title: r.title,
+      detail: r.detail,
+      related: JSON.parse(r.related) as string[],
+      members: r.members,
+      ...(recent.size > 0 ? { recentCommits: recent.get(r.path) ?? sumUnder(recent, r.path) } : {}),
+    }))
+    .sort((a, b) =>
+      rank(a.severity) - rank(b.severity) || (b.recentCommits ?? 0) - (a.recentCommits ?? 0) ||
+      b.members - a.members || a.groupKey.localeCompare(b.groupKey))
+    .slice(0, options.limit ?? 200);
+}
+
+function recentCommitsByPath(db: Db): Map<string, number> {
+  return new Map((db.prepare("SELECT path, recent FROM file_history WHERE recent > 0").all() as Array<{ path: string; recent: number }>)
+    .map((row) => [row.path, row.recent]));
+}
+
+/** 包、目录级的问题按下面各文件的提交数合计 */
+function sumUnder(recent: ReadonlyMap<string, number>, dir: string): number {
+  if (dir === "" || dir === ".") return 0;
+  let total = 0;
+  for (const [path, count] of recent) if (path.startsWith(`${dir}/`)) total += count;
+  return total;
 }
 
 export function getFindingSummary(db: Db, scope?: string): FindingSummaryDto {

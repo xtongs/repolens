@@ -1,11 +1,13 @@
 import type { Db } from "../db/database.js";
 import type { EdgeRow, IndexWriter, RollupEdgeRow, SearchRow } from "../db/writer.js";
 import { dirOf } from "../resolve/path-utils.js";
-import type { ArchitectureRule, Confidence, HttpLinkStats } from "../types.js";
-import { type DiagnoseStats, diagnose } from "./diagnose.js";
+import type { Confidence, HttpLinkStats } from "../types.js";
+import { analyzeDataAccess } from "./data-access.js";
+import { type DiagnosePolicy, type DiagnoseStats, diagnose } from "./diagnose.js";
 import { linkHttpEdges } from "./http-links.js";
 import { analyzeEntries, type EntryAnalysisStats } from "./entries.js";
 import { linkCallEdges } from "./link-calls.js";
+import { analyzeTests, type TestCoverageStats } from "./tests.js";
 
 export interface LinkStats {
   calls: number;
@@ -13,6 +15,7 @@ export interface LinkStats {
   findings: DiagnoseStats;
   entries: EntryAnalysisStats;
   http: HttpLinkStats;
+  tests: TestCoverageStats;
 }
 
 /**
@@ -22,7 +25,7 @@ export interface LinkStats {
  * 增量地维护正确性远比重算一次贵。重算的输入全在 SQLite 里，
  * 不需要重新解析源码，40 万行规模下是秒级操作。
  */
-export function linkGraph(db: Db, writer: IndexWriter, rules: readonly ArchitectureRule[] = []): LinkStats {
+export function linkGraph(db: Db, writer: IndexWriter, policy: DiagnosePolicy = {}): LinkStats {
   writer.clearDerived();
 
   linkImportEdges(db, writer);
@@ -32,11 +35,13 @@ export function linkGraph(db: Db, writer: IndexWriter, rules: readonly Architect
   const entries = analyzeEntries(db);
   // 路由表来自入口识别，所以排在入口分析之后；I/O 可达性因此也不会跨过网络边界
   const http = linkHttpEdges(db, writer);
+  const tests = analyzeTests(db);
+  analyzeDataAccess(db);
   buildSearchIndex(db, writer);
   // 体检要在 rollup 边建好之后跑，环检测读的就是那张表
-  const findings = diagnose(db, writer, rules);
+  const findings = diagnose(db, writer, policy);
 
-  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings, entries, http };
+  return { calls: calls.callSites, callsByConfidence: calls.byConfidence, findings, entries, http, tests };
 }
 
 // ---------------------------------------------------------------------------

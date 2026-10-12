@@ -1,15 +1,20 @@
 import type {
+  BoundaryDto,
   ChangeReportDto,
   CommitDto,
   ChatContextItemDto,
   ChatDoneDto,
   ChatRequestDto,
   ChatToolStepDto,
+  ConfirmedLayer,
   FileDetailDto,
   FindingDto,
   FindingKind,
   FindingSummaryDto,
   GraphDto,
+  LensKind,
+  LensValueDto,
+  ModuleCardDto,
   NoteDto,
   NoteInputDto,
   OverviewDto,
@@ -19,10 +24,17 @@ import type {
   ReposDto,
   SearchHitDto,
   SemanticResultDto,
+  SkeletonDto,
   SourceSliceDto,
+  SpecDto,
   SymbolDetailDto,
+  TourDto,
   TreeNodeDto,
+  TypeFlowDto,
   EntryPointDto,
+  UnderstandingDto,
+  UnderstandingHow,
+  UnderstandingMarkDto,
   WalkFrameDto,
 } from "@repolens/core/types";
 import { t, translateMessage } from "../i18n";
@@ -108,9 +120,17 @@ async function post<T>(
   return (await response.json()) as T;
 }
 
-async function send<T>(method: "POST" | "DELETE", path: string, intent: string, body?: unknown): Promise<T> {
-  const query = activeRepo !== undefined ? `?repo=${encodeURIComponent(activeRepo)}` : "";
-  const response = await fetch(`${BASE}${path}${query}`, {
+async function send<T>(
+  method: "POST" | "DELETE",
+  path: string,
+  intent: string,
+  body?: unknown,
+  params: Record<string, string> = {},
+): Promise<T> {
+  const search = new URLSearchParams(params);
+  if (activeRepo !== undefined) search.set("repo", activeRepo);
+  const query = search.toString();
+  const response = await fetch(`${BASE}${path}${query.length > 0 ? `?${query}` : ""}`, {
     method,
     headers: {
       "x-repolens-intent": intent,
@@ -153,6 +173,20 @@ export interface CallGraphParams {
 export interface FindingsResponse {
   summary: FindingSummaryDto;
   items: FindingDto[];
+}
+
+/** 盯着文件变化的状态，和服务端 WatchManager 的一致 */
+export interface WatchStatusDto {
+  enabled: boolean;
+  refreshing: boolean;
+  refreshedAt: string | null;
+  error: string | null;
+}
+
+export interface RepoEventHandlers {
+  onStatus: (status: WatchStatusDto) => void;
+  /** 索引已经按最新的文件刷新完 */
+  onIndex: (refreshedAt: string) => void;
 }
 
 export const api = {
@@ -249,8 +283,68 @@ export const api = {
 
   deleteNote: (id: string) => send<{ ok: true }>("DELETE", `/notes/${encodeURIComponent(id)}`, "save-note"),
 
+  /** 架构图上一条边由什么构成；没有直接依赖时带最短的一条 import 链 */
+  boundary: (from: string, to: string, roles?: string) => get<BoundaryDto>("/boundary", { from, to, roles }),
+
+  moduleCard: (nodeId: string) => get<ModuleCardDto>("/module", { node: nodeId }),
+
+  spec: (nodeId: string) => get<SpecDto>("/spec", { node: nodeId }),
+
+  typeFlow: (id: string) => get<TypeFlowDto>(`/typeflow/${stripPrefix(id)}`),
+
+  skeleton: () => get<SkeletonDto>("/skeleton"),
+
+  lens: (kind: LensKind, ids: string[]) => get<Record<string, LensValueDto>>("/lens", { kind, ids: ids.join(",") }),
+
+  understanding: () => get<UnderstandingDto>("/understanding"),
+
+  markUnderstood: (nodeId: string, how: UnderstandingHow = "manual") =>
+    send<UnderstandingMarkDto>("POST", "/understanding", "understanding", { nodeId, how }),
+
+  unmarkUnderstood: (key: string) => send<{ ok: true }>("DELETE", "/understanding", "understanding", undefined, { key }),
+
+  tours: () => get<{ tours: TourDto[] }>("/tours"),
+
+  /** 写进仓库根目录的 .repolens.json，随代码提交 */
+  saveTour: (tour: TourDto) => send<TourDto>("POST", "/tours", "save-tour", { tour }),
+
+  deleteTour: (id: string) => send<{ ok: true }>("DELETE", `/tours/${encodeURIComponent(id)}`, "save-tour"),
+
+  confirmLayers: (layers: ConfirmedLayer[]) =>
+    send<{ layers: ConfirmedLayer[] }>("POST", "/layers/confirm", "confirm-layers", { layers }),
+
+  /** 把现在的模块间依赖记成批准过的清单（.repolens.lock.json） */
+  writeLock: () => send<{ level: "package" | "directory"; dependencies: number }>("POST", "/lock", "write-lock"),
+
+  /** 只刷新结构、不调用模型的增量扫描，跑完才返回；refreshedAt 和同时推出的 index 事件里的一致 */
+  refreshIndex: (repoId: string) =>
+    send<{ ok: true; refreshedAt: string }>("POST", `/repos/${encodeURIComponent(repoId)}/refresh`, "scan-repository"),
+
+  watchStatus: (repoId: string) => get<WatchStatusDto>(`/repos/${encodeURIComponent(repoId)}/watch`),
+
+  setWatch: (repoId: string, enabled: boolean) =>
+    send<WatchStatusDto>("POST", `/repos/${encodeURIComponent(repoId)}/watch`, "watch-repository", { enabled }),
+
   chat: streamChat,
 };
+
+/**
+ * 订阅一个仓库的实时事件：watch 状态变化、索引刷新完成。EventSource 断线会自己重连，
+ * 重连后服务端先推一次当前状态，界面不会停在过期的状态上。返回取消订阅的函数。
+ */
+export function subscribeRepoEvents(repoId: string, handlers: RepoEventHandlers): () => void {
+  if (typeof EventSource === "undefined") return () => {};
+  const source = new EventSource(`${BASE}/repos/${encodeURIComponent(repoId)}/events`);
+  source.addEventListener("status", (event) => {
+    const payload = JSON.parse((event as MessageEvent<string>).data) as { status?: WatchStatusDto };
+    if (payload.status) handlers.onStatus(payload.status);
+  });
+  source.addEventListener("index", (event) => {
+    const payload = JSON.parse((event as MessageEvent<string>).data) as { refreshedAt?: string };
+    handlers.onIndex(payload.refreshedAt ?? new Date().toISOString());
+  });
+  return () => source.close();
+}
 
 export interface ChatStreamHandlers {
   onContext?: (items: ChatContextItemDto[]) => void;

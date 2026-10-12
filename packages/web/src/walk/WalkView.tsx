@@ -1,19 +1,14 @@
-import type { Confidence, IoKind, IoReachDto, WalkCallDto, WalkFrameDto, WalkTargetDto } from "@repolens/core/types";
+import type { Confidence, IoReachDto, WalkCallDto, WalkFrameDto, WalkTargetDto } from "@repolens/core/types";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useSource } from "../code/useSource";
 import { msg, useT } from "../i18n";
+import { UnderstandButton } from "../insight/UnderstandButton";
 import { useSidebarInset } from "../layout/ResizablePanelHandle";
 import { useAppStore, type WalkFrameRef } from "../store/useAppStore";
 import { CodeLine, type CodeMark } from "../ui/CodeLines";
-
-export const IO_LABELS: Record<IoKind, string> = {
-  database: msg("数据库"),
-  network: msg("网络"),
-  filesystem: msg("文件系统"),
-  "message-queue": msg("消息队列"),
-  process: msg("子进程"),
-};
+import { IO_LABELS } from "../ui/visual";
+import { buildSkeleton, displayBlocks, offMainPath, openedBlocks, walkable, type DisplayBlock, type Skeleton, type StepOptions } from "./skeleton";
 
 const RESOLUTION_LABELS: Record<Confidence, string> = {
   exact: msg("确定"),
@@ -22,15 +17,6 @@ const RESOLUTION_LABELS: Record<Confidence, string> = {
   external: msg("外部"),
   unresolved: msg("未解析"),
 };
-
-/** 默认只把能落到仓库内函数的调用和 I/O 当步骤，和服务端算「还能走几步」的口径一致 */
-function walkable(call: WalkCallDto): boolean {
-  return call.resolution === "exact" || call.resolution === "likely" || call.resolution === "ambiguous" || !!call.io;
-}
-
-function visibleSteps(frame: WalkFrameDto, all: boolean): WalkCallDto[] {
-  return all ? frame.calls : frame.calls.filter(walkable);
-}
 
 function steppable(call: WalkCallDto | null): WalkTargetDto | null {
   return call && call.resolution !== "ambiguous" ? call.target ?? null : null;
@@ -77,8 +63,8 @@ const frameCache = new Map<string, Promise<WalkFrameDto>>();
 const FRAME_CACHE_SIZE = 64;
 
 function frameKey(id: string): string {
-  const { repoId, repoRevision } = useAppStore.getState();
-  return `${repoId ?? ""}:${repoRevision}:${id}`;
+  const { repoId, repoRevision, indexRevision } = useAppStore.getState();
+  return `${repoId ?? ""}:${repoRevision}.${indexRevision}:${id}`;
 }
 
 function loadFrame(id: string): Promise<WalkFrameDto> {
@@ -99,6 +85,8 @@ function useWalkFrames(ids: readonly string[]): { frames: Map<string, WalkFrameD
   const [frames, setFrames] = useState(() => new Map<string, WalkFrameDto>());
   const [error, setError] = useState<string | null>(null);
   const joined = ids.join(",");
+  // 索引刷新后帧缓存的 key 变了，重取的是改动之后的函数体
+  const indexRevision = useAppStore((s) => s.indexRevision);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,7 +102,7 @@ function useWalkFrames(ids: readonly string[]): { frames: Map<string, WalkFrameD
     return () => {
       cancelled = true;
     };
-  }, [joined]);
+  }, [joined, indexRevision]);
 
   return { frames, error };
 }
@@ -131,7 +119,8 @@ export function WalkView() {
   const t = useT();
   const walk = useAppStore((s) => s.walk);
   const allCalls = useAppStore((s) => s.walkAllCalls);
-  const setAllCalls = useAppStore((s) => s.setWalkAllCalls);
+  const showTrivial = useAppStore((s) => s.walkShowTrivial);
+  const mainPath = useAppStore((s) => s.walkMainPath);
   const setStack = useAppStore((s) => s.setWalkStack);
   const closeWalk = useAppStore((s) => s.closeWalk);
   const select = useAppStore((s) => s.select);
@@ -140,22 +129,26 @@ export function WalkView() {
   const { frames, error } = useWalkFrames(stack.map((ref) => ref.id));
   const frame = top ? frames.get(top.id) ?? null : null;
 
-  const steps = useMemo(() => (frame ? visibleSteps(frame, allCalls) : []), [frame, allCalls]);
+  const options = useMemo<StepOptions>(() => ({ all: allCalls, trivial: showTrivial, mainPath }), [allCalls, showTrivial, mainPath]);
+  const skeleton = useMemo(() => (frame ? buildSkeleton(frame, options) : null), [frame, options]);
+  const steps = skeleton?.steps ?? EMPTY_STEPS;
   const index = top ? steps.findIndex((call) => call.id === top.at) : -1;
   const current = index >= 0 ? steps[index] ?? null : null;
   const caller = stack.length > 1 ? stack[stack.length - 2] ?? null : null;
 
-  // 刚步入时停在第一步；停的那处被筛掉后挪到它后面最近的一步
+  // 刚步入时停在第一步；停的那处被筛掉后挪到它后面最近的一步；索引刷新后调用 id 变了，按行停回原处附近
   useEffect(() => {
     if (!frame || !top || frame.id !== top.id || index >= 0) return;
     let at: string | null = steps[0]?.id ?? null;
     if (top.at !== null) {
       const position = frame.calls.findIndex((call) => call.id === top.at);
       const visible = new Set(steps.map((call) => call.id));
-      at = frame.calls.slice(position + 1).find((call) => visible.has(call.id))?.id ?? steps.at(-1)?.id ?? null;
+      at = position >= 0
+        ? frame.calls.slice(position + 1).find((call) => visible.has(call.id))?.id ?? steps.at(-1)?.id ?? null
+        : steps.find((call) => call.line >= (top.line ?? 0))?.id ?? steps.at(-1)?.id ?? null;
     }
     if (at !== top.at || frame.name !== top.name) {
-      setStack([...stack.slice(0, -1), { ...top, name: frame.name, at }]);
+      setStack([...stack.slice(0, -1), { ...top, name: frame.name, at, line: lineOf(frame, at) }]);
     }
   }, [frame, top, index, steps, stack, setStack]);
 
@@ -167,7 +160,7 @@ export function WalkView() {
 
   const actions = {
     goto(at: string) {
-      if (top) setStack([...stack.slice(0, -1), { ...top, at }]);
+      if (top) setStack([...stack.slice(0, -1), { ...top, at, line: frame ? lineOf(frame, at) : null }]);
     },
     next() {
       const following = steps[index + 1];
@@ -175,9 +168,9 @@ export function WalkView() {
       // 函数走完了：和调试器一样回到调用方，并前进到它的下一步
       if (!caller) return;
       const callerFrame = frames.get(caller.id);
-      const callerSteps = callerFrame ? visibleSteps(callerFrame, allCalls) : [];
+      const callerSteps = callerFrame ? buildSkeleton(callerFrame, options).steps : [];
       const at = callerSteps[callerSteps.findIndex((call) => call.id === caller.at) + 1]?.id ?? caller.at;
-      setStack([...stack.slice(0, -2), { ...caller, at }]);
+      setStack([...stack.slice(0, -2), { ...caller, at, line: callerFrame ? lineOf(callerFrame, at) : caller.line ?? null }]);
     },
     prev() {
       const previous = steps[index - 1];
@@ -185,6 +178,12 @@ export function WalkView() {
     },
     into(target: WalkTargetDto | null = nextTarget) {
       if (target) setStack([...stack, { id: target.id, name: target.name, at: null }]);
+    },
+    /** 穿过只做转发的函数：两帧都进栈，调用栈照实，但直接停在真正干活的那个函数里 */
+    through(target: WalkTargetDto) {
+      const final = target.forwardsTo;
+      if (!final) return actions.into(target);
+      setStack([...stack, { id: target.id, name: target.name, at: null }, { id: final.id, name: final.name, at: null }]);
     },
     out(depth = stack.length - 2) {
       if (depth >= 0 && depth < stack.length - 1) setStack(stack.slice(0, depth + 1));
@@ -257,6 +256,7 @@ export function WalkView() {
                   className="text-[10.5px] text-[var(--color-ink-faint)] underline-offset-2 hover:text-[var(--color-ink)] hover:underline">
                   {t("查看详情")}
                 </button>
+                <UnderstandButton nodeId={frame.id} how="walk" compact />
               </div>
             </div>
             <StepButtons
@@ -271,21 +271,22 @@ export function WalkView() {
           <div className="flex min-h-0 flex-1">
             <StepList
               frame={frame}
-              steps={steps}
+              skeleton={skeleton ?? EMPTY_SKELETON}
               current={current}
-              allCalls={allCalls}
+              options={options}
               caller={caller ? frames.get(caller.id)?.name ?? caller.name : null}
               onPick={actions.goto}
-              onShowAll={() => setAllCalls(true)}
             />
             <FrameSource
               key={frame.id}
               frame={frame}
               steps={steps}
+              repeats={skeleton?.repeats ?? EMPTY_SKELETON.repeats}
               current={current}
               stackIds={stack.map((ref) => ref.id)}
               onPick={actions.goto}
               onInto={actions.into}
+              onThrough={actions.through}
             />
           </div>
         </>
@@ -295,6 +296,12 @@ export function WalkView() {
 }
 
 const EMPTY_STACK: WalkFrameRef[] = [];
+const EMPTY_STEPS: WalkCallDto[] = [];
+const EMPTY_SKELETON: Skeleton = { steps: [], repeats: new Map(), folded: { trivial: 0, offPath: 0 } };
+
+function lineOf(frame: WalkFrameDto, at: string | null): number | null {
+  return at === null ? null : frame.calls.find((call) => call.id === at)?.line ?? null;
+}
 
 function WalkMessage({ children }: { children: React.ReactNode }) {
   return (
@@ -391,21 +398,28 @@ function Reaches({ reaches }: { reaches: readonly IoReachDto[] }) {
   );
 }
 
-function StepList({ frame, steps, current, allCalls, caller, onPick, onShowAll }: {
+/**
+ * 步骤清单按控制结构分组：在哪个 if / 循环 / try / 回调里一目了然。提前返回的守卫分支
+ * 调暗，同一块里重复调用同一个函数合成一行，计时、日志这类旁路调用默认折叠。
+ */
+function StepList({ frame, skeleton, current, options, caller, onPick }: {
   frame: WalkFrameDto;
-  steps: readonly WalkCallDto[];
+  skeleton: Skeleton;
   current: WalkCallDto | null;
-  allCalls: boolean;
+  options: StepOptions;
   caller: string | null;
   onPick: (id: string) => void;
-  onShowAll: () => void;
 }) {
   const t = useT();
+  const setAllCalls = useAppStore((s) => s.setWalkAllCalls);
+  const setShowTrivial = useAppStore((s) => s.setWalkShowTrivial);
+  const setMainPath = useAppStore((s) => s.setWalkMainPath);
   const currentRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     currentRef.current?.scrollIntoView({ block: "nearest" });
   }, [current?.id]);
-  const hidden = frame.calls.length - steps.length;
+  const { steps, repeats, folded } = skeleton;
+  const external = options.all ? 0 : frame.calls.filter((call) => !walkable(call)).length;
   const atEnd = current !== null && current === steps.at(-1);
 
   return (
@@ -417,45 +431,74 @@ function StepList({ frame, steps, current, allCalls, caller, onPick, onShowAll }
         const active = call === current;
         const target = call.target;
         const crossFile = target && target.fileId !== frame.fileId;
+        const depth = displayBlocks(call).length;
+        const more = repeats.get(call.id);
+        const side = offMainPath(call);
         return (
-          <button
-            key={call.id}
-            ref={active ? currentRef : undefined}
-            type="button"
-            onClick={() => onPick(call.id)}
-            className={`relative flex w-full items-baseline gap-2 py-1 pl-3 pr-2.5 text-left transition-colors ${
-              active ? "bg-[var(--color-surface-3)]" : "hover:bg-[var(--color-surface-2)]"
-            } ${walkable(call) ? "" : "opacity-55"}`}
-          >
-            {active && <span className="absolute inset-y-0 left-0 w-[2px] bg-[var(--color-accent)]" />}
-            <span className="w-5 shrink-0 text-right text-[9.5px] tabular-nums text-[var(--color-ink-faint)]">{i + 1}</span>
-            <span className="min-w-0 flex-1">
-              <span className="mono block truncate text-[11.5px] text-[var(--color-ink)]">
-                {call.receiver && <span className="text-[var(--color-ink-faint)]">{shorten(call.receiver)}.</span>}
-                {call.callee}
+          <Fragment key={call.id}>
+            {openedBlocks(steps[i - 1] ?? null, call).map(({ block, depth: level }) => (
+              <BlockHeader key={`${call.id}:${block.key}`} block={block} depth={level} />
+            ))}
+            <button
+              ref={active ? currentRef : undefined}
+              type="button"
+              onClick={() => onPick(call.id)}
+              className={`relative flex w-full items-baseline gap-2 py-1 pr-2.5 text-left transition-colors ${
+                active ? "bg-[var(--color-surface-3)]" : "hover:bg-[var(--color-surface-2)]"
+              } ${walkable(call) && !side ? "" : "opacity-55"}`}
+              style={{ paddingLeft: 12 + depth * 12 }}
+            >
+              {active && <span className="absolute inset-y-0 left-0 w-[2px] bg-[var(--color-accent)]" />}
+              <span className="w-5 shrink-0 text-right text-[9.5px] tabular-nums text-[var(--color-ink-faint)]">{i + 1}</span>
+              <span className="min-w-0 flex-1">
+                <span className="mono flex items-baseline gap-1 text-[11.5px] text-[var(--color-ink)]">
+                  <span className="truncate">
+                    {call.receiver && <span className="text-[var(--color-ink-faint)]">{shorten(call.receiver)}.</span>}
+                    {call.callee}
+                  </span>
+                  {more && (
+                    <span
+                      className="shrink-0 rounded bg-[var(--color-surface-3)] px-1 text-[9px] tabular-nums text-[var(--color-ink-muted)]"
+                      title={t("同一块里还在第 {lines} 行调了它", { lines: more.map((c) => c.line).join(", ") })}
+                    >
+                      ×{more.length + 1}
+                    </span>
+                  )}
+                  {call.trivial && <span className="shrink-0 text-[9px] text-[var(--color-ink-faint)]">{t("旁路")}</span>}
+                </span>
+                <span className="mono block truncate text-[9.5px] text-[var(--color-ink-faint)]">
+                  L{call.line}
+                  {call.resolution === "ambiguous"
+                    ? ` · ${t("{count} 个候选", { count: call.candidates?.length ?? 0 })}`
+                    : target
+                      ? ` → ${crossFile ? target.filePath.split("/").at(-1) : t("同文件")}${target.forwardsTo ? ` ⇢ ${target.forwardsTo.name}` : ""}`
+                      : call.external
+                        ? ` · ${call.builtin ? t("内置 {name}", { name: call.external }) : call.external}`
+                        : ""}
+                </span>
+                {call.tables && call.tables.length > 0 && (
+                  <span className="mt-0.5 flex flex-wrap gap-1">
+                    {call.tables.map((table) => (
+                      <span key={`${table.name}:${table.write}`} className="mono rounded bg-[var(--color-surface-3)] px-1 text-[9px]"
+                        style={{ color: table.write ? "var(--color-warn)" : "var(--color-ink-muted)" }}>
+                        {table.write ? t("写 {table}", { table: table.name }) : t("读 {table}", { table: table.name })}
+                      </span>
+                    ))}
+                  </span>
+                )}
               </span>
-              <span className="mono block truncate text-[9.5px] text-[var(--color-ink-faint)]">
-                L{call.line}
-                {call.resolution === "ambiguous"
-                  ? ` · ${t("{count} 个候选", { count: call.candidates?.length ?? 0 })}`
-                  : target
-                    ? ` → ${crossFile ? target.filePath.split("/").at(-1) : t("同文件")}`
-                    : call.external
-                      ? ` · ${call.builtin ? t("内置 {name}", { name: call.external }) : call.external}`
-                      : ""}
-              </span>
-            </span>
-            {call.io ? (
-              <span className="shrink-0 rounded border border-[var(--color-warn)]/40 px-1 text-[9px] text-[var(--color-warn)]">
-                {t(IO_LABELS[call.io])}
-              </span>
-            ) : target?.reaches[0] ? (
-              <span className="shrink-0 text-[9px] text-[var(--color-warn)]/70"
-                title={t("往下最少 {count} 层调用会访问{kind}", { count: target.reaches[0].depth + 1, kind: t(IO_LABELS[target.reaches[0].kind]) })}>
-                ↓{t(IO_LABELS[target.reaches[0].kind])}
-              </span>
-            ) : null}
-          </button>
+              {call.io ? (
+                <span className="shrink-0 rounded border border-[var(--color-warn)]/40 px-1 text-[9px] text-[var(--color-warn)]">
+                  {t(IO_LABELS[call.io])}
+                </span>
+              ) : target?.reaches[0] ? (
+                <span className="shrink-0 text-[9px] text-[var(--color-warn)]/70"
+                  title={t("往下最少 {count} 层调用会访问{kind}", { count: target.reaches[0].depth + 1, kind: t(IO_LABELS[target.reaches[0].kind]) })}>
+                  ↓{t(IO_LABELS[target.reaches[0].kind])}
+                </span>
+              ) : null}
+            </button>
+          </Fragment>
         );
       })}
 
@@ -469,38 +512,110 @@ function StepList({ frame, steps, current, allCalls, caller, onPick, onShowAll }
           {t("再按 ↓ 回到 {name}", { name: caller })}
         </div>
       )}
-      {!allCalls && hidden > 0 && (
-        <button type="button" onClick={onShowAll}
-          className="mx-3 mt-1 text-left text-[10.5px] text-[var(--color-ink-faint)] underline-offset-2 hover:text-[var(--color-ink-muted)] hover:underline">
-          {t("另有 {count} 处外部库或无法解析的调用", { count: hidden })}
-        </button>
-      )}
+      <div className="mt-1 space-y-0.5 px-3">
+        {folded.trivial > 0 && (
+          <FoldNote onClick={() => setShowTrivial(true)}>
+            {t("折叠了 {count} 处计时、日志类的旁路调用", { count: folded.trivial })}
+          </FoldNote>
+        )}
+        {options.trivial && (
+          <FoldNote onClick={() => setShowTrivial(false)}>{t("收起计时、日志类的旁路调用")}</FoldNote>
+        )}
+        {folded.offPath > 0 && (
+          <FoldNote onClick={() => setMainPath(false)}>
+            {t("只看主路径：另有 {count} 处在守卫分支或 catch 里", { count: folded.offPath })}
+          </FoldNote>
+        )}
+        {external > 0 && (
+          <FoldNote onClick={() => setAllCalls(true)}>
+            {t("另有 {count} 处外部库或无法解析的调用", { count: external })}
+          </FoldNote>
+        )}
+      </div>
     </aside>
   );
 }
 
+function FoldNote({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="block text-left text-[10.5px] text-[var(--color-ink-faint)] underline-offset-2 hover:text-[var(--color-ink-muted)] hover:underline">
+      {children}
+    </button>
+  );
+}
+
+/** 控制结构的标题行：关键字照代码写，条件是截断的源码原文 */
+function BlockHeader({ block, depth }: { block: DisplayBlock; depth: number }) {
+  const t = useT();
+  return (
+    <div
+      className="mono flex items-baseline gap-1.5 pb-0.5 pr-2.5 pt-1 text-[10px]"
+      style={{ paddingLeft: 12 + depth * 12 + 28, color: block.guard ? "var(--color-ink-faint)" : "var(--color-ink-muted)" }}
+      title={block.guard ? t("这个分支以 return / throw 收尾：主路径不会走进来") : undefined}
+    >
+      <span className="min-w-0 truncate">{blockLabel(block, t)}</span>
+      {block.guard && <span className="shrink-0 font-sans text-[9px] text-[var(--color-warn)]/80">{t("守卫")}</span>}
+      <span className="ml-auto shrink-0 tabular-nums text-[var(--color-ink-faint)]">L{block.line}</span>
+    </div>
+  );
+}
+
+function blockLabel(block: DisplayBlock, t: ReturnType<typeof useT>): string {
+  const text = block.text ?? "";
+  switch (block.kind) {
+    case "if":
+      return `if ${text}`;
+    case "else-if":
+      return `else if ${text}`;
+    case "else":
+      return "else";
+    case "case":
+      return text === "default" ? "default:" : `case ${text}:`;
+    case "loop":
+      return text || "loop";
+    case "try":
+      return "try";
+    case "catch":
+      return text ? `catch (${text})` : "catch";
+    case "finally":
+      return "finally";
+    case "defer":
+      return "defer";
+    case "callback":
+      return text === "go" ? "go" : text ? t("传给 {name} 的回调", { name: text }) : t("回调");
+  }
+}
+
 /** 函数源码。每处步骤调用标在被调名上，当前这处下方展开说明卡片 */
-function FrameSource({ frame, steps, current, stackIds, onPick, onInto }: {
+function FrameSource({ frame, steps, repeats, current, stackIds, onPick, onInto, onThrough }: {
   frame: WalkFrameDto;
   steps: readonly WalkCallDto[];
+  repeats: ReadonlyMap<string, WalkCallDto[]>;
   current: WalkCallDto | null;
   stackIds: readonly string[];
   onPick: (id: string) => void;
   onInto: (target: WalkTargetDto) => void;
+  onThrough: (target: WalkTargetDto) => void;
 }) {
   const t = useT();
   const { source, error } = useSource(frame.fileId, frame.startLine, frame.endLine);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const focusRef = useRef<HTMLDivElement>(null);
 
+  // 合并掉的重复调用也标在源码里，点它停到合并后的那一步
   const byLine = useMemo(() => {
-    const out = new Map<number, WalkCallDto[]>();
-    for (const call of steps) {
+    const out = new Map<number, Array<{ call: WalkCallDto; step: WalkCallDto }>>();
+    const add = (call: WalkCallDto, step: WalkCallDto) => {
       const bucket = out.get(call.line);
-      if (bucket) bucket.push(call); else out.set(call.line, [call]);
+      if (bucket) bucket.push({ call, step }); else out.set(call.line, [{ call, step }]);
+    };
+    for (const step of steps) {
+      add(step, step);
+      for (const repeat of repeats.get(step.id) ?? []) add(repeat, step);
     }
     return out;
-  }, [steps]);
+  }, [steps, repeats]);
 
   // 只在当前位置跑出可视区时才滚，免得每按一步画面都跳
   useEffect(() => {
@@ -523,7 +638,7 @@ function FrameSource({ frame, steps, current, stackIds, onPick, onInto }: {
           const number = first + i;
           const calls = byLine.get(number) ?? [];
           const here = current !== null && current.line === number;
-          const marks = calls.flatMap((call): CodeMark[] => {
+          const marks = calls.flatMap(({ call, step }): CodeMark[] => {
             const from = locate(text, call);
             if (from < 0) return [];
             const active = call === current;
@@ -531,7 +646,7 @@ function FrameSource({ frame, steps, current, stackIds, onPick, onInto }: {
               from,
               to: from + call.callee.length,
               title: call.target ? `${call.target.name} · ${call.target.filePath}:${call.target.line}` : call.external ?? undefined,
-              onClick: () => onPick(call.id),
+              onClick: () => onPick(step.id),
               className: `cursor-pointer rounded-sm ${
                 active
                   ? "bg-[var(--color-accent)]/25 outline outline-1 outline-[var(--color-accent)]"
@@ -555,7 +670,7 @@ function FrameSource({ frame, steps, current, stackIds, onPick, onInto }: {
           return (
             <div key={number} ref={focusRef}>
               {line}
-              <StepCard call={current} frame={frame} recursive={stackIds} onInto={onInto} />
+              <StepCard call={current} frame={frame} recursive={stackIds} onInto={onInto} onThrough={onThrough} />
             </div>
           );
         })}
@@ -571,11 +686,12 @@ function locate(text: string, call: WalkCallDto): number {
   return match ? match.index : -1;
 }
 
-function StepCard({ call, frame, recursive, onInto }: {
+function StepCard({ call, frame, recursive, onInto, onThrough }: {
   call: WalkCallDto;
   frame: WalkFrameDto;
   recursive: readonly string[];
   onInto: (target: WalkTargetDto) => void;
+  onThrough: (target: WalkTargetDto) => void;
 }) {
   const t = useT();
   const target = steppable(call);
@@ -618,6 +734,18 @@ function StepCard({ call, frame, recursive, onInto }: {
 
       {target?.summary && <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--color-ink-muted)]">{target.summary}</p>}
 
+      {call.tables && call.tables.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[10px]">
+          <span className="text-[var(--color-ink-faint)]">{t("SQL 里的表：")}</span>
+          {call.tables.map((table) => (
+            <span key={`${table.name}:${table.write}`} className="mono rounded bg-[var(--color-surface-3)] px-1"
+              style={{ color: table.write ? "var(--color-warn)" : "var(--color-ink-muted)" }}>
+              {table.write ? t("写 {table}", { table: table.name }) : t("读 {table}", { table: table.name })}
+            </span>
+          ))}
+        </div>
+      )}
+
       {target && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => onInto(target)}
@@ -625,9 +753,21 @@ function StepCard({ call, frame, recursive, onInto }: {
             {t("步入")}
             <kbd className="mono text-[10px]">→</kbd>
           </button>
+          {target.forwardsTo && (
+            <button type="button" onClick={() => onThrough(target)}
+              title={t("{name} 只是把调用转给 {target}，直接进去看真正干活的那个", { name: target.name, target: target.forwardsTo.name })}
+              className="rounded border border-[var(--color-line-strong)] px-2 py-0.5 text-[11px] text-[var(--color-ink-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]">
+              {t("直接进 {name}", { name: target.forwardsTo.name })}
+            </button>
+          )}
           <span className="text-[10px] text-[var(--color-ink-faint)]">
             {target.steps > 0 ? t("里面还有 {count} 处调用", { count: target.steps }) : t("里面没有更多调用")}
           </span>
+          {target.tests !== undefined && (
+            <span className="text-[10px]" style={{ color: target.tests > 0 ? "var(--color-ink-faint)" : "var(--color-warn)" }}>
+              {target.tests > 0 ? t("{count} 个测试走得到", { count: target.tests }) : t("没有测试走到")}
+            </span>
+          )}
           {recursive.includes(target.id) && <span className="text-[10px] text-[var(--color-warn)]">{t("递归")}</span>}
           <Reaches reaches={target.reaches} />
         </div>

@@ -271,6 +271,11 @@ body .text-sm { font-size: calc(14px * var(--font-scale)); }
   pointer-events: none;
 }
 
+/* 边可以点：看这条依赖由什么构成 */
+.react-flow__edge {
+  cursor: pointer;
+}
+
 .react-flow__attribution {
   display: none;
 }

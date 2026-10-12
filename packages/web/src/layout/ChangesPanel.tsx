@@ -1,26 +1,27 @@
 import type { ChangeReportDto, DependencyChangeDto, FileChangeDto, SymbolChangeDto } from "@repolens/core/types";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { api } from "../api/client";
 import { changedRanges } from "../code/declaration";
 import { SignatureText } from "../code/Signature";
 import { type NodeScope, inScope } from "../graph/scope";
-import { useT } from "../i18n";
+import { BehaviorSection, ClusterSection, ReviewProgress, reviewableIds, UntestedSection } from "../insight/ChangeInsight";
+import { translateMessage, useT } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
 import { useChangesStore } from "../store/useChangesStore";
+import {
+  ChangeHint as Hint,
+  ChangeRow as Row,
+  ChangeSection as Section,
+  ChangeTag as Tag,
+  MARK,
+  MARK_COLOR,
+} from "../ui/change-rows";
+import { IO_LABELS } from "../ui/visual";
 import { CommitPicker } from "./CommitPicker";
 
 /** 和原生 title 差不多的延迟，鼠标扫过列表时不闪 */
 const HOVER_DELAY_MS = 350;
-
-const MARK = { added: "+", removed: "−", modified: "~", moved: "›", affected: "~", resolved: "✓" } as const;
-const MARK_COLOR = {
-  added: "var(--color-success)",
-  removed: "var(--color-danger)",
-  modified: "var(--color-accent)",
-  moved: "var(--color-ink-muted)",
-  affected: "var(--color-warn)",
-  resolved: "var(--color-success)",
-} as const;
 
 /**
  * 变更视角：和某个提交比，这次改动在结构上意味着什么。
@@ -48,6 +49,7 @@ export function ChangesBody({ scope }: { scope: NodeScope | null }) {
         busy={status === "loading"}
         onPick={(ref) => void compare(ref)}
       />
+      <LiveToolbar />
 
       {status === "loading" && !report && (
         <Hint>{t("正在为基线提交建立结构索引，第一次对比某个提交需要几秒。")}</Hint>
@@ -55,6 +57,65 @@ export function ChangesBody({ scope }: { scope: NodeScope | null }) {
       {status === "error" && <Hint tone="danger">{error}</Hint>}
       {report && <ReportView full={report} scope={scope} />}
     </>
+  );
+}
+
+/**
+ * 「重新扫描并对比」把工作区此刻的改动收进索引再比；打开「实时」后服务端盯着文件，
+ * AI 改一处，这里跟着更新，不用再点。
+ */
+function LiveToolbar() {
+  const t = useT();
+  const repoId = useAppStore((s) => s.repoId);
+  const watch = useAppStore((s) => s.watchStatus);
+  const rescanning = useChangesStore((s) => s.rescanning);
+  const loading = useChangesStore((s) => s.status === "loading");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = watch?.enabled ?? false;
+
+  const toggle = () => {
+    if (repoId === null) return;
+    setBusy(true);
+    setError(null);
+    void api.setWatch(repoId, !enabled)
+      .then((status) => useAppStore.getState().setWatchStatus(status))
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="px-3 pt-1.5">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={rescanning || loading}
+          onClick={() => void useChangesStore.getState().rescanAndCompare()}
+          title={t("把工作区此刻的改动收进索引再对比（只刷新结构，不调用模型）")}
+          className="rounded border border-[var(--color-line)] px-2 py-0.5 text-[10.5px] text-[var(--color-ink-muted)] transition-colors enabled:hover:border-[var(--color-line-strong)] enabled:hover:text-[var(--color-ink)] disabled:cursor-wait disabled:opacity-60"
+        >
+          {rescanning ? t("正在收进改动…") : loading ? t("正在对比…") : t("重新扫描并对比")}
+        </button>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          disabled={busy || repoId === null}
+          onClick={toggle}
+          title={t("盯着文件变化：AI 改一处，结构索引和这份报告跟着更新")}
+          className="ml-auto flex items-center gap-1.5 text-[10.5px] transition-colors disabled:opacity-60"
+          style={{ color: enabled ? "var(--color-success)" : "var(--color-ink-faint)" }}
+        >
+          <span className={`relative inline-flex h-3 w-5 items-center rounded-full transition-colors ${enabled ? "bg-[var(--color-success)]/40" : "bg-[var(--color-surface-3)]"}`}>
+            <span className={`absolute h-2 w-2 rounded-full transition-all ${enabled ? "left-[10px] bg-[var(--color-success)]" : "left-0.5 bg-[var(--color-ink-faint)]"}`} />
+          </span>
+          {watch?.refreshing ? t("刷新中…") : t("实时")}
+        </button>
+      </div>
+      {(error ?? watch?.error) && (
+        <div className="mt-1 text-[10.5px] text-[var(--color-warn)]">{translateMessage((error ?? watch?.error) as string)}</div>
+      )}
+    </div>
   );
 }
 
@@ -77,6 +138,8 @@ function scopeReport(report: ChangeReportDto, scope: NodeScope): ChangeReportDto
     findings: report.findings.filter((finding) => inScope(scope, finding.path, finding.scopeKey)),
     entries: report.entries.filter((entry) =>
       inScope(scope, entry.path, entry.symbolId) || entry.via.some((v) => reaches(v.id))),
+    behavior: report.behavior.filter((change) => inScope(scope, change.path, change.id)),
+    clusters: report.clusters.filter((cluster) => cluster.members.some(reaches)),
   };
 }
 
@@ -128,12 +191,16 @@ function ReportView({ full, scope }: { full: ChangeReportDto; scope: NodeScope |
       ) : (
         <>
           <Summary report={report} files={files} symbols={symbols} />
+          <ReviewProgress ids={reviewableIds(symbols)} />
+          <ClusterSection report={report} />
+          <BehaviorSection report={report} />
           <DependencySection report={report} />
           <EntrySection report={report} />
           <FindingSection report={report} />
           <Section title={t("对外接口变化")} count={exported.length}>
             {exported.map((symbol) => <SymbolRow key={`${symbol.path}:${symbol.name}:${symbol.line}:${symbol.status}`} symbol={symbol} showPath />)}
           </Section>
+          <UntestedSection symbols={symbols} />
           <FileSection files={files} symbols={symbols} />
           {hidden > 0 && (
             <Hint>{t("另有 {count} 个测试、配置等文件的改动未列出，打开「显示噪音」可见。", { count: hidden })}</Hint>
@@ -215,11 +282,19 @@ function EntrySection({ report }: { report: ChangeReportDto }) {
             {entry.kind === "public-api" ? "api" : entry.kind}
           </span>
           <span className="truncate">{entry.label}</span>
-          {entry.status === "affected" && (
-            <span className="ml-auto shrink-0 text-[9.5px] text-[var(--color-ink-faint)]">
-              {t("{count} 处改动", { count: entry.via.length })}
-            </span>
-          )}
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            {(entry.ioAdded ?? []).map((kind) => (
+              <Tag key={`+${kind}`} tone="warn">{t("新碰 {io}", { io: t(IO_LABELS[kind]) })}</Tag>
+            ))}
+            {(entry.ioRemoved ?? []).map((kind) => (
+              <Tag key={`-${kind}`}>{t("不再碰 {io}", { io: t(IO_LABELS[kind]) })}</Tag>
+            ))}
+            {entry.status === "affected" && (
+              <span className="text-[9.5px] text-[var(--color-ink-faint)]">
+                {t("{count} 处改动", { count: entry.via.length })}
+              </span>
+            )}
+          </span>
         </Row>
       ))}
     </Section>
@@ -327,6 +402,9 @@ function SymbolRow({ symbol, showPath, indent }: { symbol: SymbolChangeDto; show
           {signatureChanged && <Tag tone="warn">{t("签名")}</Tag>}
           {complexer && <Tag tone="warn">{`${symbol.complexityBefore}→${symbol.complexity}`}</Tag>}
           {cosmetic && <Tag>{t("仅格式")}</Tag>}
+          {symbol.tests === 0 && !cosmetic && (symbol.kind === "function" || symbol.kind === "method") && (
+            <Tag tone="warn">{t("没测试")}</Tag>
+          )}
         </span>
       </Row>
       {anchor && <SymbolCard symbol={symbol} anchor={anchor} onClose={hide} />}
@@ -426,68 +504,6 @@ function SignatureDiff({
 
 const DIFF_ADDED = "rounded-sm bg-[var(--color-success)]/25";
 const DIFF_REMOVED = "rounded-sm bg-[var(--color-danger)]/25";
-
-function Section({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
-  if (count === 0) return null;
-  return (
-    <div className="mt-3">
-      <div className="flex items-center px-3 pb-1 text-[10.5px] font-medium text-[var(--color-ink-muted)]">
-        {title}
-        <span className="ml-auto tabular-nums text-[var(--color-ink-faint)]">{count}</span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Row({
-  status, onClick, title, indent, children,
-}: {
-  status: keyof typeof MARK;
-  onClick?: (() => void) | undefined;
-  title?: string | undefined;
-  indent?: boolean | undefined;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={!onClick}
-      title={title}
-      className="flex w-full items-center gap-1.5 py-[3px] pr-3 text-left text-[11.5px] text-[var(--color-ink)] enabled:hover:bg-[var(--color-surface-raised)] disabled:cursor-default"
-      style={{ paddingLeft: indent ? 26 : 12 }}
-    >
-      <span className="mono w-2.5 shrink-0 text-center text-[11px]" style={{ color: MARK_COLOR[status] }}>{MARK[status]}</span>
-      {children}
-    </button>
-  );
-}
-
-function Tag({ children, tone }: { children: React.ReactNode; tone?: "warn" }) {
-  return (
-    <span
-      className="shrink-0 rounded px-1 text-[9px]"
-      style={{
-        color: tone === "warn" ? "var(--color-warn)" : "var(--color-ink-faint)",
-        background: "var(--color-surface-2)",
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function Hint({ children, tone }: { children: React.ReactNode; tone?: "danger" }) {
-  return (
-    <div
-      className="px-3 py-3 text-[11px] leading-relaxed"
-      style={{ color: tone === "danger" ? "var(--color-danger)" : "var(--color-ink-faint)" }}
-    >
-      {children}
-    </div>
-  );
-}
 
 function shortPath(path: string): string {
   const parts = path.split("/");

@@ -8,14 +8,18 @@ import {
   useReactFlow,
   useStore as useFlowStore,
   type Edge,
+  type EdgeMouseHandler,
   type NodeMouseHandler,
   type Viewport,
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useT } from "../i18n";
+import { edgeSelection, isContractEnd } from "../lib/edge";
 import { HoverCard } from "./HoverCard";
+import { LensLegend } from "./LensLegend";
 import { NodeContextMenu, type ContextMenuState } from "./NodeContextMenu";
 import { useAppStore, useGraphSlice, type MetricKey } from "../store/useAppStore";
+import { useLensStore } from "../store/useLensStore";
 import { displayLabels, metricValue, nodeAccent } from "../ui/visual";
 import { applyFocus, flattenGraph, incidentEdgeIds, neighborIds } from "./model";
 import { nodeSize } from "../ui/visual";
@@ -134,6 +138,17 @@ function CanvasInner() {
 
   const labels = useMemo(() => displayLabels(flat.nodes.map((n) => n.dto)), [flat.nodes]);
 
+  // 视角叠加层：只取眼前这些节点的数
+  const lens = useAppStore((s) => s.lens);
+  const lensRevision = useLensStore((s) => s.revision);
+  const lensIds = useMemo(
+    () => flat.nodes.map((n) => n.dto.id).filter((id) => /^(?:pkg|dir|file|sym):./.test(id)),
+    [flat.nodes],
+  );
+  useEffect(() => {
+    if (lens !== null) void useLensStore.getState().ensure(lens, lensIds);
+  }, [lens, lensIds, lensRevision]);
+
   const nodes = useMemo<ScopeNodeType[]>(
     () =>
       layout.nodes.map((node) =>
@@ -164,7 +179,8 @@ function CanvasInner() {
   const edges = useMemo<Edge[]>(
     () =>
       flat.edges.map((edge) => {
-        const active = highlight?.edges.has(edge.id) ?? false;
+        const picked = selected !== null && selected === edgeSelection(edge.source, edge.target);
+        const active = picked || (highlight?.edges.has(edge.id) ?? false);
         const dimmed = highlight !== null && !active;
         const isUncertain = edge.confidence === "ambiguous" || edge.confidence === "likely";
         const typeOnly = edge.type === "references";
@@ -187,7 +203,7 @@ function CanvasInner() {
           style: {
             // 边宽编码依赖强度，最细也要 1px 否则在暗色背景上会消失；
             // 纯类型依赖不参与运行时，固定最细
-            strokeWidth: typeOnly ? 1 : 1 + edge.weight * 2.4,
+            strokeWidth: (typeOnly ? 1 : 1 + edge.weight * 2.4) + (picked ? 1.5 : 0),
             stroke: color,
             strokeDasharray: typeOnly
               ? "1 5"
@@ -201,8 +217,14 @@ function CanvasInner() {
           zIndex: active ? 5 : 0,
         };
       }),
-    [flat.edges, highlight],
+    [flat.edges, highlight, selected],
   );
+
+  // 点一条边看它由什么构成；调用图里的边就是一次调用，直接看被调的函数
+  const onEdgeClick = useCallback<EdgeMouseHandler>((_event, edge) => {
+    if (isContractEnd(edge.source) && isContractEnd(edge.target)) select(edgeSelection(edge.source, edge.target));
+    else if (edge.target.startsWith("sym:")) select(edge.target);
+  }, [select]);
 
   const onNodeEnter = useCallback<NodeMouseHandler<ScopeNodeType>>(
     (event, node) => {
@@ -286,6 +308,7 @@ function CanvasInner() {
         onNodeMouseLeave={onNodeLeave}
         onNodeClick={onNodeClick}
         onNodeContextMenu={onNodeContextMenu}
+        onEdgeClick={onEdgeClick}
         onPaneClick={() => {
           select(null);
           setMenu(null);
@@ -318,8 +341,11 @@ function CanvasInner() {
         </div>
       )}
 
-      <div className="pointer-events-none absolute bottom-4 right-4 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)]/90 px-2.5 py-1 text-[10px] text-[var(--color-ink-faint)] shadow-sm backdrop-blur">
-        {horizontal ? t("调用方向：调用方 → 被调用方") : t("依赖方向：使用方 ↓ 被依赖方")}
+      <div className="pointer-events-none absolute bottom-4 right-4 flex flex-col items-end gap-1.5">
+        <LensLegend />
+        <div className="rounded-full border border-[var(--color-line)] bg-[var(--color-surface)]/90 px-2.5 py-1 text-[10px] text-[var(--color-ink-faint)] shadow-sm backdrop-blur">
+          {horizontal ? t("调用方向：调用方 → 被调用方") : t("依赖方向：使用方 ↓ 被依赖方 · 点边看由什么构成")}
+        </div>
       </div>
 
       <HoverCard />

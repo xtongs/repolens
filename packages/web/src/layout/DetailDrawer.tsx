@@ -13,8 +13,20 @@ import { SelectionAsk } from "../chat/SelectionAsk";
 import { PseudocodePanel, stepMarkerWidth, type StepQuote } from "../code/PseudocodePanel";
 import { DeclarationHeader } from "../code/Signature";
 import { SourcePanel, type SourceFocus } from "../code/SourcePanel";
+import { ConventionsSection } from "../insight/ConventionsSection";
+import { parseEdgeSelection } from "../lib/edge";
+import { EdgeBody } from "../insight/EdgeBody";
+import { Grounded, missingCount } from "../insight/Grounded";
+import { HistorySection } from "../insight/HistorySection";
+import { ModuleCardSection } from "../insight/ModuleCard";
+import { SkeletonSection } from "../insight/SkeletonSection";
+import { ScopeTests, SymbolTests } from "../insight/TestsSection";
+import { isTypeKind, TypeFlowSection } from "../insight/TypeFlowSection";
+import { UnderstandButton } from "../insight/UnderstandButton";
+import { Chip, Empty, Label, Metric, Skeleton } from "../ui/panel";
 import { formatCount, languageColor, symbolGlyph } from "../ui/visual";
 import { NoteList } from "../notes/NoteCard";
+import { QuickNote } from "../notes/QuickNote";
 import { useAppStore } from "../store/useAppStore";
 import { useChatStore } from "../store/useChatStore";
 import { notesInRange, notesOnFile, notesOnScope, useNotes } from "../store/useNotesStore";
@@ -96,6 +108,8 @@ export function DetailDrawer() {
   const isFile = selected?.startsWith("file:") ?? false;
   // 没进索引的文件：没有符号、摘要和关系，只有原文
   const isRaw = selected?.startsWith("raw:") ?? false;
+  // 图上的一条边：看它由什么构成
+  const edge = parseEdgeSelection(selected);
   const availableTabs: Tab[] = isSymbol
     ? ["overview", "params", "pseudocode", "source", "relations", "notes"]
     : isFile
@@ -158,9 +172,10 @@ export function DetailDrawer() {
             {isSymbol && <SymbolBody key={selected} id={selected} navigation={navigation} />}
             {isFile && <FileBody key={selected} id={selected} navigation={navigation} />}
             {isRaw && <RawFileBody key={selected} path={selected.slice(4)} focus={navigation.sourceFocus} />}
-            {!isSymbol && !isFile && !isRaw && <ScopeBody key={selected} id={selected} navigation={navigation} />}
+            {edge && <EdgeBody key={selected} from={edge.from} to={edge.to} />}
+            {!isSymbol && !isFile && !isRaw && !edge && <ScopeBody key={selected} id={selected} navigation={navigation} />}
           </div>
-          {!isRaw && <SelectionAsk container={content} nodeId={selected} />}
+          {!isRaw && !edge && <SelectionAsk container={content} nodeId={selected} />}
         </>
       )}
       <ChatDock detailVisible={detailVisible} />
@@ -189,14 +204,15 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
   const t = useT();
   const { tab } = navigation;
   const rememberLabel = useChatStore((s) => s.rememberLabel);
+  const indexRevision = useAppStore((s) => s.indexRevision);
   const [detail, setDetail] = useState<SymbolDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [semanticLoading, setSemanticLoading] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
 
+  // 组件按选中项 key，换节点就是新实例；索引刷新时原地重取，旧内容留到新的到，不闪成骨架屏
   useEffect(() => {
     let cancelled = false;
-    setDetail(null);
     setError(null);
     setSemanticLoading(false);
     setSemanticError(null);
@@ -211,7 +227,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
     return () => {
       cancelled = true;
     };
-  }, [id, rememberLabel]);
+  }, [id, rememberLabel, indexRevision]);
 
   const generateSemantics = (refresh = false) => {
     if (semanticLoading) return;
@@ -253,7 +269,7 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
 
-  if (tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath={false} />;
+  if (tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath={false} nodeId={id} />;
 
   if (tab === "pseudocode") {
     return (
@@ -387,6 +403,17 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
         </span>
         <WalkLink detail={detail} />
       </div>
+      {(detail.kind === "function" || detail.kind === "method") && !detail.testKind && (
+        <div className="mt-2">
+          <UnderstandButton nodeId={detail.id} />
+        </div>
+      )}
+      {detail.testKind && (
+        <div className="mt-2 text-[10.5px] text-[var(--color-ink-faint)]">
+          <Chip tone="accent">{detail.testKind === "case" ? t("测试用例") : t("测试用例组")}</Chip>{" "}
+          {t("标题是人写下的预期行为；单步走读能看到它实际调了什么")}
+        </div>
+      )}
 
       {detail.signature && (
         <DeclarationHeader
@@ -416,8 +443,9 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
             <SemanticRefreshButton loading={semanticLoading} onClick={() => generateSemantics(true)} />
           </div>
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
-            {detail.summary}
+            <Grounded text={detail.summary} grounding={detail.grounding} />
           </p>
+          <MissingNames count={missingCount(detail.grounding)} />
           {semanticError && (
             <div className="mt-2 text-[11px] text-[var(--color-warn)]">{t("刷新失败：{error}", { error: semanticError })}</div>
           )}
@@ -453,6 +481,22 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
           </div>
         </div>
       )}
+
+      {(detail.kind === "function" || detail.kind === "method") && !detail.testKind && (
+        <SymbolTests nodeId={detail.id} coverage={detail.tests} />
+      )}
+      {isTypeKind(detail.kind) && <TypeFlowSection nodeId={detail.id} />}
+    </div>
+  );
+}
+
+/** AI 文字里提到、代码里却找不到的名字 */
+function MissingNames({ count }: { count: number }) {
+  const t = useT();
+  if (count === 0) return null;
+  return (
+    <div className="mt-1.5 text-[10.5px] text-[var(--color-danger)]">
+      {t("有 {count} 个名字在代码里找不到，可能是模型编的，以代码为准", { count })}
     </div>
   );
 }
@@ -599,6 +643,7 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
   const { tab } = navigation;
   const select = useAppStore((s) => s.select);
   const rememberLabel = useChatStore((s) => s.rememberLabel);
+  const indexRevision = useAppStore((s) => s.indexRevision);
   const [detail, setDetail] = useState<FileDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [semanticLoading, setSemanticLoading] = useState(false);
@@ -607,7 +652,6 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
 
   useEffect(() => {
     let cancelled = false;
-    setDetail(null);
     setError(null);
     setSemanticLoading(false);
     setSemanticError(null);
@@ -623,7 +667,7 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
     return () => {
       cancelled = true;
     };
-  }, [id, rememberLabel]);
+  }, [id, rememberLabel, indexRevision]);
 
   const generateSummary = (refresh = false) => {
     if (semanticLoading) return;
@@ -663,7 +707,7 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
   if (error) return <Empty>{error}</Empty>;
   if (!detail) return <Skeleton />;
 
-  if (tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath={false} />;
+  if (tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath={false} nodeId={id} />;
 
   const empty = detail.bytes === 0 || semanticSkipReason === "empty-file";
 
@@ -741,6 +785,11 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
       <div className="mono mt-1 break-all text-[10.5px] text-[var(--color-ink-faint)]">
         {detail.path}
       </div>
+      {detail.role === "source" && (
+        <div className="mt-2">
+          <UnderstandButton nodeId={detail.id} />
+        </div>
+      )}
 
       {detail.parseError && (
         <div className="mt-2 rounded border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/5 px-2 py-1.5 text-[11px] text-[var(--color-warn)]">
@@ -759,8 +808,9 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
             <SemanticRefreshButton loading={semanticLoading} onClick={() => generateSummary(true)} />
           </div>
           <p className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">
-            {detail.summary}
+            <Grounded text={detail.summary} grounding={detail.grounding} />
           </p>
+          <MissingNames count={missingCount(detail.grounding)} />
           {semanticError && (
             <div className="mt-2 text-[11px] text-[var(--color-warn)]">{t("刷新失败：{error}", { error: semanticError })}</div>
           )}
@@ -788,6 +838,9 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
         <Metric label={t("依赖")} value={String(detail.imports.length)} />
         <Metric label={t("被依赖")} value={String(detail.importedBy.length)} />
       </div>
+
+      <ScopeTests nodeId={detail.id} tests={detail.tests} />
+      <HistorySection history={detail.history} />
 
       <div className="mt-3">
         <Label>{t("符号 ({count})", { count: detail.symbols.length })}</Label>
@@ -852,7 +905,7 @@ function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }
       .flatMap((g) => g.nodes)
       .find((n) => n.id === id) ?? graph?.nodes.find((n) => n.id === id);
 
-  if (navigation.tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath />;
+  if (navigation.tab === "notes") return <NotesTab notes={notes} navigation={navigation} showPath nodeId={id} />;
   // 仓库根不是图上的节点，从结构树顶部的仓库名进来
   if (!node && id === store.rootScope) return <RepoRootBody readme={readme} />;
   if (!node) return <Empty>{t("找不到这个节点")}</Empty>;
@@ -866,7 +919,7 @@ function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }
         </div>
       )}
 
-      {node.layer && (
+      {node.layer && !/^(?:dir|pkg):/.test(node.id) && (
         <div className="mt-2 text-[10px] text-[var(--color-accent)]">{t("AI 架构层 · {layer}", { layer: node.layer })}</div>
       )}
       {node.summary && (
@@ -875,8 +928,7 @@ function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }
           <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-ink-muted)]">{node.summary}</p>
         </div>
       )}
-
-      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[var(--color-line)] pt-2.5">
+      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--color-line)] pt-2.5">
         <Metric label={t("代码行")} value={formatCount(node.metrics.loc)} />
         <Metric label={t("文件数")} value={formatCount(node.metrics.files)} />
         <Metric label={t("符号数")} value={formatCount(node.metrics.symbols)} />
@@ -895,6 +947,7 @@ function ScopeBody({ id, navigation }: { id: string; navigation: TabNavigation }
         </button>
       )}
 
+      {/^(?:dir|pkg):/.test(node.id) && <ModuleCardSection nodeId={node.id} />}
       {readme && <ReadmeSection readme={readme} />}
     </div>
   );
@@ -920,19 +973,27 @@ function RepoRootBody({ readme }: { readme: ReadmeDto | null }) {
       )}
 
       <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[var(--color-line)] pt-2.5">
-        <Metric label={t("代码行")} value={formatCount(overview.totals.loc)} />
-        <Metric label={t("文件数")} value={formatCount(overview.totals.files)} />
+        <Metric label={t("源码行")} value={formatCount(overview.totals.sourceLoc)} />
+        <Metric label={t("源码文件")} value={formatCount(overview.totals.sourceFiles)} />
         <Metric label={t("符号数")} value={formatCount(overview.totals.symbols)} />
         <Metric label={t("包数")} value={String(overview.totals.packages)} />
       </div>
+      <p className="mt-1 text-[10.5px] text-[var(--color-ink-faint)]">
+        {t("连同测试、文档、配置共 {loc} 行、{files} 个文件", { loc: formatCount(overview.totals.loc), files: formatCount(overview.totals.files) })}
+        {overview.history && overview.history.commits > 0 && (
+          <> · {t("近一年 {commits} 次提交，{ai} 次标明有 AI 参与", { commits: overview.history.commits, ai: overview.history.aiCommits })}</>
+        )}
+      </p>
 
+      <ConventionsSection overview={overview} />
+      <SkeletonSection />
       {readme && <ReadmeSection readme={readme} />}
     </div>
   );
 }
 
 function useReadme(id: string): ReadmeDto | null {
-  const repoRevision = useAppStore((s) => s.repoRevision);
+  const repoRevision = useAppStore((s) => `${s.repoRevision}.${s.indexRevision}`);
   const [readme, setReadme] = useState<ReadmeDto | null>(null);
   useEffect(() => {
     if (!/^(?:dir|pkg):/.test(id)) return;
@@ -992,67 +1053,26 @@ function ReadmeSection({ readme }: { readme: ReadmeDto }) {
 // 小组件
 // ---------------------------------------------------------------------------
 
-function Label({ children, ai }: { children: React.ReactNode; ai?: boolean }) {
-  return (
-    <div
-      className="text-[10px] uppercase tracking-wider"
-      style={{ color: ai ? "var(--color-accent)" : "var(--color-ink-faint)" }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[10px] text-[var(--color-ink-faint)]">{label}</div>
-      <div className="mt-0.5 truncate text-[12.5px] tabular-nums text-[var(--color-ink)]">
-        {value}
-      </div>
-    </div>
-  );
-}
-
 function useNoteCount(navigation: TabNavigation, count: number): void {
   const { setNoteCount } = navigation;
   useEffect(() => setNoteCount(count), [setNoteCount, count]);
 }
 
 /** 文件和符号里点笔记的位置就地滚动源码；目录里的笔记分散在各个文件，要跳过去 */
-function NotesTab({ notes, navigation, showPath }: { notes: NoteDto[]; navigation: TabNavigation; showPath: boolean }) {
+function NotesTab({ notes, navigation, showPath, nodeId }: { notes: NoteDto[]; navigation: TabNavigation; showPath: boolean; nodeId: string }) {
   const t = useT();
   return (
     <div className="p-3">
+      <QuickNote nodeId={nodeId} />
       <NoteList
         notes={notes}
         showPath={showPath}
-        empty={t("还没有笔记。在追问 AI 的回答里划选文字、或点回答下方的「记笔记」，就能存到这里。")}
+        empty={t("还没有笔记。直接在上面写，或在追问 AI 的回答里划选文字、点「记笔记」。")}
         onLocate={showPath ? undefined : (note) => {
           const lines = note.target.kind === "file" ? note.target.lines : null;
           return lines ? () => navigation.jumpToSource(lines) : null;
         }}
       />
-    </div>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="p-3 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">{children}</div>
-  );
-}
-
-function Skeleton() {
-  return (
-    <div className="space-y-2 p-3">
-      {[...Array(5)].map((_, i) => (
-        <div
-          key={i}
-          className="h-3 animate-pulse rounded bg-[var(--color-surface-3)]"
-          style={{ width: `${90 - i * 12}%` }}
-        />
-      ))}
     </div>
   );
 }

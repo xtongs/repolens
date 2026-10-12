@@ -8,6 +8,7 @@ import type {
   SemanticResultDto,
 } from "../types.js";
 import { loadConfig } from "../config.js";
+import { architectureModules } from "../db/architecture.js";
 import { getMeta, setMeta, type Db, transact } from "../db/database.js";
 import { symbolKey } from "../db/queries.js";
 import { addUsage, emptyUsage, LlmUnavailableError, OpenAiCompatibleClient } from "./client.js";
@@ -724,37 +725,9 @@ function architectureInput(db: Db): ArchitectureInput {
   };
 }
 
-/**
- * 分层的候选模块：多包仓库按包；单包按目录。单包仓库常见的形状是根目录下
- * 只有一个 src/，按第一层目录分只会得到一个候选，所以沿着「只有一个子目录
- * 装着全部源码」的链往下走，直到出现分叉。
- */
+/** 分层的候选模块和依赖锁、模块间依赖检查是同一层，见 architectureModules */
 function architectureCandidates(db: Db): Array<{ id: string; label: string; path: string; packageId?: number }> {
-  const packages = db.prepare(
-    `SELECT p.id, p.name, p.dir, COUNT(f.id) AS files FROM packages p
-     LEFT JOIN files f ON f.package_id = p.id AND f.role = 'source'
-     GROUP BY p.id HAVING files > 0 ORDER BY files DESC`,
-  ).all() as Array<{ id: number; name: string; dir: string; files: number }>;
-  if (packages.length >= 2) {
-    return packages.map((p) => ({ id: `pkg:${p.name}`, label: p.name, path: p.dir, packageId: p.id }));
-  }
-
-  const children = db.prepare("SELECT path, name FROM directories WHERE parent_path = ? ORDER BY loc DESC");
-  const sourceUnder = db.prepare(
-    "SELECT COUNT(*) AS n FROM files WHERE role = 'source' AND (dir_path = ? OR path LIKE ? || '/%')",
-  );
-  const sourceDirectlyIn = db.prepare("SELECT COUNT(*) AS n FROM files WHERE role = 'source' AND dir_path = ?");
-  let current = ".";
-  for (let depth = 0; depth < 8; depth++) {
-    const kids = (children.all(current) as Array<{ path: string; name: string }>)
-      .filter((dir) => (sourceUnder.get(dir.path, dir.path) as { n: number }).n > 0);
-    if (kids.length === 1 && (sourceDirectlyIn.get(current) as { n: number }).n === 0) {
-      current = kids[0]!.path;
-      continue;
-    }
-    return kids.slice(0, 100).map((dir) => ({ id: `dir:${dir.path}`, label: dir.name, path: dir.path }));
-  }
-  return [];
+  return architectureModules(db);
 }
 
 /** 已有的包/目录一句话摘要只放进提示，不进缓存指纹：它们晚一轮才生成，算进去每次扫描都会让分层白白重算 */

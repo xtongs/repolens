@@ -6,6 +6,7 @@ import { useAppStore, type MetricKey } from "../../store/useAppStore";
 import { changeMarkOf, useChangesStore } from "../../store/useChangesStore";
 import { formatCount, metricValue, nodeAccent, symbolGlyph } from "../../ui/visual";
 import { CONTAINER_HEADER } from "../layout/useElkLayout";
+import { LensBar } from "./LensBar";
 
 export interface ScopeNodeData extends Record<string, unknown> {
   dto: GraphNodeDto;
@@ -92,6 +93,7 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
             {t("另有 {count} 项未展开", { count: truncatedInside })}
           </div>
         )}
+        <LensBar dto={dto} container />
         <Handle type="source" position={outPos} />
       </div>
     );
@@ -208,6 +210,7 @@ export const ScopeNode = memo(function ScopeNode({ data }: NodeProps<ScopeNodeTy
             </div>
           </>
         )}
+        <LensBar dto={dto} />
       </div>
 
       <Handle type="source" position={outPos} />

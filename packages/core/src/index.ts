@@ -4,10 +4,49 @@ export {
   DEFAULT_CONFIG,
   GLOBAL_CONFIG_DIR,
   GLOBAL_CONFIG_FILENAME,
+  LOCAL_CONFIG_FILENAME,
+  LOCK_FILENAME,
   globalConfigPath,
   loadConfig,
   loadGlobalConfig,
+  loadLock,
+  updateTeamConfig,
+  writeLock,
 } from "./config.js";
+export {
+  architectureModules,
+  buildLock,
+  moduleDependencies,
+  unapprovedDependencies,
+  type ArchitectureModule,
+  type ModuleDependency,
+} from "./db/architecture.js";
+export { getBoundary, getModuleCard } from "./db/boundary.js";
+export { getSpec, testCoverageOf } from "./db/spec.js";
+export { dataTables, getSkeleton, getTypeFlow } from "./db/skeleton.js";
+export { fileHistory } from "./db/file-history.js";
+export { groundText } from "./db/grounding.js";
+export {
+  UnderstandingInputError,
+  getUnderstanding,
+  markUnderstood,
+  understandingLens,
+  understandingPath,
+  unmark,
+} from "./understanding.js";
+export {
+  GENERATED_TOUR_ID,
+  TourInputError,
+  deleteTour,
+  generateTour,
+  listTours,
+  resolveRef,
+  saveTour,
+  stableRef,
+} from "./tours.js";
+export { getLens } from "./lens.js";
+export { lookupNode, type LookupCandidate, type LookupResult } from "./lookup.js";
+export { runCheck, type CheckOptions, type CheckReport } from "./check.js";
 
 export {
   getMeta,
@@ -26,6 +65,7 @@ export {
 export {
   EXTERNAL_NODE_ID,
   ROOT_SCOPE,
+  confirmedLayers,
   getCallGraph,
   getFindings,
   getFindingSummary,
@@ -63,6 +103,9 @@ export {
 export { NoteInputError, addNote, deleteNote, listNotes, notesPath, parseNoteInput } from "./notes.js";
 
 export { scanRepo, type ScanOptions } from "./pipeline/scan.js";
+export { refreshConventions } from "./pipeline/conventions.js";
+export { buildIgnoreMatcher, HARD_IGNORED_DIRS } from "./discovery/ignore.js";
+export { indexChangeFilter } from "./watch.js";
 export { evaluateRules, type RuleReport, type RuleViolation } from "./pipeline/rules.js";
 export { BaselineError, buildBaseline, headCommit, listCommits, type Baseline } from "./diff/baseline.js";
 export { diffIndexes, type DiffOptions } from "./diff/compare.js";

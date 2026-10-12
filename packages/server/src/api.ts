@@ -1,24 +1,38 @@
 import {
   BaselineError,
   FINDING_KINDS,
+  TourInputError,
+  UnderstandingInputError,
   buildChangeReport,
+  buildLock,
+  confirmedLayers,
   currentLlmStatus,
+  deleteTour,
+  getBoundary,
   getCallGraph,
   getEntryPoints,
   getFileDetail,
   getFileTree,
   getFindingSummary,
+  getLens,
+  getModuleCard,
   getRevealChain,
   getFindings,
   getOverview,
   getScopeGraph,
   getScopeReadme,
+  getSkeleton,
   getSource,
+  getSpec,
   getSymbolDetail,
   getTree,
+  getTypeFlow,
+  getUnderstanding,
   getWalkFrame,
   generateFileSummary,
   generateSymbolSemantics,
+  listTours,
+  markUnderstood,
   NoteInputError,
   addNote,
   deleteNote,
@@ -31,12 +45,21 @@ import {
   parseNoteInput,
   readRepoFile,
   recordChatUsage,
+  refreshConventions,
   RepoFileError,
+  saveTour,
   search,
   streamRepositoryChat,
+  unmark,
+  updateTeamConfig,
+  writeLock,
   type Confidence,
+  type ConfirmedLayer,
   type Db,
   type FileRole,
+  type LensKind,
+  type TourDto,
+  type UnderstandingHow,
 } from "@repolens/core";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -137,15 +160,121 @@ export function createApi(deps: ApiDeps): Hono {
   app.get("/file/:id", (c) => {
     const id = numericId(c.req.param("id"));
     if (id === null) return c.json({ error: "非法的文件 id" }, 400);
-    const detail = getFileDetail(db, id);
+    const detail = getFileDetail(db, id, repoRoot);
     return detail ? c.json(detail) : c.json({ error: "文件不存在" }, 404);
   });
 
   app.get("/symbol/:id", (c) => {
     const id = numericId(c.req.param("id"));
     if (id === null) return c.json({ error: "非法的符号 id" }, 400);
-    const detail = getSymbolDetail(db, id);
+    const detail = getSymbolDetail(db, id, repoRoot);
     return detail ? c.json(detail) : c.json({ error: "符号不存在" }, 404);
+  });
+
+  // 架构图上一条边由什么构成：跨过边界的 import、被用到的符号、对上的路由；没有直接依赖时给最短链
+  app.get("/boundary", (c) => {
+    const boundary = getBoundary(db, c.req.query("from") ?? "", c.req.query("to") ?? "", parseRoles(c.req.query("roles")));
+    return boundary ? c.json(boundary) : c.json({ error: "认不出这两个节点" }, 404);
+  });
+
+  app.get("/module", (c) => {
+    const card = getModuleCard(db, c.req.query("node") ?? "");
+    return card ? c.json(card) : c.json({ error: "只有包和目录有模块名片" }, 404);
+  });
+
+  app.get("/spec", (c) => {
+    const spec = getSpec(db, c.req.query("node") ?? "");
+    return spec ? c.json(spec) : c.json({ error: "节点不存在" }, 404);
+  });
+
+  app.get("/typeflow/:id", (c) => {
+    const id = numericId(c.req.param("id"));
+    if (id === null) return c.json({ error: "非法的符号 id" }, 400);
+    const flow = getTypeFlow(db, id);
+    return flow ? c.json(flow) : c.json({ error: "不是类型" }, 404);
+  });
+
+  app.get("/skeleton", (c) => c.json(getSkeleton(db)));
+
+  app.get("/lens", (c) => {
+    const kind = c.req.query("kind");
+    if (kind !== "heat" && kind !== "tests" && kind !== "understanding") return c.json({ error: "未知的视角" }, 400);
+    const ids = (c.req.query("ids") ?? "").split(",").filter((id) => /^(?:dir|pkg|file|sym):./.test(id));
+    return c.json(getLens(db, repoRoot, kind as LensKind, ids));
+  });
+
+  // 理解账本写在索引旁边的 understanding.json，和笔记一样不经过 index.db
+  app.get("/understanding", (c) => c.json(getUnderstanding(db, repoRoot)));
+
+  app.post("/understanding", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "understanding") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    const body = await jsonBody(c);
+    const nodeId = typeof body?.["nodeId"] === "string" ? body["nodeId"] : null;
+    const how = body?.["how"];
+    if (nodeId === null) return c.json({ error: "缺少节点" }, 400);
+    try {
+      const mark = markUnderstood(db, repoRoot, nodeId, isHow(how) ? how : "manual");
+      return c.json(mark);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, err instanceof UnderstandingInputError ? 400 : 500);
+    }
+  });
+
+  app.delete("/understanding", (c) => {
+    if (c.req.header("x-repolens-intent") !== "understanding") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    return unmark(repoRoot, c.req.query("key") ?? "") ? c.json({ ok: true }) : c.json({ error: "没有这条标记" }, 404);
+  });
+
+  // 导览存进团队约定（.repolens.json），随代码提交
+  app.get("/tours", (c) => c.json({ tours: listTours(db, repoRoot) }));
+
+  app.post("/tours", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "save-tour") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    const body = await jsonBody(c);
+    const tour = parseTour(body?.["tour"]);
+    if (tour === null) return c.json({ error: "导览格式不正确" }, 400);
+    try {
+      return c.json(saveTour(db, repoRoot, tour));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, err instanceof TourInputError ? 400 : 500);
+    }
+  });
+
+  app.delete("/tours/:id", (c) => {
+    if (c.req.header("x-repolens-intent") !== "save-tour") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    return deleteTour(repoRoot, c.req.param("id")) ? c.json({ ok: true }) : c.json({ error: "导览不存在" }, 404);
+  });
+
+  // AI 提议的分层由人确认后写进团队约定，之后的分层倒置检查只认这一份
+  app.post("/layers/confirm", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "confirm-layers") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    const body = await jsonBody(c);
+    const layers = parseLayers(body?.["layers"]);
+    if (layers === null) return c.json({ error: "分层格式不正确：每层要有名字和至少一个 pkg: / dir: 成员" }, 400);
+    updateTeamConfig(repoRoot, { layers });
+    await withWritableDb(repoRoot, async (writeDb) => refreshConventions(writeDb, { layers }));
+    return c.json({ layers: confirmedLayers(db) });
+  });
+
+  // 把当前的模块间依赖记成依赖锁：以后新长出来的依赖都要先经过批准
+  app.post("/lock", async (c) => {
+    if (c.req.header("x-repolens-intent") !== "write-lock") {
+      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
+    }
+    const lock = buildLock(db);
+    writeLock(repoRoot, lock);
+    await withWritableDb(repoRoot, async (writeDb) => refreshConventions(writeDb, { lock }));
+    return c.json({ level: lock.level, dependencies: lock.dependencies.length });
   });
 
   // 语义生成是唯一写接口，但目标只能是当前索引里已有的数值 id，不能传路径。
@@ -309,6 +438,62 @@ export function createApi(deps: ApiDeps): Hono {
   });
 
   return app;
+}
+
+async function jsonBody(c: Context): Promise<Record<string, unknown> | null> {
+  try {
+    const body = (await c.req.json()) as unknown;
+    return typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isHow(value: unknown): value is UnderstandingHow {
+  return value === "manual" || value === "walk" || value === "review" || value === "tour";
+}
+
+function parseTour(raw: unknown): TourDto | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const tour = raw as Record<string, unknown>;
+  if (typeof tour["title"] !== "string" || !Array.isArray(tour["steps"])) return null;
+  const steps = (tour["steps"] as unknown[]).flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const step = item as Record<string, unknown>;
+    const nodeId = typeof step["nodeId"] === "string" ? step["nodeId"] : null;
+    const target = typeof step["target"] === "string" ? step["target"] : "";
+    if (nodeId === null && target === "") return [];
+    return [{
+      target, nodeId,
+      title: typeof step["title"] === "string" ? step["title"].slice(0, 200) : "",
+      note: typeof step["note"] === "string" ? step["note"].slice(0, 4000) : null,
+    }];
+  });
+  return {
+    id: typeof tour["id"] === "string" ? tour["id"].slice(0, 80) : "",
+    title: tour["title"].slice(0, 200),
+    description: typeof tour["description"] === "string" ? tour["description"].slice(0, 2000) : null,
+    steps: steps.slice(0, 100),
+  };
+}
+
+function parseLayers(raw: unknown): ConfirmedLayer[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const layers: ConfirmedLayer[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) return null;
+    const layer = item as Record<string, unknown>;
+    const name = typeof layer["name"] === "string" ? layer["name"].trim().slice(0, 80) : "";
+    const members = Array.isArray(layer["members"])
+      ? layer["members"].filter((m): m is string => typeof m === "string" && /^(?:pkg|dir):./.test(m))
+      : [];
+    if (name === "" || members.length === 0) return null;
+    const description = typeof layer["description"] === "string" && layer["description"].trim() !== ""
+      ? layer["description"].trim().slice(0, 400)
+      : null;
+    layers.push({ name, description, members });
+  }
+  return layers;
 }
 
 function repoFile(c: Context, run: () => unknown) {

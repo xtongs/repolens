@@ -11,9 +11,9 @@ import { type FindingsResponse, api } from "../api/client";
 import { type NodeScope, inScope } from "../graph/scope";
 import { useNodeScope } from "../graph/useNodeScope";
 import { msg, t, useT } from "../i18n";
-import { formatCount, languageColor } from "../ui/visual";
+import { formatCount, IO_LABELS, languageColor } from "../ui/visual";
 import { useAppStore } from "../store/useAppStore";
-import { IO_LABELS } from "../walk/WalkView";
+import { UnderstandingBody } from "../insight/UnderstandingPanel";
 import { ChangesBody } from "./ChangesPanel";
 import { ResizablePanelHandle, useResizablePanel } from "./ResizablePanelHandle";
 import { TabStrip } from "./TabStrip";
@@ -66,6 +66,7 @@ export function TreePanel() {
           <PanelTab active={tab === "findings"} onClick={() => setTab("findings")} label={t("体检")} />
           <PanelTab active={tab === "entries"} onClick={() => setTab("entries")} label={t("入口")} />
           <PanelTab active={tab === "changes"} onClick={() => setTab("changes")} label={t("变更")} />
+          <PanelTab active={tab === "understanding"} onClick={() => setTab("understanding")} label={t("理解")} />
         </TabStrip>
         <button
           type="button"
@@ -76,13 +77,15 @@ export function TreePanel() {
         </button>
       </div>
 
-      {tab !== "tree" && focus && <FocusScopeBar scope={focus} />}
+      {tab !== "tree" && tab !== "understanding" && focus && <FocusScopeBar scope={focus} />}
       {tab === "tree" ? (
         <TreeBody key={`tree:${repoId ?? ""}:${repoRevision}`} />
       ) : tab === "findings" ? (
         <FindingsBody key={`findings:${repoId ?? ""}:${repoRevision}`} scope={focus} />
       ) : tab === "changes" ? (
         <ChangesBody key={`changes:${repoId ?? ""}:${repoRevision}`} scope={focus} />
+      ) : tab === "understanding" ? (
+        <UnderstandingBody key={`understanding:${repoId ?? ""}:${repoRevision}`} />
       ) : (
         <EntriesBody key={`entries:${repoId ?? ""}:${repoRevision}`} scope={focus} />
       )}
@@ -114,6 +117,7 @@ function EntriesBody({ scope }: { scope: NodeScope | null }) {
   const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
+  const indexRevision = useAppStore((s) => s.indexRevision);
   const showNoise = useAppStore((s) => s.showNoise);
   const openWalk = useAppStore((s) => s.openWalk);
   const active = useAppStore((s) => s.walk?.stack[0]?.id ?? null);
@@ -121,12 +125,12 @@ function EntriesBody({ scope }: { scope: NodeScope | null }) {
   const [query, setQuery] = useState("");
   const [showShallow, setShowShallow] = useState(false);
 
+  // 面板按仓库 key，换仓库就是新实例；索引刷新时原地重取，不清空列表
   useEffect(() => {
     let stale = false;
-    setEntries(null);
     void api.entries().then((value) => { if (!stale) setEntries(value); }).catch(() => { if (!stale) setEntries([]); });
     return () => { stale = true; };
-  }, [repoId, repoRevision]);
+  }, [repoId, repoRevision, indexRevision]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -137,6 +141,15 @@ function EntriesBody({ scope }: { scope: NodeScope | null }) {
   }, [entries, showNoise, scope, query]);
   const deep = visible.filter((entry) => entry.symbolId && entry.reachSymbols > 0);
   const shallow = visible.filter((entry) => !(entry.symbolId && entry.reachSymbols > 0));
+  // 十几个都叫 main 的入口光看名字分不出来，重名的把所在包和文件写在名字后面
+  const packages = useAppStore((s) => s.overview?.packages);
+  const duplicated = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of visible) counts.set(entry.label, (counts.get(entry.label) ?? 0) + 1);
+    return new Set([...counts].filter(([, n]) => n > 1).map(([label]) => label));
+  }, [visible]);
+  const locationOf = (entry: EntryPointDto) =>
+    duplicated.has(entry.label) ? entryLocation(entry.filePath, packages ?? []) : null;
 
   if (entries === null) return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>;
   if (entries.length === 0) return (
@@ -146,7 +159,7 @@ function EntriesBody({ scope }: { scope: NodeScope | null }) {
   );
 
   const row = (entry: EntryPointDto) => (
-    <EntryRow key={entry.id} entry={entry} active={entry.symbolId === active}
+    <EntryRow key={entry.id} entry={entry} active={entry.symbolId === active} location={locationOf(entry)}
       onOpen={() => entry.symbolId && openWalk(entry.symbolId, entry.label)} />
   );
 
@@ -192,7 +205,13 @@ function EntriesBody({ scope }: { scope: NodeScope | null }) {
   );
 }
 
-function EntryRow({ entry, active, onOpen }: { entry: EntryPointDto; active: boolean; onOpen: () => void }) {
+function EntryRow({ entry, active, location, onOpen }: {
+  entry: EntryPointDto;
+  active: boolean;
+  /** 和别的入口重名时才有：所在包和文件 */
+  location: string | null;
+  onOpen: () => void;
+}) {
   const t = useT();
   return (
     <button
@@ -208,7 +227,10 @@ function EntryRow({ entry, active, onOpen }: { entry: EntryPointDto; active: boo
         <span className="shrink-0 rounded border border-[var(--color-line)] px-1 text-[9px] uppercase text-[var(--color-accent)]">
           {entryKindLabel(entry.kind)}
         </span>
-        <span className="min-w-0 flex-1 truncate text-[11.5px]">{entry.label}</span>
+        <span className={`${location ? "shrink-0" : "min-w-0 flex-1"} truncate text-[11.5px]`}>{entry.label}</span>
+        {location && (
+          <span className="mono min-w-0 flex-1 truncate-start truncate text-[10px] text-[var(--color-ink-faint)]">{location}</span>
+        )}
       </div>
       <div className="mt-0.5 flex items-center gap-1.5 pl-0.5 text-[9.5px] text-[var(--color-ink-faint)]">
         {entry.reachSymbols > 0 ? (
@@ -227,6 +249,18 @@ function EntryRow({ entry, active, onOpen }: { entry: EntryPointDto; active: boo
       </div>
     </button>
   );
+}
+
+/** 包内相对路径前面带上包的短名：`coding-agent · src/main.ts` */
+function entryLocation(filePath: string, packages: ReadonlyArray<{ name: string; dir: string }>): string {
+  let owner: { name: string; dir: string } | null = null;
+  for (const pkg of packages) {
+    if (pkg.dir === "." || !filePath.startsWith(`${pkg.dir}/`)) continue;
+    if (!owner || pkg.dir.length > owner.dir.length) owner = pkg;
+  }
+  if (!owner) return filePath;
+  const short = owner.name.includes("/") ? owner.name.slice(owner.name.lastIndexOf("/") + 1) : owner.name;
+  return `${short} · ${filePath.slice(owner.dir.length + 1)}`;
 }
 
 function entryKindLabel(kind: EntryPointDto["kind"]): string {
@@ -517,15 +551,20 @@ function FindingsBody({ scope }: { scope: NodeScope | null }) {
   const t = useT();
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
+  const indexRevision = useAppStore((s) => s.indexRevision);
   const [data, setData] = useState<FindingsResponse | null>(null);
   const [kind, setKind] = useState<"all" | FindingKind>("all");
   const reveal = useAppStore((s) => s.reveal);
   const selected = useAppStore((s) => s.selected);
   const scopeId = scope?.id;
+  const query = `${kind}:${scopeId ?? ""}`;
+  const lastQuery = useRef(query);
 
   useEffect(() => {
     let cancelled = false;
-    setData(null);
+    // 换了筛选才清空；索引刷新时旧列表留着，等新的到了再换
+    if (lastQuery.current !== query) setData(null);
+    lastQuery.current = query;
     void api
       .findings(kind === "all" ? undefined : kind, scopeId)
       .then((res) => {
@@ -537,7 +576,7 @@ function FindingsBody({ scope }: { scope: NodeScope | null }) {
     return () => {
       cancelled = true;
     };
-  }, [kind, scopeId, repoId, repoRevision]);
+  }, [kind, scopeId, query, repoId, repoRevision, indexRevision]);
 
   if (data === null) {
     return <div className="px-3 py-4 text-[11.5px] text-[var(--color-ink-faint)]">{t("加载中…")}</div>;
@@ -556,33 +595,22 @@ function FindingsBody({ scope }: { scope: NodeScope | null }) {
       <div className="px-3 py-4 text-[11.5px] leading-relaxed text-[var(--color-ink-faint)]">
         {t("没有发现结构问题。")}
         <br />
-        {t("当前检查项：跨文件的重复实现、同级作用域之间的循环依赖、读不动的过大函数和文件，以及 .repolens.json 里声明的依赖规则。")}
+        {t("当前检查项：跨文件的重复实现、循环依赖、读不动的过大函数和文件、.repolens.json 里的依赖规则和分层、依赖锁之外的新依赖、绕过包入口的引用、总是一起改却没有依赖的文件、指向已删除文件的文档。")}
       </div>
     );
   }
 
   return (
     <>
-      <div className="flex shrink-0 items-center gap-1 px-3 pt-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-1 px-3 pt-2">
         <FilterChip active={kind === "all"} onClick={() => setKind("all")}>
           {t("全部 {count}", { count: data.summary.total })}
         </FilterChip>
-        <FilterChip active={kind === "duplicate"} onClick={() => setKind("duplicate")}>
-          {t("重复 {count}", { count: data.summary.byKind["duplicate"] ?? 0 })}
-        </FilterChip>
-        <FilterChip active={kind === "cycle"} onClick={() => setKind("cycle")}>
-          {t("循环 {count}", { count: data.summary.byKind["cycle"] ?? 0 })}
-        </FilterChip>
-        {(data.summary.byKind["oversized"] ?? 0) > 0 && (
-          <FilterChip active={kind === "oversized"} onClick={() => setKind("oversized")}>
-            {t("过大 {count}", { count: data.summary.byKind["oversized"] ?? 0 })}
+        {FINDING_FILTERS.filter((filter) => (data.summary.byKind[filter.kind] ?? 0) > 0 || kind === filter.kind).map((filter) => (
+          <FilterChip key={filter.kind} active={kind === filter.kind} onClick={() => setKind(filter.kind)}>
+            {t(filter.label, { count: data.summary.byKind[filter.kind] ?? 0 })}
           </FilterChip>
-        )}
-        {(data.summary.byKind["violation"] ?? 0) > 0 && (
-          <FilterChip active={kind === "violation"} onClick={() => setKind("violation")}>
-            {t("违规 {count}", { count: data.summary.byKind["violation"] ?? 0 })}
-          </FilterChip>
-        )}
+        ))}
       </div>
 
       <div className="thin-scroll flex-1 overflow-y-auto py-1">
@@ -602,6 +630,15 @@ function FindingsBody({ scope }: { scope: NodeScope | null }) {
                 style={{ background: severityColor(item.severity) }}
               />
               <span className="truncate text-[11.5px] text-[var(--color-ink)]">{item.title}</span>
+              {(item.recentCommits ?? 0) > 0 && (
+                <span
+                  className="ml-auto shrink-0 text-[9.5px] tabular-nums"
+                  style={{ color: (item.recentCommits ?? 0) >= 3 ? "var(--color-warn)" : "var(--color-ink-faint)" }}
+                  title={t("所在文件近 90 天改过 {count} 次：改得勤的地方先修", { count: item.recentCommits ?? 0 })}
+                >
+                  {t("近 90 天 {count} 次", { count: item.recentCommits ?? 0 })}
+                </span>
+              )}
             </div>
             <div className="mono truncate-start ml-3 truncate text-[10px] text-[var(--color-ink-faint)]">
               {item.path}
@@ -612,6 +649,19 @@ function FindingsBody({ scope }: { scope: NodeScope | null }) {
     </>
   );
 }
+
+/** 取值要在渲染时过 t() */
+const FINDING_FILTERS: ReadonlyArray<{ kind: FindingKind; label: string }> = [
+  { kind: "violation", label: msg("违规 {count}") },
+  { kind: "layering", label: msg("分层倒置 {count}") },
+  { kind: "unapproved", label: msg("未批准依赖 {count}") },
+  { kind: "cycle", label: msg("循环 {count}") },
+  { kind: "bypass", label: msg("绕过入口 {count}") },
+  { kind: "duplicate", label: msg("重复 {count}") },
+  { kind: "oversized", label: msg("过大 {count}") },
+  { kind: "coupling", label: msg("隐性耦合 {count}") },
+  { kind: "stale-doc", label: msg("文档过期 {count}") },
+];
 
 function FilterChip({
   active,

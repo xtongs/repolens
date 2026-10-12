@@ -105,12 +105,21 @@ const MIGRATIONS: Record<string, (db: Db) => void> = {
   "6": (db) => {
     addColumns(db, "call_sites", { receiver_type: "TEXT" });
   },
+  // 新表由 SCHEMA_SQL 的 CREATE IF NOT EXISTS 建出来，这里只补旧表的列
+  "7": (db) => {
+    addColumns(db, "symbols", { test_kind: "TEXT", implemented: "INTEGER NOT NULL DEFAULT 1" });
+    addColumns(db, "call_sites", { blocks: "TEXT", discarded: "INTEGER NOT NULL DEFAULT 0" });
+  },
+  // 只加了提交明细两张新表，下次完整扫描时填上
+  "8": () => {},
 };
 
 function addColumns(db: Db, table: string, columns: Record<string, string>): void {
   const present = new Set(
     (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
   );
+  // 表都还没有时由 SCHEMA_SQL 按最新结构建出来
+  if (present.size === 0) return;
   for (const [name, definition] of Object.entries(columns)) {
     if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
   }

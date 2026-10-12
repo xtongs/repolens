@@ -52,12 +52,13 @@ describe("openDb", () => {
         (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name);
       expect(columns("call_sites")).toEqual(expect.arrayContaining([
         "end_byte", "name_line", "name_col", "resolution", "target_symbol_id", "target_name", "candidates", "io_kind",
-        "receiver_type",
+        "receiver_type", "blocks", "discarded",
       ]));
       expect(columns("entry_points")).toEqual(expect.arrayContaining(["reach_symbols", "reach_files", "reach_io"]));
+      expect(columns("symbols")).toContain("test_kind");
       const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)
         .map((row) => row.name);
-      expect(tables).toContain("io_reach");
+      expect(tables).toEqual(expect.arrayContaining(["io_reach", "test_coverage", "data_access", "file_history", "co_changes"]));
       expect(tables).not.toContain("traces");
       expect(tables).not.toContain("trace_steps");
       expect(tables).not.toContain("boundaries");

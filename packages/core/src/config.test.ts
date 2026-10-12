@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CONFIG, globalConfigPath, loadConfig } from "./config.js";
+import { DEFAULT_CONFIG, globalConfigPath, loadConfig, loadLock, updateTeamConfig, writeLock } from "./config.js";
 
 const roots: string[] = [];
 
@@ -92,5 +92,57 @@ describe("loadConfig", () => {
     const path = join(configHome, "repolens/config.json");
     writeFileSync(path, "{ bad json");
     expect(() => loadConfig(repo)).toThrow(path);
+  });
+
+  it("团队约定在下、个人覆盖在上；个人覆盖同样不能改服务地址", () => {
+    vi.stubEnv("XDG_CONFIG_HOME", tempDir("repolens-local-config-"));
+    const repo = tempDir("repolens-local-repo-");
+    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({
+      rules: [{ from: "web/**", disallow: ["server/**"] }],
+      layers: [{ name: "界面", members: ["dir:web"] }, { name: "服务", members: ["dir:server"], description: "后端" }],
+      ratchet: { fail: ["cycle", "nonsense"], warn: ["cycle", "oversized"] },
+      llm: { model: "team-model" },
+    }));
+    writeFileSync(join(repo, ".repolens.local.json"), JSON.stringify({
+      history: false,
+      llm: { enabled: false, baseUrl: "https://attacker.example/v1" },
+    }));
+    const config = loadConfig(repo);
+    expect(config.rules).toHaveLength(1);
+    expect(config.layers).toEqual([
+      { name: "界面", description: null, members: ["dir:web"] },
+      { name: "服务", description: "后端", members: ["dir:server"] },
+    ]);
+    expect(config.ratchet).toEqual({ fail: ["cycle"], warn: ["oversized"] });
+    expect(config.history).toBe(false);
+    expect(config.llm).toMatchObject({ model: "team-model", enabled: false, baseUrl: DEFAULT_CONFIG.llm.baseUrl });
+  });
+
+  it("分层写错直接报错，不悄悄少查一层", () => {
+    vi.stubEnv("XDG_CONFIG_HOME", tempDir("repolens-layer-config-"));
+    const repo = tempDir("repolens-layer-repo-");
+    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({ layers: [{ name: "界面", members: ["web"] }] }));
+    expect(() => loadConfig(repo)).toThrow("第 1 个分层缺少 name 或 members");
+  });
+
+  it("改团队约定只动给出的键；依赖锁按顺序写、读回来一样", () => {
+    const repo = tempDir("repolens-team-repo-");
+    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({ exclude: ["fixtures/**"], tours: [{ title: "x", steps: [] }] }));
+    updateTeamConfig(repo, { layers: [{ name: "核心", description: null, members: ["pkg:core"] }], tours: [] });
+    expect(JSON.parse(readFileSync(join(repo, ".repolens.json"), "utf8"))).toEqual({
+      exclude: ["fixtures/**"],
+      layers: [{ name: "核心", description: null, members: ["pkg:core"] }],
+    });
+
+    expect(loadLock(repo)).toBeNull();
+    writeLock(repo, {
+      version: 1,
+      level: "package",
+      modules: [],
+      dependencies: [{ from: "web", to: "core", type: "imports" }, { from: "app", to: "web", type: "http" }],
+    });
+    expect(loadLock(repo)?.dependencies.map((d) => `${d.from}>${d.to}`)).toEqual(["app>web", "web>core"]);
+    writeFileSync(join(repo, ".repolens.lock.json"), "{ broken");
+    expect(() => loadLock(repo)).toThrow("依赖锁解析失败");
   });
 });

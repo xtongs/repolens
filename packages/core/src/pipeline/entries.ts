@@ -1,3 +1,4 @@
+import { publicApiFileIds } from "../db/architecture.js";
 import type { Db } from "../db/database.js";
 import type { EntryPointKind, IoKind } from "../types.js";
 
@@ -15,7 +16,7 @@ const IO_ORDER: readonly IoKind[] = ["database", "network", "filesystem", "messa
 
 interface SymbolRow {
   id: number; fileId: number; fileRole: string; name: string; container: string | null;
-  exported: number; startLine: number;
+  exported: number; startLine: number; testKind: "case" | "suite" | null;
 }
 
 interface CallRow {
@@ -103,7 +104,7 @@ export function analyzeEntries(db: Db): EntryAnalysisStats {
 function loadSymbols(db: Db): SymbolRow[] {
   return db.prepare(
     `SELECT s.id, s.file_id AS fileId, f.role AS fileRole, s.name, s.container,
-            s.exported, s.start_line AS startLine
+            s.exported, s.start_line AS startLine, s.test_kind AS testKind
      FROM symbols s JOIN files f ON f.id = s.file_id
      WHERE s.kind IN ('function', 'method')`,
   ).all() as SymbolRow[];
@@ -129,92 +130,12 @@ function symbolEntries(db: Db, symbols: readonly SymbolRow[]): EntryCandidate[] 
     ) {
       out.push(entryFromSymbol(symbol, "public-api", qualifiedName(symbol), "导出的顶层函数", "exact"));
     }
-    if (symbol.fileRole === "test" && /^(test|it|should|spec)|^Test[A-Z_]/.test(symbol.name)) {
-      out.push(entryFromSymbol(symbol, "test", qualifiedName(symbol), "测试文件中的测试函数", "exact"));
+    // 测试用例：`it("…", () => …)` 合成的回调，或测试文件里按约定命名的测试函数
+    if (symbol.testKind === "case") {
+      out.push(entryFromSymbol(symbol, "test", qualifiedName(symbol), "测试用例", "exact"));
     }
   }
   return out;
-}
-
-/**
- * 找真正面向包外的源码入口。`export function` 只说明它可从当前模块导出，
- * 不能说明这个模块就是包的公共表面；把所有模块导出都当入口会让工具函数
- * 淹没入口列表。Node 包按 package.json 入口映射到源码，其他语言按自身的
- * 包入口约定处理。Go 的导出是包级语义，因此保留包内所有导出函数。
- */
-function publicApiFileIds(db: Db): Set<number> {
-  const packages = db.prepare(
-    "SELECT id, dir, entry_points AS entryPoints FROM packages",
-  ).all() as Array<{ id: number; dir: string; entryPoints: string }>;
-  const files = db.prepare(
-    "SELECT id, path, language, package_id AS packageId FROM files",
-  ).all() as Array<{ id: number; path: string; language: string; packageId: number | null }>;
-  const entryMatchers = new Map<number, RegExp[]>();
-  for (const pkg of packages) {
-    const entries = parseArray(pkg.entryPoints)
-      .filter((entry) => entry !== "package.json")
-      .flatMap(sourceEntryCandidates);
-    entryMatchers.set(pkg.id, [...new Set(entries)].map(pathPattern));
-  }
-
-  const out = new Set<number>();
-  for (const file of files) {
-    if (file.language === "go") {
-      out.add(file.id);
-      continue;
-    }
-    const relative = packageRelativePath(file.path, file.packageId, packages);
-    const conventional = /^(?:src\/)?(?:index\.(?:[cm]?[jt]sx?|py)|__init__\.py|lib\.rs|mod\.rs)$/.test(relative);
-    const configured = file.packageId !== null &&
-      (entryMatchers.get(file.packageId) ?? []).some((matcher) => matcher.test(relative));
-    if (conventional || configured) out.add(file.id);
-  }
-
-  // barrel 文件通常没有自己的函数，只用 `export * from "./foo"` 暴露实现。
-  // 沿解析成功的 re-export 递归扩展，否则真实公共函数仍会全部漏掉。
-  const reexports = db.prepare(
-    `SELECT file_id AS sourceId, target_file_id AS targetId FROM imports
-     WHERE kind = 're-export' AND target_file_id IS NOT NULL`,
-  ).all() as Array<{ sourceId: number; targetId: number }>;
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const edge of reexports) {
-      if (!out.has(edge.sourceId) || out.has(edge.targetId)) continue;
-      out.add(edge.targetId);
-      changed = true;
-    }
-  }
-  return out;
-}
-
-function packageRelativePath(
-  filePath: string,
-  packageId: number | null,
-  packages: readonly { id: number; dir: string }[],
-): string {
-  const dir = packages.find((pkg) => pkg.id === packageId)?.dir;
-  if (!dir || dir === ".") return filePath;
-  return filePath.startsWith(`${dir}/`) ? filePath.slice(dir.length + 1) : filePath;
-}
-
-/** dist/foo.js、dist/foo.d.ts 等发布入口都映射回 src/foo 的源码族。 */
-function sourceEntryCandidates(entry: string): string[] {
-  const clean = entry.startsWith("./") ? entry.slice(2) : entry;
-  const source = clean.startsWith("dist/") || clean.startsWith("build/")
-    ? `src/${clean.slice(clean.indexOf("/") + 1)}`
-    : clean;
-  const stem = source.replace(/(?:\.d)?\.(?:[cm]?js|tsx?|jsx|py|rs|go)$/, "");
-  return [
-    source,
-    `${stem}.ts`, `${stem}.tsx`, `${stem}.js`, `${stem}.jsx`,
-    `${stem}.py`, `${stem}.rs`, `${stem}.go`,
-  ];
-}
-
-function pathPattern(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
-  return new RegExp(`^${escaped}$`);
 }
 
 function hintEntries(db: Db, symbols: readonly SymbolRow[]): EntryCandidate[] {
@@ -288,15 +209,23 @@ function cliFramework(callee: string, receiver: string | null): string {
   return "CLI framework";
 }
 
+/**
+ * `it("…", handler)` 这类注册调用。内联回调已经合成为用例符号、由 symbolEntries 收了；
+ * 这里补的是把具名函数传进去的写法。注册可以写在 describe 里，调用方是用例组就照收。
+ */
 function testCallEntries(calls: readonly CallRow[], symbols: readonly SymbolRow[]): EntryCandidate[] {
+  const suites = new Set(symbols.filter((s) => s.testKind === "suite").map((s) => s.id));
   const out: EntryCandidate[] = [];
   for (const call of calls) {
-    if (!TEST_NAMES.test(call.callee) || call.callerId !== null) continue;
+    if (!TEST_NAMES.test(call.callee) || /^describe$/i.test(call.callee)) continue;
+    if (call.callerId !== null && !suites.has(call.callerId)) continue;
     const args = parseArray(call.arguments);
-    const handler = resolveHandler(symbols, call.fileId, handlerIdentifier(args.at(-1) ?? ""));
+    const title = unquote(args[0]);
+    const inline = title ? inlineHandler(symbols, call.fileId, title.slice(0, 160), call.line) : null;
+    const handler = inline ?? resolveHandler(symbols, call.fileId, handlerIdentifier(args.at(-1) ?? ""));
     out.push({
       kind: "test", framework: null, symbolId: handler?.symbol.id ?? null, fileId: call.fileId, line: call.line,
-      label: unquote(args[0]) ?? `${call.callee} @ ${call.line}`, method: null, route: null,
+      label: title ?? `${call.callee} @ ${call.line}`, method: null, route: null,
       confidence: handler?.confidence ?? "likely", evidence: `${call.callee}(name, callback) test registration`,
     });
   }
@@ -527,5 +456,13 @@ function dedupeEntries(entries: EntryCandidate[]): EntryCandidate[] {
     const existing = out.get(key);
     if (!existing || (existing.symbolId === null && entry.symbolId !== null)) out.set(key, entry);
   }
-  return [...out.values()];
+  // 用例符号从回调那一行起，注册调用在上一行时两条行号对不上，按落到的同一个用例再收一次。
+  // 只收测试：同一个 handler 挂在两条路由上是两个入口
+  const tests = new Set<number>();
+  return [...out.values()].filter((entry) => {
+    if (entry.kind !== "test" || entry.symbolId === null) return true;
+    if (tests.has(entry.symbolId)) return false;
+    tests.add(entry.symbolId);
+    return true;
+  });
 }

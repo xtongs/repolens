@@ -66,6 +66,7 @@ export function TopBar() {
         <FindingsPill />
         <EntriesPill />
         <ChangesPill />
+        <UnderstandingPill />
         <LlmPill />
       </div>
 
@@ -77,8 +78,12 @@ export function TopBar() {
         <RepoPicker />
         <div ref={slackRef} className="flex w-0 flex-1 items-center gap-3 overflow-hidden">
           {overview && (
-            <span data-topbar-optional="1" className="min-w-0 truncate text-[11px] text-[var(--color-ink-faint)]">
-              {t("{loc} 行", { loc: overview.totals.loc.toLocaleString("en-US") })} ·{" "}
+            <span
+              data-topbar-optional="1"
+              className="min-w-0 truncate text-[11px] text-[var(--color-ink-faint)]"
+              title={t("只算参与分析的源码；连同测试、文档、配置共 {loc} 行", { loc: overview.totals.loc.toLocaleString("en-US") })}
+            >
+              {t("源码 {loc} 行", { loc: overview.totals.sourceLoc.toLocaleString("en-US") })} ·{" "}
               {overview.packages.length > 1 ? t("{count} 个包", { count: overview.packages.length }) : t("单包")} ·{" "}
               {overview.languages
                 .slice(0, 3)
@@ -86,6 +91,7 @@ export function TopBar() {
                 .join(" / ")}
             </span>
           )}
+          <LiveBadge />
 
           <Breadcrumb />
         </div>
@@ -458,7 +464,76 @@ function StructureControls() {
       >
         {t("外部依赖")}
       </Toggle>
+
+      <LensSelect />
     </>
+  );
+}
+
+const LENS_OPTIONS = [
+  { key: "none", label: msg("无视角") },
+  { key: "understanding", label: msg("我的理解") },
+  { key: "heat", label: msg("改动热度") },
+  { key: "tests", label: msg("测试覆盖") },
+] as const;
+
+/** 图上叠加一层视角：哪里我看懂了、哪里改得勤、哪里有测试兜着 */
+function LensSelect() {
+  const t = useT();
+  const lens = useAppStore((s) => s.lens);
+  const setLens = useAppStore((s) => s.setLens);
+  return (
+    <select
+      value={lens ?? "none"}
+      onChange={(event) => {
+        const value = event.target.value;
+        setLens(value === "understanding" || value === "heat" || value === "tests" ? value : null);
+      }}
+      aria-label={t("视角")}
+      title={t("在节点底边叠一条细条：看懂了几成、改得勤不勤、测到了几成")}
+      className={`h-[26px] rounded-md border bg-[var(--color-surface)] px-1.5 text-[11px] outline-none transition-colors ${
+        lens ? "border-[var(--color-accent)] text-[var(--color-accent)]" : "border-[var(--color-line)] text-[var(--color-ink-faint)] hover:border-[var(--color-line-strong)]"
+      }`}
+    >
+      {LENS_OPTIONS.map((option) => (
+        <option key={option.key} value={option.key}>{t(option.label)}</option>
+      ))}
+    </select>
+  );
+}
+
+/** 开着文件监视时亮一个点：AI 在旁边改代码，图和变更页自己跟上 */
+function LiveBadge() {
+  const t = useT();
+  const status = useAppStore((s) => s.watchStatus);
+  if (!status?.enabled) return null;
+  const color = status.error ? "var(--color-warn)" : "var(--color-success)";
+  return (
+    <span
+      data-topbar-optional="1"
+      className="flex shrink-0 items-center gap-1 text-[10.5px]"
+      style={{ color }}
+      title={status.error
+        ? t("文件监视出错：{error}", { error: translateMessage(status.error) })
+        : t("盯着文件变化：改动后自动刷新结构索引")}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${status.refreshing ? "animate-pulse" : ""}`} style={{ background: color }} />
+      {status.refreshing ? t("刷新中…") : t("实时")}
+    </span>
+  );
+}
+
+function UnderstandingPill() {
+  const t = useT();
+  const store = useAppStore();
+  const open = store.treeOpen && store.panelTab === "understanding";
+  return (
+    <button type="button" onClick={() => { store.setPanelTab("understanding"); store.setTreeOpen(!open); }}
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors"
+      style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
+      title={t("我看懂了多少、哪些看懂后又被改过、下一步读什么，以及团队的阅读导览")} aria-label={t("理解")}>
+      ◐<span data-topbar-optional="2">{t("理解")}</span>
+    </button>
   );
 }
 
@@ -548,8 +623,17 @@ function WalkControls() {
   const close = useAppStore((s) => s.closeWalk);
   const allCalls = useAppStore((s) => s.walkAllCalls);
   const setAllCalls = useAppStore((s) => s.setWalkAllCalls);
+  const mainPath = useAppStore((s) => s.walkMainPath);
+  const setMainPath = useAppStore((s) => s.setWalkMainPath);
   return (
     <>
+      <Toggle
+        active={mainPath}
+        onClick={() => setMainPath(!mainPath)}
+        title={t("跳过提前 return / throw 的守卫分支和 catch，先把正常流程读通")}
+      >
+        {t("主路径")}
+      </Toggle>
       <Toggle
         active={allCalls}
         onClick={() => setAllCalls(!allCalls)}
@@ -703,12 +787,16 @@ function FindingsPill() {
   const store = useAppStore();
   const repoId = store.repoId;
   const repoRevision = store.repoRevision;
+  const indexRevision = store.indexRevision;
 
   // 跟着仓库重取。否则换完仓库这里还挂着上一个仓库的问题数，
-  // 而角标是会被当成事实去点的。
+  // 而角标是会被当成事实去点的。索引刷新后也重取，但不先清空，免得角标闪一下
+  const lastRepo = useRef<string>("");
   useEffect(() => {
     let stale = false;
-    setSummary(null);
+    const key = `${repoId ?? ""}:${repoRevision}`;
+    if (lastRepo.current !== key) setSummary(null);
+    lastRepo.current = key;
     void api
       .findings()
       .then((res) => {
@@ -720,7 +808,7 @@ function FindingsPill() {
     return () => {
       stale = true;
     };
-  }, [repoId, repoRevision]);
+  }, [repoId, repoRevision, indexRevision]);
 
   if (!summary || summary.total === 0) return null;
 

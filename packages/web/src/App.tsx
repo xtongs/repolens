@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { subscribeRepoEvents } from "./api/client";
 import { GraphCanvas } from "./graph/GraphCanvas";
 import { useLocale, useT } from "./i18n";
 import { DetailDrawer } from "./layout/DetailDrawer";
@@ -10,7 +11,12 @@ import { HelpSheet } from "./overlays/HelpSheet";
 import { SettingsDialog } from "./overlays/SettingsDialog";
 import { useAppStore } from "./store/useAppStore";
 import { useChatStore } from "./store/useChatStore";
+import { composeNote } from "./store/useNotesStore";
 import { WalkView } from "./walk/WalkView";
+
+function typingIn(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']") !== null;
+}
 
 /** ⌘I：对话没开就打开并聚焦；开着但焦点不在输入框就拉回焦点；已在输入框里则收起 */
 function toggleChat(): void {
@@ -35,6 +41,18 @@ export function App() {
   useEffect(() => {
     void boot();
   }, [boot]);
+
+  // 盯着文件变化的状态和「索引刷新完了」由服务端推过来：AI 在旁边改代码时，图、体检、变更页自己跟上
+  const repoId = useAppStore((s) => s.repoId);
+  const ready = overview !== null;
+  useEffect(() => {
+    if (repoId === null || !ready) return;
+    const { setWatchStatus, refreshIndex } = useAppStore.getState();
+    return subscribeRepoEvents(repoId, {
+      onStatus: setWatchStatus,
+      onIndex: (refreshedAt) => void refreshIndex(refreshedAt),
+    });
+  }, [repoId, ready]);
 
   // 原生菜单和更新对话框由主进程绘制，界面换了语言要告诉它
   useEffect(() => {
@@ -73,6 +91,11 @@ export function App() {
       if (event.key.toLowerCase() === "i" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         toggleChat();
+      }
+      // N：随手记一笔。焦点在输入框里时 N 就是 N
+      if (event.key === "n" && !event.metaKey && !event.ctrlKey && !event.altKey && !typingIn(event.target)) {
+        event.preventDefault();
+        composeNote();
       }
     };
     window.addEventListener("keydown", onKey);

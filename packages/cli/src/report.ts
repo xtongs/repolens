@@ -15,13 +15,18 @@ export function formatScanReport(root: string, stats: ScanStats): string {
   lines.push(
     row("文件", `${stats.filesDiscovered} 个（解析 ${stats.filesParsed}，复用 ${stats.filesReused}，删除 ${stats.filesDeleted}）`),
   );
-  lines.push(row("代码行", `${formatNumber(stats.loc)}`));
+  lines.push(row(
+    "代码行",
+    stats.sourceLoc !== undefined && stats.sourceLoc !== stats.loc
+      ? `源码 ${formatNumber(stats.sourceLoc)}（含测试、文档、配置共 ${formatNumber(stats.loc)}）`
+      : formatNumber(stats.loc),
+  ));
   lines.push(row("符号", `${formatNumber(stats.symbols)}`));
   lines.push(row("包", `${stats.packages}`));
   lines.push(
     row(
       "依赖",
-      `${stats.imports} 条 import：内部 ${stats.importsResolved}，外部 ${stats.importsExternal}，未解析 ${stats.importsUnresolved}${resolutionRate(stats)}`,
+      `${formatNumber(stats.imports)} 条 import：内部 ${formatNumber(stats.importsResolved)}，外部 ${formatNumber(stats.importsExternal)}，未解析 ${formatNumber(stats.importsUnresolved)}${resolutionRate(stats)}`,
     ),
   );
   lines.push(row("调用点", `${formatNumber(stats.calls)}${callBreakdown(stats)}`));
@@ -33,6 +38,15 @@ export function formatScanReport(root: string, stats: ScanStats): string {
         `${linked} 处前端请求按 URL 对上后端路由（共 ${routes} 个路由${ambiguous > 0 ? `，多义 ${ambiguous}` : ""}）`,
       ),
     );
+  }
+  if (stats.tests && stats.tests.cases > 0) {
+    const { cases, covered, functions } = stats.tests;
+    const share = functions === 0 ? 0 : Math.round((covered / functions) * 100);
+    lines.push(row("测试", `${formatNumber(cases)} 个用例走到 ${formatNumber(covered)} / ${formatNumber(functions)} 个源码函数（${share}%）`));
+  }
+  if (stats.history) {
+    const { commits, files, aiCommits } = stats.history;
+    lines.push(row("历史", `近一年 ${formatNumber(commits)} 次提交改过 ${formatNumber(files)} 个文件${aiCommits > 0 ? `，其中 ${formatNumber(aiCommits)} 次标明有 AI 参与` : ""}`));
   }
   if (stats.parseErrors > 0) {
     lines.push(row("语法警告", `${stats.parseErrors} 个文件含无法解析的节点`));
@@ -69,8 +83,8 @@ export function formatOverview(overview: OverviewDto): string {
   lines.push(`${overview.repoName}  ${overview.repoRoot}`);
   lines.push(`扫描于 ${overview.scannedAt}`);
   lines.push("");
-  lines.push(row("文件", formatNumber(overview.totals.files)));
-  lines.push(row("代码行", formatNumber(overview.totals.loc)));
+  lines.push(row("文件", `${formatNumber(overview.totals.sourceFiles)} 个源码文件（共 ${formatNumber(overview.totals.files)}）`));
+  lines.push(row("代码行", `源码 ${formatNumber(overview.totals.sourceLoc)}（含测试、文档、配置共 ${formatNumber(overview.totals.loc)}）`));
   lines.push(row("符号", formatNumber(overview.totals.symbols)));
   lines.push(row("调用点", formatNumber(overview.totals.calls)));
   lines.push(

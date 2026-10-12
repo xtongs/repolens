@@ -95,9 +95,14 @@ CREATE TABLE IF NOT EXISTS symbols (
   /** 符号内容指纹，LLM 缓存失效判定用 */
   hash          TEXT NOT NULL DEFAULT '',
   /** 结构指纹：忽略名字与字面量的 AST 形状，用于识别重复实现 */
-  shape         TEXT
+  shape         TEXT,
+  /** 测试文件里的用例（case）或用例组（suite） */
+  test_kind     TEXT,
+  /** 0 表示只有签名没有实现：接口方法、重载声明、trait 方法签名 */
+  implemented   INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE INDEX IF NOT EXISTS idx_sym_test ON symbols(test_kind);
 CREATE INDEX IF NOT EXISTS idx_sym_file ON symbols(file_id);
 CREATE INDEX IF NOT EXISTS idx_sym_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_sym_shape ON symbols(shape);
@@ -149,6 +154,7 @@ CREATE TABLE IF NOT EXISTS exports (
 
 CREATE INDEX IF NOT EXISTS idx_exp_file ON exports(file_id);
 CREATE INDEX IF NOT EXISTS idx_exp_name ON exports(name);
+CREATE INDEX IF NOT EXISTS idx_exp_symbol ON exports(symbol_id);
 
 -- ---------------------------------------------------------------------------
 -- 调用点（原始事实）
@@ -180,11 +186,16 @@ CREATE TABLE IF NOT EXISTS call_sites (
   target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
   target_name      TEXT,             -- external 时的库名
   candidates       TEXT,             -- ambiguous 时的候选符号 id，JSON 数组
-  io_kind          TEXT              -- 识别出的 I/O 访问：database | network | filesystem | ...
+  io_kind          TEXT,             -- 识别出的 I/O 访问：database | network | filesystem | ...
+  blocks           TEXT,             -- 所在的控制结构，JSON：ControlBlock[]，直接在函数体里时为 NULL
+  discarded        INTEGER NOT NULL DEFAULT 0  -- 独立成句、返回值没人用
 );
 
 CREATE INDEX IF NOT EXISTS idx_callsite_file ON call_sites(file_id);
 CREATE INDEX IF NOT EXISTS idx_callsite_caller ON call_sites(caller_symbol_id);
+-- 外键的子表列都要有索引：删一个符号时 SQLite 要找出所有指向它的行，没有索引就是整表扫，
+-- 大仓库重新解析一批文件会慢成几百秒
+CREATE INDEX IF NOT EXISTS idx_callsite_target ON call_sites(target_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_callsite_name ON call_sites(callee_name);
 
 CREATE TABLE IF NOT EXISTS entry_hints (
@@ -262,6 +273,7 @@ CREATE TABLE IF NOT EXISTS type_relations (
 
 CREATE INDEX IF NOT EXISTS idx_typerel_subject ON type_relations(subject_id);
 CREATE INDEX IF NOT EXISTS idx_typerel_target ON type_relations(target_id);
+CREATE INDEX IF NOT EXISTS idx_typerel_file ON type_relations(file_id);
 
 -- ---------------------------------------------------------------------------
 -- 架构体检
@@ -349,6 +361,7 @@ CREATE TABLE IF NOT EXISTS entry_points (
 );
 CREATE INDEX IF NOT EXISTS idx_entry_symbol ON entry_points(symbol_id);
 CREATE INDEX IF NOT EXISTS idx_entry_kind ON entry_points(kind);
+CREATE INDEX IF NOT EXISTS idx_entry_file ON entry_points(file_id);
 
 -- 每个函数往下走最少几跳能碰到某类 I/O；0 表示它自己就在做。
 -- 走读时据此提示「从这一步进去会访问数据库」，人才知道该往哪个分支走。
@@ -357,6 +370,62 @@ CREATE TABLE IF NOT EXISTS io_reach (
   kind        TEXT NOT NULL,
   depth       INTEGER NOT NULL,
   PRIMARY KEY (symbol_id, kind)
+);
+
+-- 测试覆盖：哪些用例能沿确定/可能的调用走到这个源码符号。用例是人写下的行为说明，
+-- 读一个函数时先看「谁在测它、测的是什么」，比看 AI 摘要更可信。链接阶段整表重建。
+CREATE TABLE IF NOT EXISTS test_coverage (
+  symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+  tests     INTEGER NOT NULL,
+  direct    INTEGER NOT NULL,
+  nearest   TEXT NOT NULL DEFAULT '[]'   -- JSON: [[用例符号 id, 层数], …]，最近的几条
+);
+
+-- SQL 字面量里读写的表。只认写在代码里的 SQL 文本，ORM 的模型方法不在其中。
+CREATE TABLE IF NOT EXISTS data_access (
+  id           INTEGER PRIMARY KEY,
+  call_site_id INTEGER NOT NULL REFERENCES call_sites(id) ON DELETE CASCADE,
+  symbol_id    INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+  file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  table_name   TEXT NOT NULL,
+  write        INTEGER NOT NULL DEFAULT 0,
+  line         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_data_table ON data_access(table_name);
+CREATE INDEX IF NOT EXISTS idx_data_call ON data_access(call_site_id);
+CREATE INDEX IF NOT EXISTS idx_data_symbol ON data_access(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_data_file ON data_access(file_id);
+
+-- git 历史（默认近 12 个月）。按路径存而不是按文件 id：它来自 git 而不是解析，
+-- 扫描时整表重建，和文件表按路径对上即可。
+CREATE TABLE IF NOT EXISTS file_history (
+  path         TEXT PRIMARY KEY,
+  commits      INTEGER NOT NULL,
+  recent       INTEGER NOT NULL,       -- 近 90 天
+  last_at      TEXT,
+  authors      INTEGER NOT NULL,
+  ai_commits   INTEGER NOT NULL DEFAULT 0
+);
+
+-- 每次提交改了哪些文件。模块的提交数要按提交去重，把文件各自的次数加起来会数重
+CREATE TABLE IF NOT EXISTS history_commits (
+  id      INTEGER PRIMARY KEY,
+  recent  INTEGER NOT NULL,              -- 近 90 天
+  ai      INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS history_files (
+  commit_id INTEGER NOT NULL REFERENCES history_commits(id) ON DELETE CASCADE,
+  path      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_history_files_path ON history_files(path);
+CREATE INDEX IF NOT EXISTS idx_history_files_commit ON history_files(commit_id);
+
+-- 总是一起改的源码文件对。代码里有没有依赖关系留给体检判断。
+CREATE TABLE IF NOT EXISTS co_changes (
+  a        TEXT NOT NULL,
+  b        TEXT NOT NULL,
+  together INTEGER NOT NULL,
+  PRIMARY KEY (a, b)
 );
 
 -- ---------------------------------------------------------------------------
@@ -377,4 +446,4 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 `;
 
 /** schema 版本，变更时 bump。database.ts 里有迁移的旧版本就地升级，没有的整库重建 */
-export const SCHEMA_VERSION = "7";
+export const SCHEMA_VERSION = "9";

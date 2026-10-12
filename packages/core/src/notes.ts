@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { INDEX_DIR, type Db } from "./db/database.js";
 import { ROOT_SCOPE } from "./db/queries.js";
+import { JsonListFile } from "./json-file.js";
 import type { NoteDto, NoteInputDto, NoteTargetDto } from "./types.js";
 
 const NOTES_FILE = "notes.json";
@@ -31,9 +31,13 @@ export function notesPath(root: string): string {
   return join(root, INDEX_DIR, NOTES_FILE);
 }
 
+function notesFile(root: string): JsonListFile<StoredNote> {
+  return new JsonListFile(notesPath(root), "notes", "笔记文件", isStoredNote);
+}
+
 export function listNotes(db: Db, root: string): NoteDto[] {
   const present = presenter(db);
-  return readNotes(root).map(present);
+  return notesFile(root).read().map(present);
 }
 
 export function addNote(db: Db, root: string, input: NoteInputDto): NoteDto {
@@ -42,16 +46,13 @@ export function addNote(db: Db, root: string, input: NoteInputDto): NoteDto {
   const { target, fileHash } = resolveTarget(db, root, input.nodeId, input.lines ?? null);
   const question = input.question?.trim().slice(0, MAX_QUESTION_CHARS) || null;
   const note: StoredNote = { id: randomUUID(), target, text, question, createdAt: new Date().toISOString(), fileHash };
-  writeNotes(root, [...readNotes(root), note]);
+  const file = notesFile(root);
+  file.write([...file.read(), note]);
   return presenter(db)(note);
 }
 
 export function deleteNote(root: string, id: string): boolean {
-  const notes = readNotes(root);
-  const remaining = notes.filter((note) => note.id !== id);
-  if (remaining.length === notes.length) return false;
-  writeNotes(root, remaining);
-  return true;
+  return notesFile(root).remove((note) => note.id === id);
 }
 
 export function parseNoteInput(raw: unknown): NoteInputDto | null {
@@ -126,29 +127,6 @@ function scopeLabel(root: string, id: string): string {
   if (id === ROOT_SCOPE) return basename(root);
   const rest = id.slice(4);
   return id.startsWith("pkg:") ? rest : (rest.split("/").at(-1) ?? rest);
-}
-
-/** 文件损坏时直接报错，不能当成「没有笔记」再写回去，那会把用户的笔记覆盖掉 */
-function readNotes(root: string): StoredNote[] {
-  const path = notesPath(root);
-  if (!existsSync(path)) return [];
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    throw new Error(`笔记文件无法解析：${path}（${(err as Error).message}）`);
-  }
-  if (!isRecord(raw) || !Array.isArray(raw["notes"])) throw new Error(`笔记文件格式不对：${path}`);
-  return raw["notes"].filter(isStoredNote);
-}
-
-function writeNotes(root: string, notes: StoredNote[]): void {
-  const path = notesPath(root);
-  mkdirSync(dirname(path), { recursive: true });
-  // 先写临时文件再改名，写到一半崩溃也不会留下半截 JSON
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify({ version: 1, notes }, null, 2)}\n`);
-  renameSync(temporary, path);
 }
 
 function isStoredNote(value: unknown): value is StoredNote {

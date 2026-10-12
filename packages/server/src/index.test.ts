@@ -199,4 +199,84 @@ describe("startServer", () => {
     expect(events[3]?.data).toEqual({ text: "周五发布。" });
     expect(events[4]?.data).toMatchObject({ model: "mock", usage: { requests: 2 } });
   });
+
+  it("理解账本、确认分层、批准依赖都要带意图标记；确认分层写进团队约定并就地重算倒置", async () => {
+    const repo = join(home, "mono");
+    const files: Record<string, string> = {
+      ".repolens.json": JSON.stringify({ llm: { enabled: false } }),
+      "package.json": JSON.stringify({ name: "mono", private: true }),
+      "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+      "packages/a/package.json": JSON.stringify({ name: "a", main: "src/index.ts" }),
+      "packages/a/src/index.ts": "import { b } from 'b';\nexport function a() { return b(); }\n",
+      "packages/b/package.json": JSON.stringify({ name: "b", main: "src/index.ts" }),
+      "packages/b/src/index.ts": "export function b() { return 1; }\n",
+    };
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(join(repo, path, ".."), { recursive: true });
+      writeFileSync(join(repo, path), content);
+    }
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"));
+    await scanRepo({ root: repo });
+    server = await startServer({ repoRoot: repo, port: 0 });
+    const post = (path: string, intent: string | null, body: unknown) => fetch(`${server!.url}/api${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(intent ? { "x-repolens-intent": intent } : {}) },
+      body: JSON.stringify(body),
+    });
+
+    const hit = (await (await fetch(`${server.url}/api/search?q=a`)).json()) as Array<{ id: string; label: string }>;
+    const a = hit.find((item) => item.label === "a" && item.id.startsWith("sym:"))!.id;
+    expect((await post("/understanding", null, { nodeId: a })).status).toBe(403);
+    expect(await (await post("/understanding", "understanding", { nodeId: a })).json()).toMatchObject({ status: "understood", label: "a" });
+    const understanding = await (await fetch(`${server.url}/api/understanding`)).json() as { summary: { marks: number } };
+    expect(understanding.summary.marks).toBe(1);
+
+    // b 在上层、a 在下层：a → b 就是倒置
+    const layers = [{ name: "上", members: ["pkg:b"] }, { name: "下", members: ["pkg:a"] }];
+    expect((await post("/layers/confirm", null, { layers })).status).toBe(403);
+    expect((await post("/layers/confirm", "confirm-layers", { layers })).status).toBe(200);
+    expect(existsSync(join(repo, ".repolens.json"))).toBe(true);
+    const findings = await (await fetch(`${server.url}/api/findings?kind=layering`)).json() as { items: Array<{ title: string }> };
+    expect(findings.items.map((f) => f.title)).toEqual(["分层倒置：「下」的 a 依赖了上层「上」的 b"]);
+
+    expect(await (await post("/lock", "write-lock", {})).json()).toEqual({ level: "package", dependencies: 1 });
+    expect(existsSync(join(repo, ".repolens.lock.json"))).toBe(true);
+    const card = await (await fetch(`${server.url}/api/module?node=pkg:a`)).json() as { dependsOn: Array<{ id: string }> };
+    expect(card.dependsOn.map((d) => d.id)).toEqual(["pkg:b"]);
+    const boundary = await (await fetch(`${server.url}/api/boundary?from=pkg:a&to=pkg:b`)).json() as { symbols: Array<{ name: string }> };
+    expect(boundary.symbols.map((s) => s.name)).toEqual(["b"]);
+  });
+
+  it("盯着文件变化：改动后自动刷新结构索引，并通过事件告诉界面", async () => {
+    const repo = join(home, "watched");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, ".repolens.json"), JSON.stringify({ llm: { enabled: false } }));
+    writeFileSync(join(repo, "src/a.ts"), "export function a() { return 1; }\n");
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"));
+    await scanRepo({ root: repo });
+    server = await startServer({ repoRoot: repo, port: 0 });
+    const { current } = await (await fetch(`${server.url}/api/repos`)).json() as { current: string };
+    const toggle = await fetch(`${server.url}/api/repos/${current}/watch`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-repolens-intent": "watch-repository" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(await toggle.json()).toMatchObject({ enabled: true });
+
+    const events = await fetch(`${server.url}/api/repos/${current}/events`);
+    const reader = events.body!.getReader();
+    const decoder = new TextDecoder();
+    writeFileSync(join(repo, "src/b.ts"), "export function b() { return 2; }\n");
+    let seen = "";
+    const deadline = Date.now() + 20_000;
+    while (!seen.includes("event: index") && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      seen += decoder.decode(value);
+    }
+    await reader.cancel();
+    expect(seen).toContain("event: index");
+    const hits = await (await fetch(`${server.url}/api/search?q=b.ts`)).json() as Array<{ id: string }>;
+    expect(hits.some((item) => item.id.startsWith("file:"))).toBe(true);
+  }, 30_000);
 });

@@ -24,7 +24,7 @@ export function CommandPalette() {
   const reveal = useAppStore((s) => s.reveal);
   const showNoise = useAppStore((s) => s.showNoise);
   const repoId = useAppStore((s) => s.repoId);
-  const repoRevision = useAppStore((s) => s.repoRevision);
+  const repoRevision = useAppStore((s) => `${s.repoRevision}.${s.indexRevision}`);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHitDto[]>([]);
   const [cursor, setCursor] = useState(0);

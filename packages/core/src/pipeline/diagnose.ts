@@ -1,6 +1,8 @@
 import type { Db } from "../db/database.js";
 import type { FindingRow, IndexWriter } from "../db/writer.js";
-import type { ArchitectureRule } from "../types.js";
+import type { ArchitectureLock, ArchitectureRule, ConfirmedLayer } from "../types.js";
+import { detectBypass, detectLayering, detectUnapproved } from "./conventions.js";
+import { detectCoupling, detectStaleDocs } from "./drift.js";
 import { evaluateRules, type RuleViolation } from "./rules.js";
 
 /**
@@ -22,18 +24,39 @@ export interface DiagnoseStats {
   cycle: number;
   violation: number;
   oversized: number;
+  unapproved: number;
+  layering: number;
+  bypass: number;
+  coupling: number;
+  staleDoc: number;
 }
 
-export function diagnose(db: Db, writer: IndexWriter, rules: readonly ArchitectureRule[] = []): DiagnoseStats {
+/** 团队写下的约定：依赖规则、依赖锁、确认过的分层。都来自随代码提交的文件 */
+export interface DiagnosePolicy {
+  rules?: readonly ArchitectureRule[];
+  lock?: ArchitectureLock | null;
+  layers?: readonly ConfirmedLayer[];
+  /** 读文档原文用；不给时不查文档引用 */
+  root?: string;
+}
+
+export function diagnose(db: Db, writer: IndexWriter, policy: DiagnosePolicy = {}): DiagnoseStats {
   const findings: FindingRow[] = [];
 
-  const duplicate = detectDuplicates(db, findings);
-  const cycle = detectCycles(db, findings);
-  const violation = detectViolations(db, rules, findings);
-  const oversized = detectOversized(db, findings);
+  const stats: DiagnoseStats = {
+    duplicate: detectDuplicates(db, findings),
+    cycle: detectCycles(db, findings),
+    violation: detectViolations(db, policy.rules ?? [], findings),
+    oversized: detectOversized(db, findings),
+    unapproved: detectUnapproved(db, policy.lock ?? null, findings),
+    layering: detectLayering(db, policy.layers ?? [], findings),
+    bypass: detectBypass(db, findings),
+    coupling: detectCoupling(db, findings),
+    staleDoc: policy.root ? detectStaleDocs(db, policy.root, findings) : 0,
+  };
 
   writer.insertFindings(findings);
-  return { duplicate, cycle, violation, oversized };
+  return stats;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,47 +2,59 @@
 import {
   BaselineError,
   buildChangeReport,
-  evaluateRules,
+  buildLock,
   indexPath,
   isIndexCurrent,
   loadConfig,
+  loadLock,
   openDb,
   getOverview,
+  refreshConventions,
   rememberRepo,
+  runCheck,
   scanRepo,
-  type ArchitectureRule,
+  writeLock,
+  type ArchitectureLock,
+  type RepolensConfig,
   type ScanPhase,
 } from "@repolens/core";
 import { DEFAULT_PORT, startServer } from "@repolens/server";
 import { Command } from "commander";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import open from "open";
-import { formatRuleReports, RULES_HINT, rulesFailed } from "./check-report.js";
+import { formatCheckReport, formatLockReport, NOTHING_TO_CHECK } from "./check-report.js";
 import { formatChangeReport } from "./diff-report.js";
+import { serveMcp } from "./mcp.js";
 import { formatOverview, formatScanReport, progressBar } from "./report.js";
 import { locateWebDist, webAssetsHint } from "./web-assets.js";
+
+const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const program = new Command();
 
 program
   .name("repolens")
   .description("本地代码仓库理解工具：扫描仓库并在浏览器里可视化架构、结构与调用关系")
-  .version("0.1.0");
+  .version(version);
 
 program
   .command("scan", { isDefault: false })
   .description("扫描仓库并写入 .repolens/index.db")
   .argument("[path]", "仓库路径", ".")
   .option("-f, --fresh", "忽略已有索引，全量重建", false)
+  .option("-s, --structure-only", "只建结构，不调用模型生成摘要（已有的摘要保留）", false)
   .option("-q, --quiet", "只输出最终结果", false)
-  .action(async (path: string, opts: { fresh: boolean; quiet: boolean }) => {
+  .action(async (path: string, opts: { fresh: boolean; structureOnly: boolean; quiet: boolean }) => {
     const root = resolve(path);
     assertDirectory(root);
 
     const stats = await scanRepo({
       root,
       fresh: opts.fresh,
+      structureOnly: opts.structureOnly,
+      history: true,
       onProgress: opts.quiet ? undefined : reportProgress,
     });
 
@@ -58,7 +70,8 @@ program
   .option("-p, --port <port>", "端口", String(DEFAULT_PORT))
   .option("--host <host>", "监听地址", "127.0.0.1")
   .option("--open", "启动后打开浏览器", false)
-  .action(async (path: string, opts: { port: string; host: string; open: boolean }) => {
+  .option("-w, --watch", "盯着文件变化，改动后自动刷新结构并推给界面", false)
+  .action(async (path: string, opts: { port: string; host: string; open: boolean; watch: boolean }) => {
     const root = resolve(path);
     remember(root);
     const webRoot = locateWebDist();
@@ -69,8 +82,9 @@ program
       port: Number.parseInt(opts.port, 10),
       host: opts.host,
       webRoot: webRoot ?? undefined,
+      watch: opts.watch,
     });
-    process.stdout.write(`RepoLens 已启动：${server.url}\n按 Ctrl+C 停止\n`);
+    process.stdout.write(`RepoLens 已启动：${server.url}${opts.watch ? "（盯着文件变化）" : ""}\n按 Ctrl+C 停止\n`);
     if (opts.open) await open(server.url);
 
     const shutdown = () => {
@@ -86,7 +100,8 @@ program
   .argument("[path]", "仓库路径", ".")
   .option("-p, --port <port>", "端口", String(DEFAULT_PORT))
   .option("-f, --fresh", "强制全量重扫", false)
-  .action(async (path: string, opts: { port: string; fresh: boolean }) => {
+  .option("-w, --watch", "盯着文件变化，改动后自动刷新结构并推给界面", false)
+  .action(async (path: string, opts: { port: string; fresh: boolean; watch: boolean }) => {
     const root = resolve(path);
     assertDirectory(root);
 
@@ -105,8 +120,9 @@ program
       repoRoot: root,
       port: Number.parseInt(opts.port, 10),
       webRoot: webRoot ?? undefined,
+      watch: opts.watch,
     });
-    process.stdout.write(`\nRepoLens 已启动：${server.url}\n按 Ctrl+C 停止\n`);
+    process.stdout.write(`\nRepoLens 已启动：${server.url}${opts.watch ? "（盯着文件变化）" : ""}\n按 Ctrl+C 停止\n`);
     await open(server.url);
 
     const shutdown = () => {
@@ -158,30 +174,73 @@ program
 
 program
   .command("check")
-  .description("按 .repolens.json 的 rules 检查依赖有没有越界；不通过时退出码为 1，可直接放进 CI 或提交钩子")
+  .description("检查团队约定：依赖规则、依赖锁，给了基线时再加棘轮（不许新增依赖环、分层倒置等）。不通过时退出码为 1，可直接放进 CI 或提交钩子")
   .argument("[path]", "仓库路径", ".")
+  .option("-b, --baseline <ref>", "棘轮基线：相对这个提交不许新增团队约定里拦下的问题，如 origin/main")
   .option("--json", "输出完整 JSON", false)
-  .action(async (path: string, opts: { json: boolean }) => {
+  .action(async (path: string, opts: { baseline?: string; json: boolean }) => {
     const root = resolve(path);
     assertDirectory(root);
-    let rules: ArchitectureRule[];
+    let config: RepolensConfig;
+    let lock: ArchitectureLock | null;
     try {
-      rules = loadConfig(root).rules;
+      config = loadConfig(root);
+      lock = loadLock(root);
     } catch (err) {
       process.stderr.write(`${(err as Error).message}\n`);
       process.exit(2);
     }
-    if (rules.length === 0) {
-      process.stdout.write(opts.json ? "[]\n" : RULES_HINT);
+    if (config.rules.length === 0 && lock === null && opts.baseline === undefined) {
+      process.stdout.write(opts.json ? `${JSON.stringify({ rules: [], lock: null, unapproved: [], ratchet: null, passed: true }, null, 2)}\n` : NOTHING_TO_CHECK);
       return;
     }
-    await scanRepo({ root, structureOnly: true, onProgress: opts.json ? undefined : reportProgress });
-    if (!opts.json) process.stderr.write("\n");
-    const db = openDb(indexPath(root), { readonly: true });
-    const reports = evaluateRules(db, rules);
-    db.close();
-    process.stdout.write(opts.json ? `${JSON.stringify(reports, null, 2)}\n` : formatRuleReports(reports));
-    if (rulesFailed(reports)) process.exitCode = 1;
+    const progress = opts.json ? undefined : reportProgress;
+    try {
+      const report = await runCheck(root, { baseline: opts.baseline, onProgress: progress });
+      if (progress) process.stderr.write("\n");
+      process.stdout.write(opts.json ? `${JSON.stringify(report, null, 2)}\n` : formatCheckReport(report));
+      if (!report.passed) process.exitCode = 1;
+    } catch (err) {
+      if (!(err instanceof BaselineError)) throw err;
+      process.stderr.write(`\n${err.message}\n`);
+      process.exit(2);
+    }
+  });
+
+program
+  .command("lock")
+  .description("把现在的模块间依赖记成批准过的清单（.repolens.lock.json，随代码提交）；之后新长出来的依赖要重新运行它批准，批准就出现在代码评审里")
+  .argument("[path]", "仓库路径", ".")
+  .action(async (path: string) => {
+    const root = resolve(path);
+    assertDirectory(root);
+    let previous: ArchitectureLock | null = null;
+    try {
+      previous = loadLock(root);
+    } catch (err) {
+      process.stderr.write(`${(err as Error).message}，将按现在的依赖重写\n`);
+    }
+    await scanRepo({ root, structureOnly: true, onProgress: reportProgress });
+    process.stderr.write("\n");
+    const db = openDb(indexPath(root));
+    try {
+      const lock = buildLock(db);
+      writeLock(root, lock);
+      refreshConventions(db, { lock });
+      process.stdout.write(formatLockReport(previous, lock));
+    } finally {
+      db.close();
+    }
+  });
+
+program
+  .command("mcp")
+  .description("以 MCP（stdio）把结构索引交给 AI 编程助手：模块名片、调用关系、团队约定、变更报告和约定检查")
+  .argument("[path]", "仓库路径", ".")
+  .action(async (path: string) => {
+    const root = resolve(path);
+    assertDirectory(root);
+    await serveMcp({ root, version });
   });
 
 const PHASE_LABELS: Record<ScanPhase, string> = {

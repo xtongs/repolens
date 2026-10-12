@@ -48,8 +48,15 @@ export function argumentTexts(
   return namedChildren(argsNode)
     .filter((child) => !commentTypes.has(child.type))
     .slice(0, 12)
-    .map((child) => normalizeWhitespace(child.text).slice(0, 240));
+    .map((child) => {
+      const text = normalizeWhitespace(child.text);
+      // SQL 字面量留长一些：读写哪张表常写在一长串列名之后
+      return text.slice(0, SQL_LITERAL.test(text) ? 4000 : 240);
+    });
 }
+
+/** 以 SQL 关键字开头的字符串字面量 */
+export const SQL_LITERAL = /^(?:[a-zA-Z]{0,2}["'`]{1,3}|r#*")\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE)\b/i;
 
 export function childrenOfType(node: TsNode, type: string): TsNode[] {
   return namedChildren(node).filter((c) => c.type === type);
@@ -253,6 +260,24 @@ export function attachShapes(root: TsNode, symbols: ParsedSymbol[]): void {
   }
 }
 
+/** 只有签名、没有实现的声明节点 */
+const SIGNATURE_NODES: ReadonlySet<string> = new Set([
+  "function_signature", "method_signature", "abstract_method_signature",
+  "function_signature_item", "method_spec", "method_elem",
+]);
+
+/**
+ * 接口里的方法、重载声明、trait 方法签名也是 function / method 符号，但它们没有可读的实现：
+ * 统计「有多少函数被看懂、被测到」时要把它们排除，不然一个接口能凭空添出十几个永远读不完的函数。
+ */
+export function attachDeclarationOnly(root: TsNode, symbols: ParsedSymbol[]): void {
+  for (const sym of symbols) {
+    if (sym.kind !== "function" && sym.kind !== "method") continue;
+    const node = root.descendantForIndex(sym.startByte, Math.max(sym.startByte, sym.endByte - 1));
+    if (node && SIGNATURE_NODES.has(node.type)) sym.declarationOnly = true;
+  }
+}
+
 export function shapeOf(node: TsNode): string {
   const parts: string[] = [];
   const visit = (n: TsNode): void => {
@@ -392,6 +417,9 @@ export function attributeCalls(symbols: readonly ParsedSymbol[], sites: readonly
       argCount: site.argCount,
       argumentTexts: site.argumentTexts,
       kind: site.kind,
+      startByte: site.byte,
+      ownerStartByte: owner?.startByte,
+      ownerEndByte: owner?.endByte,
     };
   });
 }

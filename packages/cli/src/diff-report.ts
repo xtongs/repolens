@@ -1,7 +1,11 @@
-import type { ChangeReportDto, SymbolChangeDto } from "@repolens/core";
+import type { BehaviorChangeDto, ChangeClusterDto, ChangeReportDto, ClusterReason, SymbolChangeDto } from "@repolens/core";
+import { IO_NAMES } from "./labels.js";
 
 const LIMIT = 30;
 const MARK = { added: "+", removed: "-", modified: "~", moved: ">", affected: "~", resolved: "✓" } as const;
+const REASON_NAMES: Record<ClusterReason, string> = {
+  exported: "对外接口", signature: "签名变化", io: "新 I/O", calls: "新调用", complexity: "复杂度上升", untested: "没有测试", entries: "入口",
+};
 
 /**
  * 变更报告按「审阅时先看什么」排序：结构层面的新依赖、对外接口、入口影响在前，
@@ -27,6 +31,8 @@ export function formatChangeReport(report: ChangeReportDto): string {
   lines.push(row("外部库", [...report.externals.added.map((n) => `+${n}`), ...report.externals.removed.map((n) => `-${n}`)].join(" ") || "无变化"));
   lines.push(row("体检", `新增 ${findings.added ?? 0} · 消除 ${findings.resolved ?? 0}`));
   lines.push(row("入口", `新增 ${entries.added ?? 0} · 删除 ${entries.removed ?? 0} · 受影响 ${entries.affected ?? 0}`));
+  const ioEntries = report.entries.filter((e) => (e.ioAdded?.length ?? 0) > 0);
+  if (ioEntries.length > 0) lines.push(row("I/O", `${ioEntries.length} 个入口往下新碰到了 I/O`));
 
   if (report.files.length === 0) {
     lines.push("", "没有结构变化。", "");
@@ -41,13 +47,24 @@ export function formatChangeReport(report: ChangeReportDto): string {
     ...report.externals.removed.map((name) => `- ${name}`),
   ]);
 
+  section(lines, "改动单元（按调用关系归组，风险高的在前）", report.clusters.slice(0, 12).map(describeCluster));
+
+  section(lines, "行为变化（新调了谁、开始碰哪类 I/O）", report.behavior.map(describeBehavior));
+
   section(lines, "对外接口变化（导出符号）", symbols.filter((s) => s.exported).map(describeSymbol));
 
   section(lines, "入口", report.entries.map((e) => {
     const shown = e.via.slice(0, 4).map((v) => (v.depth === 0 ? `${v.name}（入口本身）` : `${v.name}（第 ${v.depth} 跳）`));
     const via = shown.join("、") + (e.via.length > shown.length ? ` 等 ${e.via.length} 处` : "");
-    return `${MARK[e.status]} ${e.label.padEnd(28, " ")} ${e.status === "affected" ? `走到 ${via}` : e.path}`;
+    const io = [
+      ...(e.ioAdded ?? []).map((kind) => `+${IO_NAMES[kind]}`),
+      ...(e.ioRemoved ?? []).map((kind) => `-${IO_NAMES[kind]}`),
+    ].join(" ");
+    return `${MARK[e.status]} ${e.label.padEnd(28, " ")} ${e.status === "affected" ? `走到 ${via}` : e.path}${io ? `  I/O ${io}` : ""}`;
   }));
+
+  const untested = symbols.filter((s) => s.status !== "removed" && s.tests === 0 && s.shapeChanged && (s.kind === "function" || s.kind === "method"));
+  section(lines, "改了但没有任何测试走到", untested.map((s) => `${s.path}:${s.line}  ${qualified(s)}`));
 
   section(lines, "体检", report.findings.map((f) =>
     `${f.status === "added" ? "+ 新增" : "✓ 消除"} [${f.severity}] ${f.title}`));
@@ -93,6 +110,25 @@ function describeSymbol(s: SymbolChangeDto): string {
 
 function qualified(s: SymbolChangeDto): string {
   return s.container ? `${s.container}.${s.name}` : s.name;
+}
+
+function describeCluster(cluster: ChangeClusterDto): string {
+  const reasons = cluster.reasons.map((r) => `${REASON_NAMES[r.kind]}${r.count > 1 ? ` ×${r.count}` : ""}`).join("、");
+  return `${cluster.label}${cluster.members.length > 1 ? ` 等 ${cluster.members.length} 处` : ""}  风险 ${cluster.risk}${reasons ? `（${reasons}）` : ""}`;
+}
+
+function describeBehavior(change: BehaviorChangeDto): string {
+  const parts = [
+    ...change.ioAdded.map((kind) => `开始访问${IO_NAMES[kind]}`),
+    ...change.ioRemoved.map((kind) => `不再访问${IO_NAMES[kind]}`),
+    change.callsAdded.length > 0 ? `新调 ${change.callsAdded.map(callName).join("、")}` : "",
+    change.callsRemoved.length > 0 ? `不再调 ${change.callsRemoved.map(callName).join("、")}` : "",
+  ].filter(Boolean);
+  return `${change.status === "added" ? "+" : "~"} ${change.path}:${change.line}  ${change.name}：${parts.join("；")}`;
+}
+
+function callName(call: BehaviorChangeDto["callsAdded"][number]): string {
+  return call.external ? `${call.external}.${call.name}` : call.name;
 }
 
 function section(lines: string[], title: string, items: string[], limit = LIMIT): void {

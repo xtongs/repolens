@@ -3,8 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { openDb } from "../db/database.js";
 import { scanRepo } from "../pipeline/scan.js";
+import type { SymbolChangeDto } from "../types.js";
 import { buildBaseline, listCommits } from "./baseline.js";
+import { clusterChanges } from "./compare.js";
 import { buildChangeReport } from "./report.js";
 
 const roots: string[] = [];
@@ -113,6 +116,21 @@ describe("变更视角", () => {
     ]));
     const affected = report.entries.find((e) => e.label === "GET /items/:id");
     expect(affected?.via.map((v) => [v.name, v.depth])).toEqual([["getItem", 0], ["load", 1]]);
+
+    // 行为：新调了谁、开始碰哪类 I/O；语言内置（toUpperCase）不算
+    const behavior = Object.fromEntries(report.behavior.map((b) => [b.name, b]));
+    expect(behavior["getItem"]).toMatchObject({
+      status: "modified", callsAdded: [{ name: "fmt", external: null }], callsRemoved: [], ioAdded: [],
+    });
+    expect(behavior["load"]).toBeUndefined();
+    expect(behavior["save"]).toMatchObject({ status: "added", ioAdded: ["filesystem"] });
+    expect(behavior["createItem"]?.callsAdded.map((c) => c.external ? `${c.external}:${c.name}` : c.name)).toEqual(["save"]);
+    expect(report.entries.find((e) => e.label === "POST /items")?.ioAdded).toEqual(["filesystem"]);
+    expect(report.symbols.find((s) => s.name === "save")?.tests).toBe(0);
+
+    // 改动单元：沿调用关系归组，新 I/O 的那组排前面
+    expect(report.clusters.map((c) => [c.label, c.members.length])).toEqual([["createItem", 2], ["getItem", 2]]);
+    expect(report.clusters[0]?.reasons).toEqual(expect.arrayContaining([{ kind: "io", count: 1 }, { kind: "untested", count: 2 }]));
   });
 
   it("基线按提交缓存；子目录扫描根在旧提交里不存在时基线为空", async () => {
@@ -159,5 +177,33 @@ describe("变更视角", () => {
     const plain = mkdtempSync(join(tmpdir(), "repolens-diff-plain-"));
     roots.push(plain);
     expect(listCommits(plain)).toEqual([]);
+  });
+
+  it("改动单元：大家都在用的工具函数自成一组，不把不相干的改动连成一团；类型按文件归组", () => {
+    const dir = mkdtempSync(join(tmpdir(), "repolens-diff-cluster-"));
+    roots.push(dir);
+    const db = openDb(join(dir, "index.db"), { fresh: true });
+    try {
+      const names = ["a", "a2", "b", "c", "d", "t"];
+      const call = db.prepare(
+        "INSERT INTO edges (type, src_kind, src_id, dst_kind, dst_id, confidence, weight) VALUES ('calls', 'symbol', ?, 'symbol', ?, 'exact', 1)",
+      );
+      const id = (name: string) => names.indexOf(name) + 1;
+      call.run(id("a"), id("a2"));
+      for (const caller of ["a", "b", "c", "d"]) call.run(id(caller), id("t"));
+
+      const change = (name: string, kind: SymbolChangeDto["kind"] = "function", path = "src/app.ts"): SymbolChangeDto => ({
+        status: "modified", id: `sym:${kind === "function" ? id(name) : 100 + name.length}`, name, container: null, kind, path, line: 1,
+        exported: false, role: "source", complexity: 1, complexityBefore: 1, signature: null, signatureBefore: null,
+        shapeChanged: true, callers: 0, tests: 1,
+      });
+      const symbols = [...names.map((name) => change(name)), change("Item", "interface", "src/types.ts"), change("Order", "type", "src/types.ts")];
+      const clusters = clusterChanges(db, symbols, [], []);
+      expect(clusters.map((c) => [c.label, c.members.length]).sort()).toEqual([
+        ["a", 2], ["b", 1], ["c", 1], ["d", 1], ["t", 1], ["types.ts", 2],
+      ]);
+    } finally {
+      db.close();
+    }
   });
 });

@@ -3,6 +3,8 @@ import { parentPort, workerData } from "node:worker_threads";
 
 interface WorkerInput {
   root: string;
+  /** 只刷新结构、不调用模型：文件变动后的自动刷新用 */
+  structureOnly?: boolean;
 }
 
 type WorkerMessage =
@@ -13,13 +15,14 @@ type WorkerMessage =
 const port = parentPort;
 if (port === null) throw new Error("扫描 worker 缺少父线程");
 
-const { root } = workerData as WorkerInput;
+const { root, structureOnly } = workerData as WorkerInput;
 
 // 不用顶层 await：桌面端会把这个文件打成 CommonJS
 const run = async (): Promise<void> => {
   try {
     await scanRepo({
       root,
+      structureOnly: structureOnly ?? false,
       onProgress: (phase, done, total) => {
         port.postMessage({ type: "progress", phase, done, total } satisfies WorkerMessage);
       },

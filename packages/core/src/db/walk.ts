@@ -1,10 +1,19 @@
 import type {
-  CallKind, Confidence, EntryPointDto, IoKind, IoReachDto, Language, SymbolKind, UnresolvedReason, WalkCallDto,
+  CallKind, Confidence, ControlBlock, EntryPointDto, IoKind, IoReachDto, Language, SymbolKind, UnresolvedReason, WalkCallDto,
   WalkFrameDto, WalkTargetDto,
 } from "../types.js";
 import type { Db } from "./database.js";
 import { symbolKey } from "./queries.js";
 import { getCachedSemantic, semanticLanguage } from "./semantic.js";
+
+/** 名字就说明是旁路的调用：日志、计时、埋点、断言 */
+const SIDE_CHANNEL = /^(?:log|logger|debug|trace|info|warn|warning|error|verbose|time|timeEnd|timeLog|mark|measure|track|emit|report|metric|metrics|count|increment|gauge|histogram|span|assert|invariant|print|println|printf)$|^(?:log|trace|debug|track|record|emit)[A-Z_]|[a-z](?:Timings?|Metrics?)$/;
+/** 小而到处被调、返回值又没人用的函数，多半是计时、日志这类旁路 */
+const TRIVIAL_MAX_COMPLEXITY = 2;
+const TRIVIAL_MAX_LINES = 12;
+const TRIVIAL_MIN_CALLERS = 8;
+/** 函数体只有这么几行、唯一一处调用原样转出去，就是一层转发 */
+const FORWARD_MAX_LINES = 6;
 
 interface EntryRow {
   id: number; kind: EntryPointDto["kind"]; framework: string | null; symbolId: number | null; fileId: number;
@@ -21,7 +30,13 @@ interface SymbolRow {
 interface CallRow {
   id: number; line: number; column: number; callee: string; receiver: string | null; receiverType: string | null;
   kind: CallKind; arguments: string; resolution: Confidence; targetId: number | null; targetName: string | null;
-  candidates: string | null; io: IoKind | null;
+  candidates: string | null; io: IoKind | null; blocks: string | null; discarded: number;
+}
+
+interface TargetFacts {
+  complexity: number;
+  lines: number;
+  callers: number;
 }
 
 /** 能走的入口排前面，同类里往下走得越远越靠前：越深的入口越值得单步看 */
@@ -62,15 +77,18 @@ export function getWalkFrame(db: Db, symbolId: number): WalkFrameDto | null {
     `SELECT id, CASE WHEN name_line > 0 THEN name_line ELSE line END AS line, name_col AS "column",
             callee_name AS callee, receiver, receiver_type AS receiverType, call_kind AS kind,
             argument_texts AS arguments, resolution, target_symbol_id AS targetId, target_name AS targetName,
-            candidates, io_kind AS io
+            candidates, io_kind AS io, blocks, discarded
      FROM call_sites WHERE caller_symbol_id = ? ORDER BY call_sites.line, end_byte, id`,
   ).all(symbolId) as CallRow[];
 
   const candidateIds = new Map(rows.map((row) => [row.id, parseIds(row.candidates)]));
-  const targets = loadTargets(db, [
+  const targetIds = [
     ...rows.flatMap((row) => (row.targetId === null ? [] : [row.targetId])),
     ...[...candidateIds.values()].flat(),
-  ]);
+  ];
+  const targets = loadTargets(db, targetIds);
+  const facts = targetFacts(db, targetIds);
+  const tables = tablesOf(db, rows.map((row) => row.id));
   const libraries = importedExternals(db, rows);
   const params = paramNames(db, symbolId);
 
@@ -78,6 +96,13 @@ export function getWalkFrame(db: Db, symbolId: number): WalkFrameDto | null {
     const candidates = row.resolution === "ambiguous"
       ? (candidateIds.get(row.id) ?? []).flatMap((id) => targets.get(id) ?? [])
       : null;
+    const fact = row.targetId === null ? undefined : facts.get(row.targetId);
+    const discarded = row.discarded === 1;
+    const trivial = discarded && !row.io && (
+      SIDE_CHANNEL.test(row.callee) ||
+      (fact !== undefined && fact.complexity <= TRIVIAL_MAX_COMPLEXITY && fact.lines <= TRIVIAL_MAX_LINES && fact.callers >= TRIVIAL_MIN_CALLERS)
+    );
+    const blocks = parseBlocks(row.blocks);
     return {
       id: `call:${row.id}`, line: row.line, column: row.column, callee: row.callee, receiver: row.receiver,
       kind: row.kind, arguments: parseStrings(row.arguments), resolution: row.resolution,
@@ -88,6 +113,10 @@ export function getWalkFrame(db: Db, symbolId: number): WalkFrameDto | null {
         ? { builtin: true } : {}),
       unresolved: row.resolution === "unresolved" ? unresolvedReason(row, params) : null,
       io: row.io,
+      ...(blocks.length > 0 ? { blocks } : {}),
+      ...(discarded ? { discarded } : {}),
+      ...(trivial ? { trivial } : {}),
+      ...(tables.has(row.id) ? { tables: tables.get(row.id) } : {}),
     };
   });
 
@@ -138,24 +167,86 @@ function unresolvedReason(row: CallRow, params: ReadonlySet<string>): Unresolved
   return hint === "P:" ? { kind: "untyped", param: true } : { kind: "untyped" };
 }
 
-function loadTargets(db: Db, ids: readonly number[]): Map<number, WalkTargetDto> {
+function loadTargets(db: Db, ids: readonly number[], followForwards = true): Map<number, WalkTargetDto> {
   const unique = [...new Set(ids)];
   if (unique.length === 0) return new Map();
   const placeholders = unique.map(() => "?").join(",");
   // 「还能走几步」与走读列表的默认口径一致：能落到仓库内的调用，加上 I/O 访问
   const rows = db.prepare(
     `SELECT s.id, s.name, s.container, s.kind, s.file_id AS fileId, f.path AS filePath, f.language,
-            s.start_line AS startLine, s.end_line AS endLine, s.signature, s.hash,
+            s.start_line AS startLine, s.end_line AS endLine, s.signature, s.hash, s.complexity,
             (SELECT COUNT(*) FROM call_sites c WHERE c.caller_symbol_id = s.id
-               AND (c.resolution IN ('exact', 'likely', 'ambiguous') OR c.io_kind IS NOT NULL)) AS steps
+               AND (c.resolution IN ('exact', 'likely', 'ambiguous') OR c.io_kind IS NOT NULL)) AS steps,
+            (SELECT tests FROM test_coverage t WHERE t.symbol_id = s.id) AS tests
      FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id IN (${placeholders})`,
-  ).all(...unique) as Array<SymbolRow & { steps: number }>;
+  ).all(...unique) as Array<SymbolRow & { steps: number; complexity: number; tests: number | null }>;
   const reaches = loadReaches(db, unique);
+  const forwards = followForwards ? forwardTargets(db, rows) : new Map<number, WalkTargetDto>();
   return new Map(rows.map((row) => [row.id, {
     id: `sym:${row.id}`, name: qualified(row), kind: row.kind, fileId: `file:${row.fileId}`,
     filePath: row.filePath, line: row.startLine, steps: row.steps, summary: shortSummary(db, row),
-    reaches: reaches.get(row.id) ?? [],
+    reaches: reaches.get(row.id) ?? [], complexity: row.complexity, tests: row.tests ?? 0,
+    ...(forwards.has(row.id) ? { forwardsTo: forwards.get(row.id) } : {}),
   }]));
+}
+
+/**
+ * 只是一层转发的函数（几行长、没有分支、唯一一处能走的调用落在仓库里）：步入它等于多走一步，
+ * 直接告诉人真正干活的是谁。只看一层，不一路追下去。
+ */
+function forwardTargets(
+  db: Db, rows: ReadonlyArray<{ id: number; startLine: number; endLine: number; complexity: number; steps: number }>,
+): Map<number, WalkTargetDto> {
+  const candidates = rows.filter((row) => row.steps === 1 && row.complexity === 1 && row.endLine - row.startLine + 1 <= FORWARD_MAX_LINES);
+  if (candidates.length === 0) return new Map();
+  const only = db.prepare(
+    `SELECT target_symbol_id AS target FROM call_sites
+     WHERE caller_symbol_id = ? AND resolution IN ('exact', 'likely') AND target_symbol_id IS NOT NULL LIMIT 2`,
+  );
+  const next = new Map<number, number>();
+  for (const row of candidates) {
+    const hits = only.all(row.id) as Array<{ target: number }>;
+    if (hits.length === 1 && hits[0]!.target !== row.id) next.set(row.id, hits[0]!.target);
+  }
+  const resolved = loadTargets(db, [...next.values()], false);
+  return new Map([...next].flatMap(([from, to]) => (resolved.has(to) ? [[from, resolved.get(to)!] as const] : [])));
+}
+
+function targetFacts(db: Db, ids: readonly number[]): Map<number, TargetFacts> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const rows = db.prepare(
+    `SELECT s.id, s.complexity, s.end_line - s.start_line + 1 AS lines,
+            (SELECT COUNT(DISTINCT e.src_id) FROM edges e
+             WHERE e.type = 'calls' AND e.src_kind = 'symbol' AND e.dst_kind = 'symbol' AND e.dst_id = s.id) AS callers
+     FROM symbols s WHERE s.id IN (${unique.map(() => "?").join(",")})`,
+  ).all(...unique) as Array<{ id: number } & TargetFacts>;
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
+function tablesOf(db: Db, callIds: readonly number[]): Map<number, Array<{ name: string; write: boolean }>> {
+  const out = new Map<number, Array<{ name: string; write: boolean }>>();
+  if (callIds.length === 0) return out;
+  const rows = db.prepare(
+    `SELECT call_site_id AS id, table_name AS name, write FROM data_access
+     WHERE call_site_id IN (${callIds.map(() => "?").join(",")}) ORDER BY write DESC, table_name`,
+  ).all(...callIds) as Array<{ id: number; name: string; write: number }>;
+  for (const row of rows) {
+    const bucket = out.get(row.id) ?? [];
+    bucket.push({ name: row.name, write: row.write === 1 });
+    out.set(row.id, bucket);
+  }
+  return out;
+}
+
+function parseBlocks(raw: string | null): ControlBlock[] {
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return Array.isArray(value) ? (value as ControlBlock[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 function loadReaches(db: Db, ids: readonly number[]): Map<number, IoReachDto[]> {

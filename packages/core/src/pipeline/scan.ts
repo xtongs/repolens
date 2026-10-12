@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig } from "../config.js";
+import { loadConfig, loadLock } from "../config.js";
 import { getMeta, indexPath, openDb, setMeta, setMetaJson, transact, type Db } from "../db/database.js";
+import { getIndexTotals } from "../db/queries.js";
 import { IndexWriter, type CallSiteRow, type ImportRow, type TypeRelationRow } from "../db/writer.js";
 import { isAnalyzable } from "../discovery/language.js";
 import { hashContent, walkRepo } from "../discovery/walk.js";
 import { discoverPackages } from "../discovery/workspace.js";
-import { attachShapes } from "../parse/ast-utils.js";
+import { attachDeclarationOnly, attachShapes } from "../parse/ast-utils.js";
+import { attachControlFlow } from "../parse/control-flow.js";
 import { prepareSource } from "../parse/embedded.js";
 import { extractorFor } from "../parse/extractors/registry.js";
 import { ParserPool } from "../parse/parser-pool.js";
@@ -18,11 +20,14 @@ import type {
   DiscoveredFile,
   DiscoveredPackage,
   ParsedFile,
+  ParsedSymbol,
   AnalyzableLanguage,
   ResolveContext,
   ScanPhase,
   ScanStats,
+  TestKind,
 } from "../types.js";
+import { clearHistory, collectHistory } from "./history.js";
 import { linkGraph } from "./link.js";
 import { countLoc, excludeNestedComplexity } from "./metrics.js";
 
@@ -32,8 +37,46 @@ export type { ScanPhase } from "../types.js";
  * 抽取器产物的形状或语义变了就加一。内容没变的文件也会整体重新解析，
  * 而不是像 schema 版本那样重建整个库——那会连带清掉 LLM 缓存。
  */
-export const EXTRACTOR_VERSION = "9";
+export const EXTRACTOR_VERSION = "10";
 export const EXTRACTOR_VERSION_KEY = "extractor_version";
+/** 一次要重新解析这么多文件，就先清掉派生表再解析 */
+const BULK_REPARSE = 200;
+/** 解析阶段每这么多个文件提交一次 */
+const PARSE_COMMIT_BATCH = 50;
+
+/**
+ * 跨 await 的批量提交：解析是异步的，better-sqlite3 的 transaction() 包不住，所以手动 BEGIN / COMMIT；
+ * 每个文件的写入嵌在里面成为 SAVEPOINT。出错时整批回滚，扫描照旧失败。
+ */
+class CommitBatch {
+  private open = false;
+  private pending = 0;
+
+  constructor(private readonly db: Db, private readonly size: number) {}
+
+  run(write: () => void): void {
+    if (!this.open) {
+      this.db.exec("BEGIN");
+      this.open = true;
+    }
+    transact(this.db, write);
+    if (++this.pending >= this.size) this.commit();
+  }
+
+  commit(): void {
+    if (!this.open) return;
+    this.db.exec("COMMIT");
+    this.open = false;
+    this.pending = 0;
+  }
+
+  rollback(): void {
+    if (!this.open) return;
+    this.db.exec("ROLLBACK");
+    this.open = false;
+    this.pending = 0;
+  }
+}
 
 export interface ScanOptions {
   root: string;
@@ -41,6 +84,11 @@ export interface ScanOptions {
   fresh?: boolean;
   /** 只建结构索引、不调用模型，不管仓库配置怎么写（变更对比的基线快照用） */
   structureOnly?: boolean;
+  /**
+   * 读 git 历史算热点和协同变更，缺省为不是 structureOnly 时才读：基线快照不在 git 里，
+   * watch 的增量刷新也不该每次跑一遍 git log。跳过时保留上次读到的历史。配置关掉时不读
+   */
+  history?: boolean;
   onProgress?: (phase: ScanPhase, done: number, total: number) => void;
 }
 
@@ -152,44 +200,28 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
 
   stats.filesReused = walked.files.length - toParse.length;
 
-  const pool = new ParserPool();
-  const resolvers = createResolvers();
-  const resolveCtx = buildResolveContext(root, discoveredPaths, walked.directories, packages);
-
-  let done = 0;
-  report("parse", 0, toParse.length);
-
-  // 逐文件解析并立即入库。批量攒在内存里再一次性写虽然更快，
-  // 但 1400 文件的 AST 产物会吃掉几百 MB，不值得。
-  for (const file of toParse) {
-    const fileId = fileIdByPath.get(file.path);
-    if (fileId === undefined) continue;
-
-    const source = readText(root, file.path);
-    const parsed = await parseFile(pool, file, source);
-
-    transact(db, () => {
-      writer.clearFileArtifacts(fileId);
-      if (parsed === null) {
-        writer.markParsed(fileId, 0, "该语言的 tree-sitter 语法不可用");
-        return;
-      }
-      persistParsed(writer, resolvers, resolveCtx, fileIdByPath, fileId, file, source, parsed, stats);
-    });
-
-    done++;
-    if (done % 25 === 0 || done === toParse.length) report("parse", done, toParse.length);
-  }
-
-  pool.dispose();
-  stats.filesParsed = toParse.length;
+  await parseChanged(db, writer, toParse, {
+    root, fileIdByPath, stats, report,
+    resolveCtx: buildResolveContext(root, discoveredPaths, walked.directories, packages),
+  });
   setMeta(db, EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION);
 
   report("link", 0, 1);
-  const linkStats = transact(db, () => linkGraph(db, writer, config.rules));
+  if (options.history ?? !options.structureOnly) {
+    const history = config.history ? transact(db, () => collectHistory(db, root)) : null;
+    if (history === null) clearHistory(db);
+    setMetaJson(db, "history", history);
+    if (history) stats.history = history;
+  }
+  const lock = loadLock(root);
+  // 查询只握着索引，团队约定的分层和依赖锁概况记进 meta，界面不必再去读配置文件
+  setMetaJson(db, "confirmed_layers", config.layers);
+  setMetaJson(db, "lock", lock ? { level: lock.level, dependencies: lock.dependencies.length } : null);
+  const linkStats = transact(db, () => linkGraph(db, writer, { rules: config.rules, lock, layers: config.layers, root }));
   stats.calls = linkStats.calls;
   stats.callsByConfidence = linkStats.callsByConfidence;
   stats.http = linkStats.http;
+  stats.tests = linkStats.tests;
   report("link", 1, 1);
 
   report("rollup", 0, 1);
@@ -225,13 +257,15 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
 
   report("index", 0, 1);
   transact(db, () => {
-    const totals = db
-      .prepare(
-        `SELECT COUNT(*) AS files, COALESCE(SUM(loc), 0) AS loc FROM files WHERE role != 'asset'`,
-      )
-      .get() as { files: number; loc: number };
+    // 报告里的规模是整个仓库的，不是这次增量解析到的那几个文件的
+    const totals = getIndexTotals(db);
     stats.loc = totals.loc;
-    stats.symbols = (db.prepare("SELECT COUNT(*) AS n FROM symbols").get() as { n: number }).n;
+    stats.sourceLoc = totals.sourceLoc;
+    stats.symbols = totals.symbols;
+    stats.imports = totals.imports;
+    stats.importsResolved = totals.importsResolved;
+    stats.importsExternal = totals.importsExternal;
+    stats.importsUnresolved = totals.importsUnresolved;
     stats.byLanguage = languageBreakdown(db);
     stats.durationMs = Date.now() - started;
 
@@ -246,6 +280,63 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
 // ---------------------------------------------------------------------------
 // 解析与入库
 // ---------------------------------------------------------------------------
+
+/**
+ * 解析阶段：逐文件解析并立即入库。批量攒在内存里再一次性写虽然更快，但 1400 文件的 AST
+ * 产物会吃掉几百 MB，不值得。提交按批：每个文件自己提交一次，光是把索引页写进 WAL
+ * 就占了扫描三分之一的时间。
+ */
+async function parseChanged(
+  db: Db,
+  writer: IndexWriter,
+  toParse: readonly DiscoveredFile[],
+  context: {
+    root: string;
+    fileIdByPath: ReadonlyMap<string, number>;
+    resolveCtx: Omit<ResolveContext, "fromFile">;
+    stats: ScanStats;
+    report: NonNullable<ScanOptions["onProgress"]>;
+  },
+): Promise<void> {
+  const { root, fileIdByPath, resolveCtx, stats, report } = context;
+  // 派生表在链接阶段整表重建。成批重新解析（升级解析器、换分支）时先清掉，删旧符号就不必逐行去级联这些大表；
+  // 只改了几个文件时不清，watch 刷新期间界面读到的还是完整的旧图
+  if (toParse.length > BULK_REPARSE) transact(db, () => writer.clearDerived());
+
+  const pool = new ParserPool();
+  const resolvers = createResolvers();
+  const batch = new CommitBatch(db, PARSE_COMMIT_BATCH);
+  let done = 0;
+  report("parse", 0, toParse.length);
+  try {
+    for (const file of toParse) {
+      const fileId = fileIdByPath.get(file.path);
+      if (fileId === undefined) continue;
+
+      const source = readText(root, file.path);
+      const parsed = await parseFile(pool, file, source);
+
+      batch.run(() => {
+        writer.clearFileArtifacts(fileId);
+        if (parsed === null) {
+          writer.markParsed(fileId, 0, "该语言的 tree-sitter 语法不可用");
+          return;
+        }
+        persistParsed(writer, resolvers, resolveCtx, fileIdByPath, fileId, file, source, parsed, stats);
+      });
+
+      done++;
+      if (done % 25 === 0 || done === toParse.length) report("parse", done, toParse.length);
+    }
+    batch.commit();
+  } catch (err) {
+    batch.rollback();
+    throw err;
+  } finally {
+    pool.dispose();
+  }
+  stats.filesParsed = toParse.length;
+}
 
 async function parseFile(
   pool: ParserPool,
@@ -274,9 +365,11 @@ async function parseFile(
       language: parserLanguage,
       path: file.path,
     });
-    // 形状指纹在这里统一算，而不是散到四个抽取器里去——它只依赖 AST，
-    // 和语言无关，而这里是唯一同时握有语法树和符号表的地方。
+    // 形状指纹和调用所在的控制结构在这里统一算，而不是散到各个抽取器里去——它们只依赖
+    // AST，和语言无关，而这里是唯一同时握有语法树、符号表和调用点的地方。
     attachShapes(tree.rootNode, parsed.symbols);
+    attachDeclarationOnly(tree.rootNode, parsed.symbols);
+    attachControlFlow(tree.rootNode, parsed.calls);
     return { ...parsed, symbols: excludeNestedComplexity(parsed.symbols) };
   } catch (err) {
     // 单个文件的抽取失败不该中断整次扫描，把错误留在 files.parse_error 里
@@ -311,7 +404,8 @@ function persistParsed(
   const symbolHashes = parsed.symbols.map((sym) =>
     hashContent(parsedText.slice(sym.startByte, sym.endByte)),
   );
-  const symbolIds = writer.insertSymbols(fileId, parsed.symbols, symbolHashes);
+  const testKinds = parsed.symbols.map((sym) => (file.role === "test" ? sym.testKind ?? conventionalTestKind(sym) : null));
+  const symbolIds = writer.insertSymbols(fileId, parsed.symbols, symbolHashes, testKinds);
 
   // 调用者必须按「容器 + 名字」定位。只按名字查的话，一个文件里两个类
   // 各有一个 handleInput 时，两边的调用会全部记到先声明的那个头上——
@@ -412,6 +506,8 @@ function persistParsed(
     endByte: call.endByte,
     nameLine: call.nameLine,
     nameColumn: call.nameColumn,
+    blocks: call.blocks ?? null,
+    discarded: call.discarded ?? false,
   }));
   writer.insertCallSites(fileId, callSites);
   writer.insertEntryHints(fileId, parsed.entryHints ?? []);
@@ -439,6 +535,18 @@ function persistParsed(
 /** 符号在文件内的唯一键。顶层符号直接用名字，成员用容器隔开。 */
 function symbolKey(container: string | null, name: string): string {
   return container === null ? name : `${container}\u0000${name}`;
+}
+
+/**
+ * 测试文件里按约定命名的测试：pytest 的 `test_x` / `TestX` 类、Go 的 `TestXxx`、JUnit 3 的 `testFoo`。
+ * `testUtils` 这种辅助函数名后面跟的是小写字母，不算。
+ */
+function conventionalTestKind(symbol: ParsedSymbol): TestKind | null {
+  if ((symbol.kind === "function" || symbol.kind === "method") && /^(?:test(?:_|[A-Z0-9]|$)|Test[A-Z_])/.test(symbol.name)) {
+    return "case";
+  }
+  if ((symbol.kind === "class" || symbol.kind === "struct") && /^Test(?:[A-Z_]|$)/.test(symbol.name)) return "suite";
+  return null;
 }
 
 function buildResolveContext(

@@ -111,7 +111,7 @@ export const typescriptExtractor: LanguageExtractor = {
 
         case "call_expression": {
           collectCall(node, callSites, imports, hints);
-          const handler = inlineHandlerSymbol(node, symbols);
+          const handler = inlineHandlerSymbol(node, symbols) ?? testCallbackSymbol(node, symbols);
           if (handler) symbols.push(handler);
           return true;
         }
@@ -387,6 +387,51 @@ function inlineHandlerSymbol(call: TsNode, existing: readonly ParsedSymbol[]): P
     complexity: complexityOf(handler, TS_DECISIONS),
     isAsync: handler.text.startsWith("async"),
   };
+}
+
+const TEST_CASES = new Set(["it", "test", "specify"]);
+const TEST_SUITES = new Set(["describe", "context", "suite"]);
+
+/**
+ * 测试框架注册的用例：`it("…", () => …)`、`describe.each(rows)("…", …)`、`test.skip("…", …)`。
+ * 用例回调没有名字，不单独成符号的话，测试里的调用全挂在文件头上：既连不到被测函数，
+ * 也没法从一个用例开始走读。名字就用用例标题——它本来就是写给人看的行为说明。
+ */
+function testCallbackSymbol(call: TsNode, existing: readonly ParsedSymbol[]): ParsedSymbol | null {
+  const fn = fieldNode(call, "function");
+  if (!fn) return null;
+  const head = fn.type === "call_expression" ? fieldNode(fn, "function") : fn;
+  const base = head && (head.type === "identifier" || head.type === "member_expression") ? dottedPath(head.text)[0] : undefined;
+  const testKind = base && TEST_CASES.has(base) ? "case" : base && TEST_SUITES.has(base) ? "suite" : null;
+  if (testKind === null) return null;
+
+  const args = namedChildren(fieldNode(call, "arguments") ?? call).filter((c) => c.type !== "comment");
+  const handler = [...args].reverse().find((arg) => INLINE_FUNCTIONS.has(arg.type));
+  const title = args[0] ? testTitle(args[0]) : null;
+  if (!handler || title === null || args[0] === handler) return null;
+
+  const name = title.slice(0, 160) || `${base} @${lineOf(call)}`;
+  const taken = existing.filter((s) => s.name === name || s.name.startsWith(`${name} #`)).length;
+  const unique = taken === 0 ? name : `${name} #${taken + 1}`;
+  return {
+    name: unique,
+    kind: "function",
+    exported: false,
+    signature: `${normalizeWhitespace(fn.text).slice(0, 60)}(${JSON.stringify(title.slice(0, 200))})`,
+    startLine: lineOf(handler),
+    endLine: handler.endPosition.row + 1,
+    startByte: handler.startIndex,
+    endByte: handler.endIndex,
+    complexity: complexityOf(handler, TS_DECISIONS),
+    isAsync: handler.text.startsWith("async"),
+    testKind,
+  };
+}
+
+/** 用例标题。带插值的模板（`test.each` 的 `$name`、`%s`）原样留着，那也是写给人看的 */
+function testTitle(node: TsNode): string | null {
+  if (node.type !== "string" && node.type !== "template_string") return null;
+  return normalizeWhitespace(node.text.slice(1, -1));
 }
 
 /** 沿 `program.command("scan [path]").option(…).action` 的链找命令名 */

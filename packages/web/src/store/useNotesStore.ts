@@ -8,6 +8,8 @@ interface NotesState {
   notes: NoteDto[];
   status: "idle" | "loading" | "ready" | "error";
   error: string | null;
+  /** 按 N 随手记时递增：笔记页签里的输入框据此拿到焦点 */
+  composeRequest: number;
   load: () => Promise<void>;
   add: (input: NoteInputDto) => Promise<NoteDto>;
   remove: (id: string) => Promise<void>;
@@ -20,6 +22,7 @@ export const useNotesStore = create<NotesState>((set) => ({
   notes: [],
   status: "idle",
   error: null,
+  composeRequest: 0,
 
   async load() {
     const current = generation;
@@ -88,6 +91,14 @@ export function notesOnScope(notes: NoteDto[], scopeId: string): NoteDto[] {
 
 export function formatLines(lines: [number, number]): string {
   return lines[0] === lines[1] ? `L${lines[0]}` : `L${lines[0]}–${lines[1]}`;
+}
+
+/** 随手记一笔：给选中的节点（没选中就是整个仓库）打开笔记页签，输入框拿到焦点 */
+export function composeNote(): void {
+  const { selected, openDetail, rootScope } = useAppStore.getState();
+  const target = selected !== null && /^(?:pkg|dir|file|sym):./.test(selected) ? selected : rootScope;
+  openDetail(target, { tab: "notes", lines: null }, false);
+  useNotesStore.setState((state) => ({ composeRequest: state.composeRequest + 1 }));
 }
 
 /** 跳到笔记所在的位置：有行号就打开源码并定位，否则打开详情的笔记页签 */

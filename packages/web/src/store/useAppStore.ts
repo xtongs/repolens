@@ -3,13 +3,14 @@ import type {
   FileRole,
   GraphDto,
   GraphNodeDto,
+  LensKind,
   OverviewDto,
   RepoEntry,
 } from "@repolens/core/types";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { GraphSlice } from "../graph/model";
-import { api, getActiveRepo, setActiveRepo } from "../api/client";
+import { api, getActiveRepo, setActiveRepo, type WatchStatusDto } from "../api/client";
 import { readPref, writePref } from "../lib/prefs";
 
 export type MetricKey = "loc" | "complexity" | "symbols";
@@ -23,14 +24,25 @@ const PREF = {
   callDepth: "repolens:call-depth",
   callDirection: "repolens:call-direction",
   walkAllCalls: "repolens:walk-all-calls",
+  walkTrivial: "repolens:walk-show-trivial",
+  walkMainPath: "repolens:walk-main-path",
   treeOpen: "repolens:left-panel-open",
   panelTab: "repolens:left-panel-tab",
   chatOpen: "repolens:chat-open",
+  lens: "repolens:lens",
 } as const;
+
+const PANEL_TABS: readonly PanelTab[] = ["tree", "findings", "entries", "changes", "understanding"];
+const LENSES: readonly LensKind[] = ["understanding", "heat", "tests"];
 
 function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
   const value = readPref(key);
   return choices.includes(value as T) ? (value as T) : fallback;
+}
+
+function savedLens(): LensKind | null {
+  const value = readPref(PREF.lens);
+  return LENSES.includes(value as LensKind) ? (value as LensKind) : null;
 }
 
 function savedConfidence(): Confidence[] {
@@ -63,6 +75,9 @@ export const DEFAULT_CONFIDENCE: Confidence[] = ["exact", "likely"];
 /** 调用图作为一个合成作用域塞进 subgraphs，渲染层不需要知道它的存在 */
 const callScope = (symbolId: number) => `call:${symbolId}`;
 
+/** 最近一次处理过的索引刷新 */
+let lastIndexAt: string | null = null;
+
 export interface CallGraphMode {
   scopeId: string;
   symbolId: number;
@@ -71,7 +86,7 @@ export interface CallGraphMode {
   direction: "callers" | "callees" | "both";
 }
 
-export type PanelTab = "tree" | "findings" | "entries" | "changes";
+export type PanelTab = "tree" | "findings" | "entries" | "changes" | "understanding";
 
 /** 走读调用栈里的一帧 */
 export interface WalkFrameRef {
@@ -81,6 +96,8 @@ export interface WalkFrameRef {
   name: string;
   /** 停在哪处调用上（`call:N`）；null 表示停在函数开头 */
   at: string | null;
+  /** 那处调用所在的行：索引刷新后调用 id 会变，靠它停回原处附近 */
+  line?: number | null;
 }
 
 export interface WalkState {
@@ -113,6 +130,19 @@ export interface AppState {
   refreshOverview: () => Promise<void>;
   /** 切换仓库或重扫当前仓库时递增，用来使本地视图和异步请求失效。 */
   repoRevision: number;
+  /**
+   * 索引按最新的文件刷新过（watch 或「重新扫描并对比」）时递增。和 repoRevision 不同，
+   * 视图状态（展开、选中、走读位置）都保留，只让取过的数据重取一遍。
+   */
+  indexRevision: number;
+  /** `at` 是服务端刷新完成的时间：同一次刷新从事件和接口返回各来一遍时只算一次 */
+  refreshIndex: (at?: string) => Promise<void>;
+  /** 当前仓库的文件监视状态；没订阅到事件时为 null */
+  watchStatus: WatchStatusDto | null;
+  setWatchStatus: (status: WatchStatusDto | null) => void;
+  /** 图上叠加的视角：我的理解、改动热度、测试覆盖 */
+  lens: LensKind | null;
+  setLens: (lens: LensKind | null) => void;
   refreshRepos: () => Promise<void>;
   switchRepo: (id: string, forceReload?: boolean) => Promise<void>;
   forgetRepo: (id: string) => Promise<void>;
@@ -165,6 +195,12 @@ export interface AppState {
   /** 走读时把外部库和解析不了的调用也列为步骤 */
   walkAllCalls: boolean;
   setWalkAllCalls: (value: boolean) => void;
+  /** 计时、日志这类旁路调用也列为步骤；默认折叠 */
+  walkShowTrivial: boolean;
+  setWalkShowTrivial: (value: boolean) => void;
+  /** 只走主路径：跳过提前返回的守卫分支和 catch */
+  walkMainPath: boolean;
+  setWalkMainPath: (value: boolean) => void;
 
   boot: () => Promise<void>;
   loadScope: (scopeId: string, limitOverride?: number, keep?: string) => Promise<void>;
@@ -222,6 +258,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   noRepo: false,
   addRepoRequest: 0,
   repoRevision: 0,
+  indexRevision: 0,
+  watchStatus: null,
+  lens: savedLens(),
 
   rootScope: "dir:.",
   subgraphs: {},
@@ -239,7 +278,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   drawerOpen: false,
   chatOpen: readPref(PREF.chatOpen) === "on",
   treeOpen: readPref(PREF.treeOpen) === "on",
-  panelTab: savedChoice<PanelTab>(PREF.panelTab, ["tree", "findings", "entries", "changes"], "tree"),
+  panelTab: savedChoice<PanelTab>(PREF.panelTab, PANEL_TABS, "tree"),
   revealed: null,
   detailRequest: null,
   filterOpen: false,
@@ -256,6 +295,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   callGraph: null,
   walk: null,
   walkAllCalls: readPref(PREF.walkAllCalls) === "on",
+  walkShowTrivial: readPref(PREF.walkTrivial) === "on",
+  walkMainPath: readPref(PREF.walkMainPath) === "on",
 
   hiddenNodes: [],
 
@@ -303,6 +344,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       repoId: id,
       repoRevision,
       noRepo: false,
+      watchStatus: null,
       overview: null,
       bootError: null,
       subgraphs: {},
@@ -326,6 +368,37 @@ export const useAppStore = create<AppState>((set, get) => ({
   async refreshRepos() {
     const { current, repos } = await api.repos();
     set({ repos, repoId: get().repoId ?? current });
+  },
+
+  async refreshIndex(at) {
+    if (at !== undefined) {
+      if (at === lastIndexAt) return;
+      lastIndexAt = at;
+    }
+    const revision = get().repoRevision;
+    const repoId = get().repoId;
+    const isCurrentRepo = () => revision === get().repoRevision && repoId === get().repoId;
+    set((state) => ({ indexRevision: state.indexRevision + 1 }));
+    try {
+      const overview = await api.overview();
+      if (isCurrentRepo()) set({ overview });
+    } catch {
+      // 概览取不到就先留着旧的，图照样重取
+    }
+    if (!isCurrentRepo()) return;
+    // 已经取过的作用域原地重取：展开的层级、选中项、走读位置都保留
+    const { subgraphs, callGraph } = get();
+    await Promise.all(Object.keys(subgraphs).filter((scope) => !scope.startsWith("call:")).map((scope) => get().loadScope(scope)));
+    if (callGraph && isCurrentRepo()) await get().loadCallGraph(callGraph);
+  },
+
+  setWatchStatus(status) {
+    set({ watchStatus: status });
+  },
+
+  setLens(lens) {
+    writePref(PREF.lens, lens);
+    set({ lens });
   },
 
   requestAddRepo() {
@@ -419,6 +492,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setWalkAllCalls(value) {
     writePref(PREF.walkAllCalls, value ? "on" : "off");
     set({ walkAllCalls: value });
+  },
+
+  setWalkShowTrivial(value) {
+    writePref(PREF.walkTrivial, value ? "on" : "off");
+    set({ walkShowTrivial: value });
+  },
+
+  setWalkMainPath(value) {
+    writePref(PREF.walkMainPath, value ? "on" : "off");
+    set({ walkMainPath: value });
   },
 
   async setCallDepth(depth) {

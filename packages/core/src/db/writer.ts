@@ -1,5 +1,6 @@
 import type {
   Confidence,
+  ControlBlock,
   DiscoveredPackage,
   EdgeType,
   FindingKind,
@@ -67,6 +68,8 @@ export interface CallSiteRow {
   endByte: number;
   nameLine: number;
   nameColumn: number;
+  blocks: ControlBlock[] | null;
+  discarded: boolean;
 }
 
 export interface EdgeRow {
@@ -120,6 +123,8 @@ export interface SearchRow {
  */
 export class IndexWriter {
   private readonly stmts;
+  /** clearFileArtifacts 记下的原有符号 id，按 identityKey 分组、按出现顺序排 */
+  private readonly reusableIds = new Map<number, Map<string, number[]>>();
 
   constructor(private readonly db: Db) {
     this.stmts = {
@@ -160,12 +165,13 @@ export class IndexWriter {
       clearTypeRelations: db.prepare("DELETE FROM type_relations WHERE file_id = ?"),
       insertSymbol: db.prepare(
         `INSERT INTO symbols
-           (file_id, name, kind, container, exported, signature, params, return_type, doc,
-            start_line, end_line, start_byte, end_byte, complexity, is_async, is_static, receiver_type, hash, shape)
+           (id, file_id, name, kind, container, exported, signature, params, return_type, doc,
+            start_line, end_line, start_byte, end_byte, complexity, is_async, is_static, receiver_type, hash, shape, test_kind, implemented)
          VALUES
-           (@fileId, @name, @kind, @container, @exported, @signature, @params, @returnType, @doc,
-            @startLine, @endLine, @startByte, @endByte, @complexity, @isAsync, @isStatic, @receiverType, @hash, @shape)`,
+           (@id, @fileId, @name, @kind, @container, @exported, @signature, @params, @returnType, @doc,
+            @startLine, @endLine, @startByte, @endByte, @complexity, @isAsync, @isStatic, @receiverType, @hash, @shape, @testKind, @implemented)`,
       ),
+      symbolIdentities: db.prepare("SELECT id, kind, container, name FROM symbols WHERE file_id = ? ORDER BY start_byte"),
       insertImport: db.prepare(
         `INSERT INTO imports
            (file_id, raw_source, kind, confidence, target_file_id, target_dir, external_name,
@@ -189,10 +195,10 @@ export class IndexWriter {
       insertCallSite: db.prepare(
         `INSERT INTO call_sites
            (file_id, caller_symbol_id, callee_name, receiver, receiver_type, callee_path, call_kind, arg_count, argument_texts,
-            line, end_byte, name_line, name_col)
+            line, end_byte, name_line, name_col, blocks, discarded)
          VALUES
            (@fileId, @callerSymbolId, @calleeName, @receiver, @receiverType, @calleePath, @callKind, @argCount, @argumentTexts,
-            @line, @endByte, @nameLine, @nameColumn)`,
+            @line, @endByte, @nameLine, @nameColumn, @blocks, @discarded)`,
       ),
       insertEntryHint: db.prepare(
         `INSERT INTO entry_hints
@@ -342,8 +348,18 @@ export class IndexWriter {
     this.stmts.deleteFile.run(path);
   }
 
-  /** 清空某文件的全部解析产物，供重新解析前调用 */
+  /**
+   * 清空某文件的全部解析产物，供重新解析前调用。清掉之前先记下原有符号的 id，
+   * 紧接着的 insertSymbols 把它们还给同名同类的符号。
+   */
   clearFileArtifacts(fileId: number): void {
+    const previous = new Map<string, number[]>();
+    for (const row of this.stmts.symbolIdentities.all(fileId) as Array<{ id: number; kind: string; container: string | null; name: string }>) {
+      const key = identityKey(row.kind, row.container, row.name);
+      const ids = previous.get(key);
+      if (ids) ids.push(row.id); else previous.set(key, [row.id]);
+    }
+    this.reusableIds.set(fileId, previous);
     this.stmts.clearEntryHints.run(fileId);
     this.stmts.clearCallSites.run(fileId);
     this.stmts.clearTypeRelations.run(fileId);
@@ -360,11 +376,28 @@ export class IndexWriter {
   // 解析产物
   // -------------------------------------------------------------------------
 
-  /** 返回与入参同序的符号 id 数组 */
-  insertSymbols(fileId: number, symbols: readonly ParsedSymbol[], hashes: readonly string[]): number[] {
-    const ids: number[] = [];
-    for (const [i, sym] of symbols.entries()) {
+  /**
+   * 返回与入参同序的符号 id 数组；testKinds 是按文件角色核过的测试标记。
+   *
+   * 重新解析的文件里还在的符号沿用原来的 id（按种类、容器、名字和出现顺序认）：界面上
+   * 选中的函数、走读到一半的调用栈在 watch 刷新之后照样指得到，不会因为同文件改了一行就失效。
+   */
+  insertSymbols(
+    fileId: number,
+    symbols: readonly ParsedSymbol[],
+    hashes: readonly string[],
+    testKinds: ReadonlyArray<string | null> = [],
+  ): number[] {
+    const reusable = this.reusableIds.get(fileId);
+    this.reusableIds.delete(fileId);
+    const kept = symbols.map((sym) => reusable?.get(identityKey(sym.kind, sym.container ?? null, sym.name))?.shift() ?? null);
+    // 沿用 id 的先插：表没有 AUTOINCREMENT，新符号自动分到的 id 可能正好是刚腾出来、还没还回去的那个
+    const order = symbols.map((_, i) => i).sort((a, b) => Number(kept[a] === null) - Number(kept[b] === null));
+    const ids: number[] = new Array<number>(symbols.length);
+    for (const i of order) {
+      const sym = symbols[i]!;
       const info = this.stmts.insertSymbol.run({
+        id: kept[i],
         fileId,
         name: sym.name,
         kind: sym.kind,
@@ -384,8 +417,10 @@ export class IndexWriter {
         receiverType: sym.receiverType ?? null,
         hash: hashes[i] ?? "",
         shape: sym.shape ?? null,
+        testKind: testKinds[i] ?? null,
+        implemented: sym.declarationOnly ? 0 : 1,
       });
-      ids.push(Number(info.lastInsertRowid));
+      ids[i] = Number(info.lastInsertRowid);
     }
     return ids;
   }
@@ -450,6 +485,8 @@ export class IndexWriter {
         endByte: site.endByte,
         nameLine: site.nameLine,
         nameColumn: site.nameColumn,
+        blocks: site.blocks && site.blocks.length > 0 ? JSON.stringify(site.blocks) : null,
+        discarded: site.discarded ? 1 : 0,
       });
     }
   }
@@ -490,10 +527,11 @@ export class IndexWriter {
   // 派生数据
   // -------------------------------------------------------------------------
 
-  /** 边、聚合边和体检结论都是全局派生的，每次链接前整表清空重算 */
+  /** 边、聚合边、体检结论、测试覆盖和数据表访问都是全局派生的，每次链接前整表清空重算 */
   clearDerived(): void {
     this.db.exec(
-      "DELETE FROM io_reach; DELETE FROM entry_points; DELETE FROM edges; DELETE FROM rollup_edges; DELETE FROM search_index; DELETE FROM findings",
+      "DELETE FROM io_reach; DELETE FROM entry_points; DELETE FROM edges; DELETE FROM rollup_edges; DELETE FROM search_index; " +
+        "DELETE FROM findings; DELETE FROM test_coverage; DELETE FROM data_access",
     );
   }
 
@@ -569,6 +607,10 @@ export class IndexWriter {
         ), 0)
     `);
   }
+}
+
+function identityKey(kind: string, container: string | null, name: string): string {
+  return `${kind}\u0000${container ?? ""}\u0000${name}`;
 }
 
 function nearestPackageId(

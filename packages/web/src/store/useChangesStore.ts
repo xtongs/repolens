@@ -20,38 +20,78 @@ interface ChangesState {
   report: ChangeReportDto | null;
   index: ChangeIndex | null;
   status: "idle" | "loading" | "ready" | "error";
+  /** 正在把工作区的改动收进索引 */
+  rescanning: boolean;
   error: string | null;
   compare: (base?: string) => Promise<void>;
+  /** 先做一次只刷新结构的增量扫描，再对比：不开 watch 时看到的也是此刻的代码 */
+  rescanAndCompare: () => Promise<void>;
 }
 
 /** 换仓库或重扫时递增：节点 id 会变，旧报告里的 id 对不上新图 */
 let generation = 0;
+/** 每次对比递增：索引刷新会触发新的对比，先发出去的旧对比晚回来时不能盖掉新的 */
+let sequence = 0;
+let inflight: Promise<void> | null = null;
 
 export const useChangesStore = create<ChangesState>((set, get) => ({
   base: readPref(BASE_PREF) || "HEAD",
   report: null,
   index: null,
   status: "idle",
+  rescanning: false,
   error: null,
 
-  async compare(base) {
+  compare(base) {
     const ref = (base ?? get().base).trim() || "HEAD";
     const current = generation;
+    const seq = ++sequence;
     writePref(BASE_PREF, ref === "HEAD" ? null : ref);
     set({ base: ref, status: "loading", error: null });
-    try {
-      const report = await api.changes(ref);
-      if (current === generation) set({ report, index: buildIndex(report), status: "ready" });
-    } catch (err) {
-      if (current === generation) set({ status: "error", error: (err as Error).message });
+    const run = (async () => {
+      try {
+        const report = await api.changes(ref);
+        if (current === generation && seq === sequence) set({ report, index: buildIndex(report), status: "ready" });
+      } catch (err) {
+        if (current === generation && seq === sequence) set({ status: "error", error: (err as Error).message });
+      }
+    })();
+    inflight = run;
+    void run.finally(() => {
+      if (inflight === run) inflight = null;
+    });
+    return run;
+  },
+
+  async rescanAndCompare() {
+    const repoId = useAppStore.getState().repoId;
+    const current = generation;
+    if (repoId !== null) {
+      set({ rescanning: true, error: null });
+      try {
+        const { refreshedAt } = await api.refreshIndex(repoId);
+        // 已经有报告时，索引刷新会自己触发一次对比（见下面的订阅），等它就行
+        await useAppStore.getState().refreshIndex(refreshedAt);
+      } catch (err) {
+        if (current === generation) set({ status: "error", error: (err as Error).message });
+        return;
+      } finally {
+        if (current === generation) set({ rescanning: false });
+      }
     }
+    if (current === generation) await (inflight ?? get().compare());
   },
 }));
 
 useAppStore.subscribe((state, previous) => {
   if (state.repoId !== previous.repoId || state.repoRevision !== previous.repoRevision) {
     generation++;
-    useChangesStore.setState({ report: null, index: null, status: "idle", error: null });
+    useChangesStore.setState({ report: null, index: null, status: "idle", rescanning: false, error: null });
+    return;
+  }
+  // watch 或手动刷新把改动收进了索引：开着的报告跟着重算，变更页成了一块实时监视屏
+  if (state.indexRevision !== previous.indexRevision && useChangesStore.getState().report !== null) {
+    void useChangesStore.getState().compare();
   }
 });
 

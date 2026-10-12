@@ -1,6 +1,15 @@
-import type { GraphNodeDto, Language, SymbolKind } from "@repolens/core/types";
+import type { GraphNodeDto, IoKind, Language, SymbolKind } from "@repolens/core/types";
 import { msg, t } from "../i18n";
 import type { MetricKey } from "../store/useAppStore";
+
+/** 取值要在渲染时过 t() */
+export const IO_LABELS: Record<IoKind, string> = {
+  database: msg("数据库"),
+  network: msg("网络"),
+  filesystem: msg("文件系统"),
+  "message-queue": msg("消息队列"),
+  process: msg("子进程"),
+};
 
 const LANGUAGE_COLORS: Record<string, string> = {
   typescript: "var(--lang-typescript)",
@@ -103,33 +112,38 @@ function estimateLabelWidth(value: string): number {
 }
 
 /**
- * 计算节点的显示名：同级包如果去掉 `@scope/` 后仍然互不相同，就去掉。
+ * 计算节点的显示名：包名去掉 `@scope/` 后和别的节点不重名，就去掉。
  *
  * `@earendil-works/pi-ai` 和 `@earendil-works/pi-tui` 在节点上都会被
  * 截断成 `@earendil-works/pi-…`，前缀占满了宽度却不携带任何区分信息。
  * 节点宽度由主指标编码，不能为了塞下前缀去加宽，所以只能把前缀拿掉。
  * 完整名字仍然保留在 hover 卡片和详情抽屉里。
+ *
+ * 去掉前缀会撞上别的节点时，scope 就是唯一的区分信息，这一个保留原样；
+ * 连原名都重名的包（不同目录里各有一个同名 package.json）再补上目录。
  */
 export function displayLabels(nodes: readonly GraphNodeDto[]): Map<string, string> {
   const out = new Map<string, string>();
-  const scoped = nodes.filter((n) => n.kind === "package" && n.label.startsWith("@"));
-
   const stripped = new Map<string, string>();
-  for (const node of scoped) {
-    const slash = node.label.indexOf("/");
-    if (slash > 0 && slash < node.label.length - 1) {
-      stripped.set(node.id, node.label.slice(slash + 1));
-    }
-  }
-
-  // 去掉前缀后出现重名就说明 scope 是必要的区分信息，整组都保留原样
-  const shorts = [...stripped.values()];
-  if (shorts.length > 0 && new Set(shorts).size === shorts.length) {
-    for (const [id, short] of stripped) out.set(id, short);
-  }
-
   for (const node of nodes) {
-    if (!out.has(node.id)) out.set(node.id, node.label);
+    if (node.kind !== "package" || !node.label.startsWith("@")) continue;
+    const slash = node.label.indexOf("/");
+    if (slash > 0 && slash < node.label.length - 1) stripped.set(node.id, node.label.slice(slash + 1));
+  }
+
+  const taken = new Map<string, number>();
+  const bump = (label: string) => taken.set(label, (taken.get(label) ?? 0) + 1);
+  for (const node of nodes) bump(stripped.get(node.id) ?? node.label);
+  for (const node of nodes) {
+    const short = stripped.get(node.id);
+    out.set(node.id, short !== undefined && taken.get(short) === 1 ? short : node.label);
+  }
+
+  const shown = new Map<string, number>();
+  for (const label of out.values()) shown.set(label, (shown.get(label) ?? 0) + 1);
+  for (const node of nodes) {
+    const label = out.get(node.id) as string;
+    if (node.kind === "package" && (shown.get(label) ?? 0) > 1 && node.path) out.set(node.id, `${label} (${node.path})`);
   }
   return out;
 }

@@ -42,7 +42,7 @@ export function HoverCard() {
   const metric = useAppStore((s) => s.metric);
   const subgraphs = useAppStore((s) => s.subgraphs);
   const repoId = useAppStore((s) => s.repoId);
-  const repoRevision = useAppStore((s) => s.repoRevision);
+  const repoRevision = useAppStore((s) => `${s.repoRevision}.${s.indexRevision}`);
   const [visible, setVisible] = useState(false);
   const [semantic, setSemantic] = useState<SemanticState | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);

@@ -48,7 +48,8 @@ export function useSource(
 ): { source: LoadedSource | null; error: string | null } {
   const repoId = useAppStore((s) => s.repoId);
   const repoRevision = useAppStore((s) => s.repoRevision);
-  const key = `${repoId ?? ""}:${repoRevision}:${fileId}:${from ?? ""}:${to ?? ""}`;
+  const indexRevision = useAppStore((s) => s.indexRevision);
+  const key = `${repoId ?? ""}:${repoRevision}.${indexRevision}:${fileId}:${from ?? ""}:${to ?? ""}`;
   const [state, setState] = useState<{ key: string; slice: SourceSliceDto | null; error: string | null }>({
     key: "",
     slice: null,

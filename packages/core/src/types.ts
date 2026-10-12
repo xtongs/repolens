@@ -176,7 +176,34 @@ export interface ParsedSymbol {
   receiverType?: string | undefined;
   /** 结构指纹：忽略名字和字面量后的 AST 形状，用于识别重复实现 */
   shape?: string | null | undefined;
+  /**
+   * 测试框架注册的用例或用例组：`it("…", () => …)` 合成的回调符号，或测试文件里
+   * 按约定命名的测试函数。只在测试文件里有效，入库时按文件角色再核一次。
+   */
+  testKind?: TestKind | undefined;
+  /** 只有签名没有函数体：接口、类型字面量里的方法声明，重载声明，trait 方法签名 */
+  declarationOnly?: boolean | undefined;
 }
+
+export type TestKind = "case" | "suite";
+
+/**
+ * 调用点所在的控制结构，自函数体由外向内排。走读据此把步骤按分支、循环、
+ * 回调分组，人才看得出哪些调用只在某个条件下发生。
+ */
+export interface ControlBlock {
+  /** 块的起始字节：同一个 if 在不同步骤里据此认出是同一块 */
+  b: number;
+  k: ControlBlockKind;
+  /** 条件、case 值、循环头、catch 参数或回调所属的调用名，截断的源码原文 */
+  t?: string | undefined;
+  /** 块起始行，1-based */
+  l: number;
+  /** if 分支以 return / throw / break / continue 收尾：守卫分支，主路径不会走进来 */
+  x?: 1 | undefined;
+}
+
+export type ControlBlockKind = "if" | "else" | "case" | "loop" | "try" | "catch" | "finally" | "callback" | "defer";
 
 export interface ParsedImportSpecifier {
   /** 源模块中的名字；`*` 表示命名空间导入或通配导入 */
@@ -234,6 +261,15 @@ export interface ParsedCall {
   /** 前几个实参的源码文本；用于入口识别和单步走读的实参展示，不做求值。 */
   argumentTexts?: string[] | undefined;
   kind: CallKind;
+  /** 调用表达式起始字节；控制结构要从这里往上找 */
+  startByte?: number | undefined;
+  /** 所属函数的字节区间；顶层调用没有 */
+  ownerStartByte?: number | undefined;
+  ownerEndByte?: number | undefined;
+  /** 自函数体由外向内的控制结构；直接写在函数体里的调用为空 */
+  blocks?: ControlBlock[] | undefined;
+  /** 整条语句就是这次调用，返回值没人用（`log(x);`、`await save(x);`） */
+  discarded?: boolean | undefined;
 }
 
 /** 框架注册语法中可由 AST 直接证明的入口提示。 */
@@ -381,7 +417,55 @@ export interface RepolensConfig {
   defaultRoles: FileRole[];
   /** 仓库声明的依赖禁令，违反的 import 进体检 */
   rules: ArchitectureRule[];
+  /** 团队确认过的分层，自上而下；下层依赖上层算分层倒置 */
+  layers: ConfirmedLayer[];
+  /** 团队写下的阅读路径 */
+  tours: TourDto[];
+  /** `repolens check --baseline` 里哪些新增问题让检查失败 */
+  ratchet: RatchetConfig;
+  /** 读 git 历史算改动热点和协同变更；仓库很大或不想读历史时可以关掉 */
+  history: boolean;
   llm: LlmConfig;
+}
+
+/**
+ * 团队确认过的一层。成员是图节点 id（`pkg:名字` / `dir:路径`），和界面上的节点一一对应。
+ * AI 只负责提议，写进团队约定的分层才拿来做确定性的倒置检查。
+ */
+export interface ConfirmedLayer {
+  name: string;
+  description: string | null;
+  members: string[];
+}
+
+/** 棘轮：相对基线不许变差的几类问题 */
+export type RatchetKind = "cycle" | "violation" | "unapproved" | "layering" | "bypass" | "duplicate" | "oversized";
+
+export interface RatchetConfig {
+  /** 新增即失败 */
+  fail: RatchetKind[];
+  /** 新增只提示 */
+  warn: RatchetKind[];
+}
+
+/**
+ * 依赖锁：团队批准过的模块间依赖。和 package-lock 一个道理——新出现的内部依赖
+ * 要当成一次需要审的变更，而不是悄悄长出来。
+ */
+export interface ArchitectureLock {
+  version: 1;
+  /** 锁的是包之间（monorepo）还是顶层模块目录之间 */
+  level: "package" | "directory";
+  /** level 为 directory 时，被当成模块的那些目录 */
+  modules: string[];
+  dependencies: LockedDependency[];
+}
+
+export interface LockedDependency {
+  /** 包名或目录路径 */
+  from: string;
+  to: string;
+  type: "imports" | "http";
 }
 
 /**
@@ -433,7 +517,13 @@ export interface ScanStats {
   parseErrors: number;
   packages: number;
   loc: number;
+  /** 只算源码的行数 */
+  sourceLoc?: number | undefined;
   byLanguage: Record<string, { files: number; loc: number }>;
+  /** 测试用例数，以及至少被一个用例走到的源码函数数 */
+  tests?: { cases: number; covered: number; functions: number } | undefined;
+  /** 读到的 git 历史；不在 git 里或关掉时没有 */
+  history?: { commits: number; files: number; aiCommits: number } | undefined;
   /** M3；LLM 不可用时仍返回状态，结构扫描绝不因此失败 */
   llm?: LlmRunStats | undefined;
 }
@@ -471,8 +561,19 @@ export interface NodeMetrics {
   outDegree: number;
 }
 
-export type FindingKind = "duplicate" | "cycle" | "violation" | "oversized";
-export const FINDING_KINDS: readonly FindingKind[] = ["duplicate", "cycle", "violation", "oversized"];
+/**
+ * - duplicate / cycle / oversized：结构本身的气味
+ * - violation / unapproved / layering：违反了团队写下的约定（依赖规则、依赖锁、确认的分层）
+ * - bypass：绕过别的包的入口直接引它的内部文件
+ * - coupling：git 历史里总是一起改、代码里却没有依赖关系的文件
+ * - stale-doc：文档里引用的路径在仓库里已经不存在
+ */
+export type FindingKind =
+  | "duplicate" | "cycle" | "violation" | "oversized"
+  | "unapproved" | "layering" | "bypass" | "coupling" | "stale-doc";
+export const FINDING_KINDS: readonly FindingKind[] = [
+  "duplicate", "cycle", "violation", "oversized", "unapproved", "layering", "bypass", "coupling", "stale-doc",
+];
 export type FindingSeverity = "high" | "medium" | "low";
 
 export interface FindingDto {
@@ -489,6 +590,8 @@ export interface FindingDto {
   related: string[];
   /** 该组涉及几个节点 */
   members: number;
+  /** 所在文件近 90 天的提交数；同一严重程度里改得勤的排前面，那里最该先看 */
+  recentCommits?: number;
 }
 
 export interface FindingSummaryDto {
@@ -573,7 +676,11 @@ export interface LanguageBreakdown {
  */
 export interface IndexTotals {
   files: number;
+  /** 全部进了索引的文本行，含测试、文档、配置 */
   loc: number;
+  /** 只算参与分析的源码；「这个仓库有多大」说的是它 */
+  sourceFiles: number;
+  sourceLoc: number;
   symbols: number;
   calls: number;
   imports: number;
@@ -612,6 +719,12 @@ export interface OverviewDto {
   /** 仓库概览缺失时，上次扫描记录的具体原因。 */
   summaryUnavailableReason?: string | null;
   layers?: Array<{ name: string; description: string; nodeIds: string[] }> | null;
+  /** layers 来自团队确认的约定（.repolens.json），而不是 AI 的提议 */
+  layersConfirmed?: boolean;
+  /** 依赖锁的概况；没有锁文件时为 null */
+  lock?: { level: ArchitectureLock["level"]; dependencies: number } | null;
+  /** 读到的 git 历史概况 */
+  history?: { commits: number; aiCommits: number } | null;
   llm?: LlmStatusDto | null;
 }
 
@@ -767,6 +880,34 @@ export interface FileDetailDto {
   shortSummary?: string | null;
   pseudocode?: string | null;
   pseudocodeSteps?: PseudocodeStepDto[] | null;
+  /** 摘要里提到的名字对上了代码里的哪个节点 */
+  grounding?: GroundingDto[] | null;
+  /** 文件里的函数被测试覆盖的情况 */
+  tests?: { functions: number; covered: number; cases: number } | null;
+  history?: FileHistoryDto | null;
+}
+
+/**
+ * AI 文字里出现的一个名字（反引号括起来的标识符或路径）对上了什么。
+ * 对上了就能点；源码里压根没出现过、索引里也没有的标出来——多半是模型编的。
+ */
+export interface GroundingDto {
+  text: string;
+  nodeId: string | null;
+  missing: boolean;
+}
+
+/** 一个文件的 git 历史（默认近 12 个月） */
+export interface FileHistoryDto {
+  commits: number;
+  /** 近 90 天 */
+  recentCommits: number;
+  lastChangedAt: string | null;
+  authors: number;
+  /** 提交信息里标明有 AI 参与的（Co-authored-by: Claude / Cursor / Copilot 等） */
+  aiCommits: number;
+  /** 常和它一起改的文件；linked 为 false 说明两者在代码里没有直接依赖 */
+  coChanged: Array<{ id: string | null; path: string; together: number; linked: boolean }>;
 }
 
 /**
@@ -835,6 +976,52 @@ export interface SymbolDetailDto {
   shortSummary?: string | null;
   pseudocode?: string | null;
   pseudocodeSteps?: PseudocodeStepDto[] | null;
+  grounding?: GroundingDto[] | null;
+  /** 哪些测试用例能沿调用走到它；人写下的用例标题就是它该有的行为 */
+  tests?: TestCoverageDto | null;
+  /** 测试用例自己：它在哪个用例组里 */
+  testKind?: TestKind | null;
+}
+
+export interface TestCoverageDto {
+  /** 走得到它的用例数 */
+  total: number;
+  /** 直接调用它的用例数 */
+  direct: number;
+  /** 离它最近的几个用例 */
+  nearest: TestRefDto[];
+}
+
+export interface TestRefDto {
+  id: string;
+  /** 用例标题或测试函数名 */
+  name: string;
+  /** 外层用例组，`describe` 的标题，多层用 › 连起来 */
+  suite: string | null;
+  path: string;
+  line: number;
+  /** 从用例走到目标的调用层数，1 表示直接调用 */
+  depth: number;
+}
+
+/** 某个范围（文件、目录、包）的行为规格：走得到这里的测试用例，按测试文件和用例组归好 */
+export interface SpecDto {
+  cases: number;
+  files: Array<{
+    id: string;
+    path: string;
+    suites: Array<{ name: string | null; cases: Array<SpecCaseDto> }>;
+  }>;
+}
+
+export interface SpecCaseDto {
+  id: string;
+  name: string;
+  line: number;
+  /** 离范围里最近的那个函数有几层 */
+  depth: number;
+  /** 它走到的范围里的函数名，最多几个 */
+  targets: string[];
 }
 
 /** 文件/符号按需生成接口的统一返回形状。 */
@@ -879,9 +1066,274 @@ export interface ReadmeDto {
   truncated: boolean;
 }
 
-export interface PathQueryResultDto {
-  found: boolean;
-  hops: Array<{ node: GraphNodeDto; edge?: GraphEdgeDto | null }>;
+// ---------------------------------------------------------------------------
+// 边界契约与模块名片
+// ---------------------------------------------------------------------------
+
+/**
+ * 两个节点之间的一条依赖到底由什么构成。架构图上的边只是一根线和一个次数，
+ * 人要判断「这条依赖合不合理」，看的是跨过边界的那些名字。
+ */
+export interface BoundaryDto {
+  from: BoundaryEndDto;
+  to: BoundaryEndDto;
+  /** 文件级的 import：谁引了对方哪个文件、引入了哪些名字 */
+  imports: BoundaryImportDto[];
+  /** 对方被用到的符号：被调用的次数、调用方数量，以及只被 import 进来（类型、常量）的 */
+  symbols: BoundarySymbolDto[];
+  /** 前端请求按 URL 对上的后端路由 */
+  http: Array<{ callerId: string; caller: string; callerPath: string; line: number; routeId: string; route: string; routePath: string }>;
+  totals: { files: number; imports: number; typeOnly: number; bypass: number; calls: number; symbols: number };
+  /** 两边没有直接依赖时，从 from 到 to 最短的一条文件级 import 链 */
+  path: Array<{ id: string; path: string }> | null;
+}
+
+export interface BoundaryEndDto {
+  id: string;
+  label: string;
+  path: string;
+}
+
+export interface BoundaryImportDto {
+  fromId: string;
+  fromPath: string;
+  toId: string;
+  toPath: string;
+  line: number;
+  names: string[];
+  typeOnly: boolean;
+  /** 绕过对方包的入口，直接引了内部文件 */
+  bypass: boolean;
+}
+
+export interface BoundarySymbolDto {
+  id: string;
+  name: string;
+  kind: SymbolKind;
+  path: string;
+  line: number;
+  calls: number;
+  callers: number;
+  /** 只出现在 import 里，没有调用（类型、常量、类） */
+  importOnly: boolean;
+}
+
+/**
+ * 模块名片：把一个包或目录当黑盒时需要知道的全部——对外接口、它依赖谁、谁依赖它、
+ * 碰哪些 I/O、有哪些入口、测得怎么样、改得勤不勤。读懂名片，就不必读完它的内部。
+ */
+export interface ModuleCardDto {
+  id: string;
+  label: string;
+  path: string;
+  /** 被这个范围之外调用或 import 的符号，按外部调用方数排 */
+  api: ModuleApiDto[];
+  apiTotal: number;
+  /** 对外接口签名的指纹；「看懂了这个模块的接口」靠它判断是否过期 */
+  apiHash: string;
+  dependsOn: ModuleLinkDto[];
+  usedBy: ModuleLinkDto[];
+  externals: Array<{ name: string; files: number }>;
+  io: Array<{ kind: IoKind; functions: number }>;
+  entries: Array<{ id: string; kind: EntryPointKind; label: string; symbolId: string | null }>;
+  tests: { functions: number; covered: number; cases: number };
+  history: { commits: number; recentCommits: number; aiCommits: number; hottest: Array<{ id: string; path: string; recentCommits: number; complexity: number }> } | null;
+  layer: { name: string; confirmed: boolean } | null;
+}
+
+export interface ModuleApiDto {
+  id: string;
+  name: string;
+  kind: SymbolKind;
+  path: string;
+  line: number;
+  signature: string | null;
+  /** 范围之外的调用方函数数 */
+  callers: number;
+  /** 范围之外引用它的文件数 */
+  files: number;
+}
+
+export interface ModuleLinkDto {
+  /** 对方的节点 id：包或目录 */
+  id: string;
+  label: string;
+  /** import 语句条数 */
+  imports: number;
+  /** 跨边界用到的名字，按次数排，最多几个 */
+  names: string[];
+  /** 全部是 import type */
+  typeOnly: boolean;
+  /** 有前端请求按 URL 对上的路由 */
+  http: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// 骨架：核心数据结构与数据表
+// ---------------------------------------------------------------------------
+
+/** 一个类型在代码里怎么流动：谁创建、谁返回、谁接收、谁实现 */
+export interface TypeFlowDto {
+  id: string;
+  name: string;
+  kind: SymbolKind;
+  path: string;
+  /** `new T()` 或构造它的地方 */
+  creators: FlowRefDto[];
+  /** 返回类型里写着它的函数 */
+  producers: FlowRefDto[];
+  /** 参数类型里写着它的函数 */
+  consumers: FlowRefDto[];
+  /** 继承、实现、嵌入它的类型 */
+  implementers: FlowRefDto[];
+  /** import 它的文件数 */
+  importers: number;
+}
+
+export interface FlowRefDto {
+  id: string;
+  name: string;
+  path: string;
+  line: number;
+  /** 出现在哪：参数名、返回类型原文等 */
+  detail: string | null;
+}
+
+export interface SkeletonDto {
+  /** 被函数签名引用最多的类型：系统的骨架 */
+  types: Array<{ id: string; name: string; kind: SymbolKind; path: string; line: number; uses: number; producers: number; consumers: number }>;
+  /** SQL 字面量里出现的数据表，和读写它们的函数 */
+  tables: DataTableDto[];
+}
+
+export interface DataTableDto {
+  name: string;
+  reads: DataAccessRefDto[];
+  writes: DataAccessRefDto[];
+}
+
+export interface DataAccessRefDto {
+  symbolId: string | null;
+  name: string;
+  path: string;
+  line: number;
+}
+
+// ---------------------------------------------------------------------------
+// 理解账本：人自己看懂了什么
+// ---------------------------------------------------------------------------
+
+export type UnderstandingHow = "manual" | "walk" | "review" | "tour";
+
+/**
+ * 一条「我看懂了」。按稳定的路径和名字记，带上当时内容的指纹：代码改了指纹就对不上，
+ * 这条理解自动变成过期——AI 改过的东西，人得重新看一遍才算数。
+ */
+export interface UnderstandingMarkDto {
+  key: string;
+  kind: "symbol" | "file" | "scope";
+  /** 当前索引里的节点；被删或改名后为 null */
+  nodeId: string | null;
+  label: string;
+  path: string;
+  status: "understood" | "stale" | "missing";
+  at: string;
+  how: UnderstandingHow;
+}
+
+export interface UnderstandingCountsDto {
+  /** 参与统计的函数（源码里的函数和方法） */
+  total: number;
+  understood: number;
+  stale: number;
+}
+
+export interface UnderstandingSummaryDto {
+  all: UnderstandingCountsDto;
+  /** 主入口（HTTP、CLI、main、公共 API）沿调用能走到的函数：系统真正在跑的那部分 */
+  key: UnderstandingCountsDto;
+  marks: number;
+}
+
+export interface UnderstandingDto {
+  summary: UnderstandingSummaryDto;
+  /** 看懂之后又被改过的 */
+  stale: UnderstandingMarkDto[];
+  /** 下一步最值得读的：入口能走到、复杂、改得勤、还没看过 */
+  next: NextReadDto[];
+}
+
+export interface NextReadDto {
+  id: string;
+  name: string;
+  path: string;
+  line: number;
+  complexity: number;
+  /** 调用它的函数数 */
+  callers: number;
+  recentCommits: number;
+  /** 看懂过、后来又被改了 */
+  stale: boolean;
+  /** 为什么推荐它 */
+  reasons: NextReadReason[];
+}
+
+export type NextReadReason = "entry" | "complex" | "hot" | "central" | "untested" | "stale";
+
+/** 图上叠加的一层视角：每个节点一组数，界面按视角取用 */
+export type LensKind = "heat" | "tests" | "understanding";
+
+export interface LensValueDto {
+  /** 改动热度：近 90 天、近一年的提交数，AI 参与的提交数 */
+  recent?: number;
+  commits?: number;
+  aiCommits?: number;
+  /** 测试与理解：参与统计的函数数，以及被测到 / 看懂 / 看懂后又被改的数 */
+  total?: number;
+  covered?: number;
+  understood?: number;
+  stale?: number;
+  /** 节点本身（文件、函数、模块接口）被标记的状态 */
+  mark?: "understood" | "stale" | null;
+  /** 生效的那条标记，撤销时用；函数随整个文件被标过时是文件那条 */
+  key?: string;
+}
+
+// ---------------------------------------------------------------------------
+// 导览
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条阅读路径。步骤指向的是稳定引用（路径和名字），不是每次扫描都会变的节点 id，
+ * 这样写进仓库的导览在代码演进后照样能用。
+ */
+export interface TourDto {
+  id: string;
+  title: string;
+  description: string | null;
+  steps: TourStepDto[];
+  /** 按当前结构自动生成的，还没被人改过 */
+  generated?: boolean;
+}
+
+export interface TourStepDto {
+  /** `repo` / `pkg:名字` / `dir:路径` / `path:文件路径` / `symbol:文件路径#容器.名字` */
+  target: string;
+  /** 当前索引里对应的节点；找不到时为 null */
+  nodeId?: string | null;
+  title: string;
+  /** 人写的说明 */
+  note: string | null;
+  /** 自动生成时给出的理由，界面按它组织文案 */
+  reason?: TourReasonDto | null;
+}
+
+export interface TourReasonDto {
+  kind: "overview" | "entry" | "type" | "module" | "hotspot";
+  /** entry：往下走到的函数数；type：引用它的函数数；module：依赖它的模块数；hotspot：近 90 天提交数 */
+  count?: number;
+  /** module：所在分层；hotspot：复杂度 */
+  extra?: string | number;
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +1387,11 @@ export interface WalkTargetDto {
   /** 已缓存的 AI 一句话摘要；只读缓存，不为走读触发生成 */
   summary?: string | null;
   reaches: IoReachDto[];
+  complexity?: number;
+  /** 函数体只是把调用原样转给另一个函数：步入它等于多走一层，直接去真正干活的那个 */
+  forwardsTo?: WalkTargetDto | null;
+  /** 走得到它的测试用例数 */
+  tests?: number;
 }
 
 /** 函数体里的一处调用，按执行顺序排在 WalkFrameDto.calls 里 */
@@ -959,6 +1416,17 @@ export interface WalkCallDto {
   /** unresolved 时推不出来的原因，界面据此给出具体提示 */
   unresolved?: UnresolvedReason | null;
   io?: IoKind | null;
+  /** 自函数体由外向内的控制结构：在哪个 if / else / 循环 / try / 回调里 */
+  blocks?: ControlBlock[];
+  /** 返回值没人用的独立调用 */
+  discarded?: boolean;
+  /**
+   * 计时、日志、埋点这类旁路调用：目标函数很小、到处被调、返回值没人用，或者名字就是
+   * log / time / trace。走读默认折叠，主线读起来才连贯；折叠了多少照实写出来。
+   */
+  trivial?: boolean;
+  /** SQL 字面量里读写的数据表 */
+  tables?: Array<{ name: string; write: boolean }>;
 }
 
 /**
@@ -1029,7 +1497,54 @@ export interface SymbolChangeDto {
   shapeChanged: boolean;
   /** 直接调用方数量：removed 取基线里的，其余取当前的 */
   callers: number;
+  /** 当前走得到它的测试用例数；removed 时为 null */
+  tests?: number | null;
 }
+
+/**
+ * 一个函数的行为变了什么：新调了谁、不再调谁、开始或不再直接访问哪类 I/O。
+ * 逐行 diff 看的是字，这里看的是它和外界的往来——审 AI 的改动最该先看这一层。
+ */
+export interface BehaviorChangeDto {
+  /** head 里的符号 id；和 symbols 里的同一条对应 */
+  id: string | null;
+  name: string;
+  path: string;
+  line: number;
+  status: "added" | "modified";
+  callsAdded: CallChangeDto[];
+  callsRemoved: CallChangeDto[];
+  ioAdded: IoKind[];
+  ioRemoved: IoKind[];
+}
+
+export interface CallChangeDto {
+  /** 被调的名字：仓库内带容器，外部带库名 */
+  name: string;
+  /** 落在仓库内时 head 里的符号 id */
+  target: string | null;
+  /** 外部库或语言内置 */
+  external: string | null;
+}
+
+/**
+ * 改动单元：沿调用关系连在一起的一组改动。一次审一个概念，比按文件一个个看更容易
+ * 看出 AI 这次到底做了几件事、每件事碰了哪些地方。
+ */
+export interface ChangeClusterDto {
+  id: string;
+  /** 这一组里最上游的那个函数 */
+  label: string;
+  /** 组里改动符号的 head id */
+  members: string[];
+  /** 走得到这组改动的入口数 */
+  entries: number;
+  /** 越大越该先看：导出接口、新 I/O、新调用、复杂度上升、没有测试 */
+  risk: number;
+  reasons: Array<{ kind: ClusterReason; count: number }>;
+}
+
+export type ClusterReason = "exported" | "signature" | "io" | "calls" | "complexity" | "untested" | "entries";
 
 export interface DependencyChangeDto {
   status: "added" | "removed";
@@ -1062,6 +1577,9 @@ export interface EntryChangeDto {
   path: string;
   /** 从入口出发能走到的已变更符号，按调用深度排序 */
   via: Array<{ id: string; name: string; depth: number }>;
+  /** 这个入口往下新碰到 / 不再碰到的 I/O 类型：行为面和安全面的变化 */
+  ioAdded?: IoKind[];
+  ioRemoved?: IoKind[];
 }
 
 /** 变更对比可以挑的基线提交，只列动过扫描根的 */
@@ -1091,6 +1609,8 @@ export interface ChangeReportDto {
   externals: { added: string[]; removed: string[] };
   findings: FindingChangeDto[];
   entries: EntryChangeDto[];
+  behavior: BehaviorChangeDto[];
+  clusters: ChangeClusterDto[];
 }
 
 // ---------------------------------------------------------------------------
