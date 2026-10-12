@@ -122,159 +122,161 @@ export async function scanRepo(options: ScanOptions): Promise<ScanStats> {
   report("discover", 1, 1);
 
   const db = openDb(indexPath(root), { fresh: options.fresh ?? false });
-  const writer = new IndexWriter(db);
-
-  const stats = emptyStats();
-  stats.filesDiscovered = walked.files.length;
-  stats.packages = packages.length;
-
-  const previous = loadPreviousFiles(db);
-  if (getMeta(db, EXTRACTOR_VERSION_KEY) !== EXTRACTOR_VERSION) {
-    for (const prev of previous.values()) prev.parsed = 0;
-  }
-  const discoveredPaths = new Set(walked.files.map((f) => f.path));
-
-  const fileIdByPath = transact(db, () => {
-    const { byDir: packageIdByDir, changed: packagesChanged } = writer.syncPackages(packages);
-    writer.syncDirectories(collectDirectories(walked.files, walked.directories), packageIdByDir);
-
-    for (const path of previous.keys()) {
-      if (!discoveredPaths.has(path)) {
-        writer.deleteFile(path);
-        stats.filesDeleted++;
-      }
-    }
-
-    const ids = new Map<string, number>();
-    for (const file of walked.files) {
-      const prev = previous.get(file.path);
-      // 只比内容和分类：解析状态是否过期由下面的 toParse 单独判断。
-      // 把 parsed 混进来会让所有无需解析的文件（md/json/资源）每次
-      // 扫描都被重读一遍，纯属浪费。
-      if (
-        prev &&
-        prev.hash === file.hash &&
-        prev.role === file.role &&
-        prev.language === file.language
-      ) {
-        ids.set(file.path, prev.id);
-        continue;
-      }
-      const loc = file.role === "asset" ? 0 : countLoc(readText(root, file.path), file.language);
-      ids.set(
-        file.path,
-        writer.upsertFile(
-          {
-            path: file.path,
-            language: file.language,
-            role: file.role,
-            bytes: file.bytes,
-            hash: file.hash,
-            loc,
-            packageDir: file.packageDir,
-          },
-          packageIdByDir,
-        ),
-      );
-    }
-
-    // 新增或移除包会改变一批既有文件的归属，而这些文件内容没变、
-    // 不会走上面的 upsert，只能整体对账一次
-    if (packagesChanged) writer.reassignFilePackages();
-
-    return ids;
-  });
-
-  const toParse = walked.files.filter((file) => {
-    if (!isAnalyzable(file.language)) return false;
-    if (file.role === "asset" || file.role === "vendor") return false;
-    const prev = previous.get(file.path);
-    return !(
-      prev
-      && prev.hash === file.hash
-      && prev.role === file.role
-      && prev.language === file.language
-      && prev.parsed === 1
-    );
-  });
-
-  stats.filesReused = walked.files.length - toParse.length;
-
-  await parseChanged(db, writer, toParse, {
-    root, fileIdByPath, stats, report,
-    resolveCtx: buildResolveContext(root, discoveredPaths, walked.directories, packages),
-  });
-  setMeta(db, EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION);
-
-  report("link", 0, 1);
-  if (options.history ?? !options.structureOnly) {
-    const history = config.history ? transact(db, () => collectHistory(db, root)) : null;
-    if (history === null) clearHistory(db);
-    setMetaJson(db, "history", history);
-    if (history) stats.history = history;
-  }
-  const lock = loadLock(root);
-  // 查询只握着索引，团队约定的分层和依赖锁概况记进 meta，界面不必再去读配置文件
-  setMetaJson(db, "confirmed_layers", config.layers);
-  setMetaJson(db, "lock", lock ? { level: lock.level, dependencies: lock.dependencies.length } : null);
-  const linkStats = transact(db, () => linkGraph(db, writer, { rules: config.rules, lock, layers: config.layers, root }));
-  stats.calls = linkStats.calls;
-  stats.callsByConfidence = linkStats.callsByConfidence;
-  stats.http = linkStats.http;
-  stats.tests = linkStats.tests;
-  report("link", 1, 1);
-
-  report("rollup", 0, 1);
-  transact(db, () => writer.rollupDirectoryMetrics());
-  report("rollup", 1, 1);
-
-  // 先把结构元数据落稳，再尝试语义增强。模型故障只能影响 M3，绝不能让
-  // 已成功的结构扫描失败或丢失。
-  setMeta(db, "repo_root", root);
-  setMeta(db, "repo_name", baseName(root) === "." ? "repo" : baseName(root));
-  setMeta(db, "scanned_at", new Date().toISOString());
-
-  report("enrich", 0, 1);
   try {
-    stats.llm = await enrichRepository(db, root, config.llm);
-  } catch (err) {
-    stats.llm = {
-      enabled: config.llm.enabled,
-      available: false,
-      model: config.llm.model,
-      generated: 0,
-      cacheHits: 0,
-      failures: 1,
-      durationMs: 0,
-      requests: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      reason: (err as Error).message,
-    };
+    const writer = new IndexWriter(db);
+
+    const stats = emptyStats();
+    stats.filesDiscovered = walked.files.length;
+    stats.packages = packages.length;
+
+    const previous = loadPreviousFiles(db);
+    if (getMeta(db, EXTRACTOR_VERSION_KEY) !== EXTRACTOR_VERSION) {
+      for (const prev of previous.values()) prev.parsed = 0;
+    }
+    const discoveredPaths = new Set(walked.files.map((f) => f.path));
+
+    const fileIdByPath = transact(db, () => {
+      const { byDir: packageIdByDir, changed: packagesChanged } = writer.syncPackages(packages);
+      writer.syncDirectories(collectDirectories(walked.files, walked.directories), packageIdByDir);
+
+      for (const path of previous.keys()) {
+        if (!discoveredPaths.has(path)) {
+          writer.deleteFile(path);
+          stats.filesDeleted++;
+        }
+      }
+
+      const ids = new Map<string, number>();
+      for (const file of walked.files) {
+        const prev = previous.get(file.path);
+        // 只比内容和分类：解析状态是否过期由下面的 toParse 单独判断。
+        // 把 parsed 混进来会让所有无需解析的文件（md/json/资源）每次
+        // 扫描都被重读一遍，纯属浪费。
+        if (
+          prev &&
+          prev.hash === file.hash &&
+          prev.role === file.role &&
+          prev.language === file.language
+        ) {
+          ids.set(file.path, prev.id);
+          continue;
+        }
+        const loc = file.role === "asset" ? 0 : countLoc(readText(root, file.path), file.language);
+        ids.set(
+          file.path,
+          writer.upsertFile(
+            {
+              path: file.path,
+              language: file.language,
+              role: file.role,
+              bytes: file.bytes,
+              hash: file.hash,
+              loc,
+              packageDir: file.packageDir,
+            },
+            packageIdByDir,
+          ),
+        );
+      }
+
+      // 新增或移除包会改变一批既有文件的归属，而这些文件内容没变、
+      // 不会走上面的 upsert，只能整体对账一次
+      if (packagesChanged) writer.reassignFilePackages();
+
+      return ids;
+    });
+
+    const toParse = walked.files.filter((file) => {
+      if (!isAnalyzable(file.language)) return false;
+      if (file.role === "asset" || file.role === "vendor") return false;
+      const prev = previous.get(file.path);
+      return !(
+        prev
+        && prev.hash === file.hash
+        && prev.role === file.role
+        && prev.language === file.language
+        && prev.parsed === 1
+      );
+    });
+
+    stats.filesReused = walked.files.length - toParse.length;
+
+    await parseChanged(db, writer, toParse, {
+      root, fileIdByPath, stats, report,
+      resolveCtx: buildResolveContext(root, discoveredPaths, walked.directories, packages),
+    });
+    setMeta(db, EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION);
+
+    report("link", 0, 1);
+    if (options.history ?? !options.structureOnly) {
+      const history = config.history ? transact(db, () => collectHistory(db, root)) : null;
+      if (history === null) clearHistory(db);
+      setMetaJson(db, "history", history);
+      if (history) stats.history = history;
+    }
+    const lock = loadLock(root);
+    // 查询只握着索引，团队约定的分层和依赖锁概况记进 meta，界面不必再去读配置文件
+    setMetaJson(db, "confirmed_layers", config.layers);
+    setMetaJson(db, "lock", lock ? { level: lock.level, dependencies: lock.dependencies.length } : null);
+    const linkStats = transact(db, () => linkGraph(db, writer, { rules: config.rules, lock, layers: config.layers, root }));
+    stats.calls = linkStats.calls;
+    stats.callsByConfidence = linkStats.callsByConfidence;
+    stats.http = linkStats.http;
+    stats.tests = linkStats.tests;
+    report("link", 1, 1);
+
+    report("rollup", 0, 1);
+    transact(db, () => writer.rollupDirectoryMetrics());
+    report("rollup", 1, 1);
+
+    // 先把结构元数据落稳，再尝试语义增强。模型故障只能影响 M3，绝不能让
+    // 已成功的结构扫描失败或丢失。
+    setMeta(db, "repo_root", root);
+    setMeta(db, "repo_name", baseName(root) === "." ? "repo" : baseName(root));
+    setMeta(db, "scanned_at", new Date().toISOString());
+
+    report("enrich", 0, 1);
+    try {
+      stats.llm = await enrichRepository(db, root, config.llm);
+    } catch (err) {
+      stats.llm = {
+        enabled: config.llm.enabled,
+        available: false,
+        model: config.llm.model,
+        generated: 0,
+        cacheHits: 0,
+        failures: 1,
+        durationMs: 0,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        reason: (err as Error).message,
+      };
+    }
+    report("enrich", 1, 1);
+
+    report("index", 0, 1);
+    transact(db, () => {
+      // 报告里的规模是整个仓库的，不是这次增量解析到的那几个文件的
+      const totals = getIndexTotals(db);
+      stats.loc = totals.loc;
+      stats.sourceLoc = totals.sourceLoc;
+      stats.symbols = totals.symbols;
+      stats.imports = totals.imports;
+      stats.importsResolved = totals.importsResolved;
+      stats.importsExternal = totals.importsExternal;
+      stats.importsUnresolved = totals.importsUnresolved;
+      stats.byLanguage = languageBreakdown(db);
+      stats.durationMs = Date.now() - started;
+
+      setMetaJson(db, "stats", stats);
+    });
+    report("index", 1, 1);
+    return stats;
+  } finally {
+    db.close();
   }
-  report("enrich", 1, 1);
-
-  report("index", 0, 1);
-  transact(db, () => {
-    // 报告里的规模是整个仓库的，不是这次增量解析到的那几个文件的
-    const totals = getIndexTotals(db);
-    stats.loc = totals.loc;
-    stats.sourceLoc = totals.sourceLoc;
-    stats.symbols = totals.symbols;
-    stats.imports = totals.imports;
-    stats.importsResolved = totals.importsResolved;
-    stats.importsExternal = totals.importsExternal;
-    stats.importsUnresolved = totals.importsUnresolved;
-    stats.byLanguage = languageBreakdown(db);
-    stats.durationMs = Date.now() - started;
-
-    setMetaJson(db, "stats", stats);
-  });
-  report("index", 1, 1);
-
-  db.close();
-  return stats;
 }
 
 // ---------------------------------------------------------------------------

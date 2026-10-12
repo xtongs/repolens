@@ -94,8 +94,7 @@ export function serveMcp(options: McpOptions): Promise<void> {
   });
   return new Promise((done) => {
     lines.on("close", () => {
-      server.close();
-      done();
+      void server.close().then(done);
     });
   });
 }
@@ -124,8 +123,10 @@ export class RepoLensMcp {
     }
   }
 
-  close(): void {
+  /** 等握手时在后台补的扫描和排着队的查询做完再返回：Windows 上开着的索引库删不掉、挪不动 */
+  async close(): Promise<void> {
     this.stopWatching();
+    await this.queue;
   }
 
   /** 处理一行输入；通知和响应本身不需要回复时返回 null */

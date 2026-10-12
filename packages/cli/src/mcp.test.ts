@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getOverview, indexPath, openDb } from "@repolens/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RepoLensMcp } from "./mcp.js";
 
@@ -51,8 +52,8 @@ beforeEach(() => {
   mcp = new RepoLensMcp(root, "0.0.0-test");
 });
 
-afterEach(() => {
-  mcp.close();
+afterEach(async () => {
+  await mcp.close();
   vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
@@ -111,6 +112,17 @@ describe("RepoLens MCP", () => {
     expect((await rpc("resources/list")).error?.code).toBe(-32601);
     expect((await rpc("tools/call", { name: "rm_rf" })).error?.code).toBe(-32602);
     expect(await mcp.receive("{oops")).toEqual({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+  });
+
+  it("关闭时等握手后在后台补的索引写完再返回", async () => {
+    await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
+    await mcp.close();
+    const db = openDb(indexPath(root), { readonly: true });
+    try {
+      expect(getOverview(db).scannedAt).not.toBe("");
+    } finally {
+      db.close();
+    }
   });
 
   it("查询带节点 id 方便接着查；改完代码再查看到的是改动之后的结构；同名符号列出候选", async () => {
