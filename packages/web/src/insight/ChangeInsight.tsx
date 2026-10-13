@@ -1,10 +1,8 @@
 import type { ChangeClusterDto, ChangeReportDto, ClusterReason, SymbolChangeDto } from "@repolens/core/types";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { msg, useT } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
-import { useUnderstandingStore } from "../store/useUnderstandingStore";
 import { ChangeRow, ChangeSection, ChangeTag } from "../ui/change-rows";
-import { RatioBar } from "../ui/panel";
 import { IO_LABELS } from "../ui/visual";
 
 /** 取值要在渲染时过 t() */
@@ -17,44 +15,6 @@ const REASON_LABELS: Record<ClusterReason, string> = {
   untested: msg("没测试"),
   entries: msg("走到入口"),
 };
-
-/** 值得人过目的函数改动：新增的，或改了逻辑形状的；只改了命名和格式的不算 */
-export function reviewableIds(symbols: readonly SymbolChangeDto[]): string[] {
-  return symbols
-    .filter((s) => s.id !== null && (s.kind === "function" || s.kind === "method") &&
-      (s.status === "added" || (s.status === "modified" && s.shapeChanged)))
-    .map((s) => s.id as string);
-}
-
-/** 这次改动里，人看过、记下「看懂了」的函数有几成；AI 再改一次，记下的就失效 */
-export function ReviewProgress({ ids }: { ids: readonly string[] }) {
-  const t = useT();
-  const marks = useUnderstandingStore((s) => s.marks);
-  const version = useUnderstandingStore((s) => s.version);
-  const key = ids.join(",");
-
-  useEffect(() => {
-    if (ids.length > 0) void useUnderstandingStore.getState().track(ids);
-    // ids 每次渲染都是新数组，按内容比较
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, version]);
-
-  if (ids.length === 0) return null;
-  const reviewed = ids.filter((id) => marks[id]?.mark === "understood").length;
-  return (
-    <div className="mx-3 mt-2" title={t("在改动单元里点「看过了」，或在详情里点「我看懂了」；之后再被改，就回到没看过")}>
-      <div className="flex items-baseline text-[10.5px]">
-        <span className="text-[var(--color-ink-muted)]">{t("看过的函数改动")}</span>
-        <span className="ml-auto tabular-nums" style={{ color: reviewed === ids.length ? "var(--color-success)" : "var(--color-ink-faint)" }}>
-          {reviewed}/{ids.length}
-        </span>
-      </div>
-      <div className="mt-1">
-        <RatioBar value={reviewed} total={ids.length} />
-      </div>
-    </div>
-  );
-}
 
 /**
  * 改动单元：沿调用关系连在一起的一组改动，一次审一个概念。风险高的排前面——
@@ -78,71 +38,42 @@ export function ClusterSection({ report }: { report: ChangeReportDto }) {
 function ClusterRow({ cluster, byId }: { cluster: ChangeClusterDto; byId: ReadonlyMap<string, SymbolChangeDto> }) {
   const t = useT();
   const reveal = useAppStore((s) => s.reveal);
-  const marks = useUnderstandingStore((s) => s.marks);
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
   const members = cluster.members.map((id) => byId.get(id)).filter((s): s is SymbolChangeDto => s !== undefined);
-  const reviewable = reviewableIds(members);
-  const pending = reviewable.filter((id) => marks[id]?.mark !== "understood");
   const tone = cluster.risk >= 12 ? "danger" : cluster.risk >= 6 ? "warn" : undefined;
-
-  const markReviewed = () => {
-    setBusy(true);
-    const store = useUnderstandingStore.getState();
-    void pending.reduce((chain, id) => chain.then(() => store.mark(id, "review")), Promise.resolve())
-      .catch(() => undefined)
-      .finally(() => setBusy(false));
-  };
 
   return (
     <div>
-      <div className="flex items-start gap-1 pr-3">
-        <button
-          type="button"
-          onClick={() => setOpen(!open)}
-          title={t("风险 {risk}：{count} 处改动", { risk: cluster.risk, count: members.length })}
-          className="min-w-0 flex-1 py-[3px] pl-3 text-left text-[11.5px] text-[var(--color-ink)] hover:bg-[var(--color-surface-raised)]"
-        >
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 shrink-0 text-center text-[9px] text-[var(--color-ink-faint)]">{open ? "▾" : "▸"}</span>
-            <span
-              className="mono shrink-0 rounded px-1 text-[9.5px] tabular-nums"
-              style={{
-                color: tone ? `var(--color-${tone})` : "var(--color-ink-faint)",
-                background: tone ? `color-mix(in srgb, var(--color-${tone}) 14%, transparent)` : "var(--color-surface-2)",
-              }}
-            >
-              {cluster.risk}
-            </span>
-            <span className="mono min-w-0 truncate">{cluster.label}</span>
-            {members.length > 1 && <span className="shrink-0 text-[9.5px] text-[var(--color-ink-faint)]">+{members.length - 1}</span>}
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        title={t("风险 {risk}：{count} 处改动", { risk: cluster.risk, count: members.length })}
+        className="block w-full py-[3px] pl-3 pr-3 text-left text-[11.5px] text-[var(--color-ink)] hover:bg-[var(--color-surface-raised)]"
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="w-2.5 shrink-0 text-center text-[9px] text-[var(--color-ink-faint)]">{open ? "▾" : "▸"}</span>
+          <span
+            className="mono shrink-0 rounded px-1 text-[9.5px] tabular-nums"
+            style={{
+              color: tone ? `var(--color-${tone})` : "var(--color-ink-faint)",
+              background: tone ? `color-mix(in srgb, var(--color-${tone}) 14%, transparent)` : "var(--color-surface-2)",
+            }}
+          >
+            {cluster.risk}
           </span>
-          {cluster.reasons.length > 0 && (
-            <span className="mt-0.5 flex flex-wrap gap-1 pl-4">
-              {cluster.reasons.map((reason) => (
-                <ChangeTag key={reason.kind} tone={reason.kind === "io" || reason.kind === "untested" ? "warn" : undefined}>
-                  {t(REASON_LABELS[reason.kind])}{reason.count > 1 ? ` ×${reason.count}` : ""}
-                </ChangeTag>
-              ))}
-            </span>
-          )}
-        </button>
-        {reviewable.length > 0 && (
-          pending.length === 0 ? (
-            <span className="mt-[3px] shrink-0 text-[10px] text-[var(--color-success)]" title={t("这一组的函数都看过了")}>✓</span>
-          ) : (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={markReviewed}
-              title={t("记下这一组改动你都看过了；之后再被改会重新提醒")}
-              className="mt-[3px] shrink-0 rounded border border-[var(--color-line)] px-1 text-[9.5px] text-[var(--color-ink-faint)] hover:border-[var(--color-success)] hover:text-[var(--color-success)] disabled:opacity-50"
-            >
-              {t("看过了")}
-            </button>
-          )
+          <span className="mono min-w-0 truncate">{cluster.label}</span>
+          {members.length > 1 && <span className="shrink-0 text-[9.5px] text-[var(--color-ink-faint)]">+{members.length - 1}</span>}
+        </span>
+        {cluster.reasons.length > 0 && (
+          <span className="mt-0.5 flex flex-wrap gap-1 pl-4">
+            {cluster.reasons.map((reason) => (
+              <ChangeTag key={reason.kind} tone={reason.kind === "io" || reason.kind === "untested" ? "warn" : undefined}>
+                {t(REASON_LABELS[reason.kind])}{reason.count > 1 ? ` ×${reason.count}` : ""}
+              </ChangeTag>
+            ))}
+          </span>
         )}
-      </div>
+      </button>
       {open && members.map((symbol) => (
         <ChangeRow
           key={symbol.id ?? `${symbol.path}:${symbol.name}`}
@@ -152,7 +83,6 @@ function ClusterRow({ cluster, byId }: { cluster: ChangeClusterDto; byId: Readon
           title={`${symbol.path}:${symbol.line}`}
         >
           <span className="mono truncate">{symbol.container ? `${symbol.container}.${symbol.name}` : symbol.name}</span>
-          {symbol.id && marks[symbol.id]?.mark === "understood" && <span className="text-[10px] text-[var(--color-success)]">✓</span>}
           <span className="mono ml-auto shrink-0 text-[9.5px] text-[var(--color-ink-faint)]">{symbol.path.split("/").at(-1)}</span>
         </ChangeRow>
       ))}

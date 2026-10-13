@@ -200,7 +200,7 @@ describe("startServer", () => {
     expect(events[4]?.data).toMatchObject({ model: "mock", usage: { requests: 2 } });
   });
 
-  it("理解账本、确认分层、批准依赖都要带意图标记；确认分层写进约定并就地重算倒置", async () => {
+  it("确认分层、批准依赖都要带意图标记；确认分层写进约定并就地重算倒置", async () => {
     const repo = join(home, "mono");
     const files: Record<string, string> = {
       ".repolens.json": JSON.stringify({ llm: { enabled: false } }),
@@ -223,13 +223,6 @@ describe("startServer", () => {
       headers: { "content-type": "application/json", ...(intent ? { "x-repolens-intent": intent } : {}) },
       body: JSON.stringify(body),
     });
-
-    const hit = (await (await fetch(`${server.url}/api/search?q=a`)).json()) as Array<{ id: string; label: string }>;
-    const a = hit.find((item) => item.label === "a" && item.id.startsWith("sym:"))!.id;
-    expect((await post("/understanding", null, { nodeId: a })).status).toBe(403);
-    expect(await (await post("/understanding", "understanding", { nodeId: a })).json()).toMatchObject({ status: "understood", label: "a" });
-    const understanding = await (await fetch(`${server.url}/api/understanding`)).json() as { summary: { marks: number } };
-    expect(understanding.summary.marks).toBe(1);
 
     // b 在上层、a 在下层：a → b 就是倒置
     const layers = [{ name: "上", members: ["pkg:b"] }, { name: "下", members: ["pkg:a"] }];

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,6 @@ import { writeLock } from "../config.js";
 import { getLens } from "../lens.js";
 import { lookupNode } from "../lookup.js";
 import { scanRepo } from "../pipeline/scan.js";
-import { getUnderstanding, markUnderstood, understandingLens } from "../understanding.js";
 import { buildLock } from "./architecture.js";
 import { getBoundary, getModuleCard } from "./boundary.js";
 import { indexPath, openDb, type Db } from "./database.js";
@@ -119,7 +118,7 @@ describe("看清关节", () => {
     }
   });
 
-  it("模块名片：对外接口、依赖谁 / 被谁依赖、I/O、测试、接口指纹", async () => {
+  it("模块名片：对外接口、依赖谁 / 被谁依赖、I/O、测试", async () => {
     const { db } = await fixture();
     try {
       const card = getModuleCard(db, "pkg:@x/service")!;
@@ -129,7 +128,6 @@ describe("看清关节", () => {
       expect(card.tests).toEqual({ functions: 5, covered: 3, cases: 2 });
       // 唯一一次提交改了全部文件：按提交去重是 1，把各文件的次数加起来会是 3
       expect(getModuleCard(db, "dir:packages")?.history).toMatchObject({ commits: 1, recentCommits: 1 });
-      expect(card.apiHash).toMatch(/^[0-9a-f]{16}$/);
 
       const store = getModuleCard(db, "pkg:@x/store")!;
       expect(store.io).toEqual([{ kind: "database", functions: 2 }]);
@@ -202,37 +200,16 @@ describe("测试即规格与数据骨架", () => {
   });
 });
 
-describe("理解账本", () => {
-  it("看懂后代码改了就过期；主干覆盖，以及每个入口那条调用链看懂了几个", async () => {
-    const { root, db, id } = await fixture();
-    expect(getUnderstanding(db, root).entries).toEqual({});
-    markUnderstood(db, root, `sym:${id("add")}`);
-    markUnderstood(db, root, `file:${(db.prepare("SELECT id FROM files WHERE path = 'packages/store/src/index.ts'").get() as { id: number }).id}`);
-    const before = getUnderstanding(db, root);
-    // 包入口里导出的函数都是公共 API 入口，九个函数全在主干上
-    expect(before.summary.key).toEqual({ total: 9, understood: 4, stale: 0 });
-    // main → addAll → add → makeItem / saveItem / log，main → listOpen → log / loadItems
-    expect(before.entries[`sym:${id("main")}`]).toEqual({ total: 8, understood: 4, stale: 0 });
-    expect(before.entries[`sym:${id("log")}`]).toBeUndefined();
-    db.close();
-
-    write(root, { "packages/service/src/index.ts": readFileSync(join(root, "packages/service/src/index.ts"), "utf8").replace('log("added");', 'log("added!");') });
-    await scanRepo({ root });
-    const after = openDb(indexPath(root), { readonly: true });
+describe("视角", () => {
+  it("测试覆盖按范围里被用例走到的函数算，改动热度按所在文件的提交算", async () => {
+    const { db, id } = await fixture();
     try {
-      const understanding = getUnderstanding(after, root);
-      expect(understanding.stale.map((m) => [m.label, m.status])).toEqual([["add", "stale"]]);
-      const main = (after.prepare("SELECT id FROM symbols WHERE name = 'main'").get() as { id: number }).id;
-      expect(understanding.entries[`sym:${main}`]).toEqual({ total: 8, understood: 3, stale: 1 });
-      const lens = understandingLens(after, root, ["pkg:@x/store", "pkg:@x/service"]);
-      expect(lens["pkg:@x/store"]).toMatchObject({ total: 3, understood: 3, stale: 0 });
-      expect(lens["pkg:@x/service"]).toMatchObject({ total: 5, understood: 0, stale: 1 });
-      expect(getLens(after, root, "tests", ["pkg:@x/service"])["pkg:@x/service"]).toEqual({ total: 5, covered: 3 });
+      expect(getLens(db, "tests", ["pkg:@x/service"])["pkg:@x/service"]).toEqual({ total: 5, covered: 3 });
+      expect(getLens(db, "heat", [`sym:${id("add")}`])[`sym:${id("add")}`]).toEqual({ commits: 1, recent: 1, aiCommits: 0 });
     } finally {
-      after.close();
+      db.close();
     }
   });
-
 });
 
 describe("按引用找节点", () => {

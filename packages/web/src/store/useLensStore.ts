@@ -2,7 +2,6 @@ import type { LensKind, LensValueDto } from "@repolens/core/types";
 import { create } from "zustand";
 import { api } from "../api/client";
 import { useAppStore } from "./useAppStore";
-import { useUnderstandingStore } from "./useUnderstandingStore";
 
 /** 服务端一次最多算这么多个节点 */
 const BATCH = 150;
@@ -68,8 +67,4 @@ useAppStore.subscribe((state, previous) => {
   ) {
     reset(state.lens);
   }
-});
-
-useUnderstandingStore.subscribe((state, previous) => {
-  if (state.version !== previous.version && useLensStore.getState().kind === "understanding") reset("understanding");
 });

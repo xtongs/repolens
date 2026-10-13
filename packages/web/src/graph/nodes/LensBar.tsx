@@ -1,13 +1,12 @@
-import type { GraphNodeDto, LensValueDto } from "@repolens/core/types";
+import type { GraphNodeDto } from "@repolens/core/types";
 import { useT } from "../../i18n";
 import { useAppStore } from "../../store/useAppStore";
 import { useLensStore } from "../../store/useLensStore";
 import { ratioWidth } from "../../ui/panel";
 
 /**
- * 视角叠加层：节点底边一条细条。「我的理解」画看懂了几成（改过的那截标黄），「测试覆盖」
- * 画测到了几成，「改动热度」按近 90 天的提交数相对最热的节点画长度。条只表达比例，
- * 具体数字放在 title 里，图上不铺字。
+ * 视角叠加层：节点底边一条细条。「测试覆盖」画测到了几成，「改动热度」按近 90 天的提交数
+ * 相对最热的节点画长度。条只表达比例，具体数字放在 title 里，图上不铺字。
  */
 export function LensBar({ dto, container = false }: { dto: GraphNodeDto; container?: boolean }) {
   const t = useT();
@@ -37,36 +36,11 @@ export function LensBar({ dto, container = false }: { dto: GraphNodeDto; contain
   }
 
   const total = value.total ?? 0;
-  const done = kind === "tests" ? value.covered ?? 0 : value.understood ?? 0;
-  const stale = kind === "understanding" ? value.stale ?? 0 : 0;
-  const title = kind === "tests"
-    ? t("测试走到 {covered}/{total} 个函数", { covered: done, total })
-    : t("看懂了 {understood}/{total} 个函数，{stale} 个看懂后又被改过", { understood: done, total, stale });
-
+  if (total === 0) return null;
+  const covered = value.covered ?? 0;
   return (
-    <>
-      {total > 0 && (
-        <span className={`${position} flex overflow-hidden bg-[var(--color-surface-3)]`} title={title}>
-          <span style={{ width: ratioWidth(done, total), background: kind === "tests" ? "var(--color-accent)" : "var(--color-success)" }} />
-          {stale > 0 && <span style={{ width: ratioWidth(stale, total), background: "var(--color-warn)" }} />}
-        </span>
-      )}
-      {kind === "understanding" && <MarkBadge value={value} container={container} />}
-    </>
-  );
-}
-
-function MarkBadge({ value, container }: { value: LensValueDto; container: boolean }) {
-  const t = useT();
-  if (!value.mark || container) return null;
-  const understood = value.mark === "understood";
-  return (
-    <span
-      className="absolute bottom-1 right-1.5 text-[10px] font-medium"
-      style={{ color: understood ? "var(--color-success)" : "var(--color-warn)" }}
-      title={understood ? t("你标过看懂了") : t("看懂之后又被改过")}
-    >
-      {understood ? "✓" : "↻"}
+    <span className={`${position} flex overflow-hidden bg-[var(--color-surface-3)]`} title={t("测试走到 {covered}/{total} 个函数", { covered, total })}>
+      <span style={{ width: ratioWidth(covered, total), background: "var(--color-accent)" }} />
     </span>
   );
 }

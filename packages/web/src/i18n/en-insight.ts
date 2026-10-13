@@ -2,28 +2,21 @@ import type { Translation } from "./index";
 import { count, counted, plural } from "./plural";
 
 /**
- * 看清、吃透、守住这一组功能的英文：边即契约、模块名片、测试即规格、改动历史、理解账本、
+ * 看清、吃透、守住这一组功能的英文：边即契约、模块名片、测试即规格、改动历史、
  * 视角、走读骨架、变更审阅和约定。键是界面上的中文原文。
  */
 export const EN_INSIGHT: Record<string, Translation> = {
   // 画布与视角
   "依赖方向：使用方 ↓ 被依赖方 · 点边看由什么构成": "Dependency direction: user ↓ dependency · click an edge to see what it's made of",
-  "看懂了": "Understood",
-  "看懂后又被改过": "Changed since understood",
   "有测试走到的函数": "Functions reached by tests",
   "近 90 天改得越勤越长": "Longer = changed more in the last 90 days",
   "近 90 天 {recent} 次提交 · 近一年 {commits} 次 · AI 参与 {ai} 次": (params) =>
     `${count(params, "recent")} ${plural(params, "commit", "commits", "recent")} in 90 days · ${count(params, "commits")} in a year · ${count(params, "ai")} AI-assisted`,
   "测试走到 {covered}/{total} 个函数": "Tests reach {covered}/{total} functions",
-  "看懂了 {understood}/{total} 个函数，{stale} 个看懂后又被改过": "Understood {understood}/{total} functions; {stale} changed since",
-  "你标过看懂了": "You marked this as understood",
-  "看懂之后又被改过": "Changed since you understood it",
-  "我的理解": "My understanding",
   "改动热度": "Change heat",
   "视角": "Lens",
-  "在节点底边叠一条细条：看懂了几成、改得勤不勤、测到了几成": "Adds a thin bar under each node: how much you understand, how often it changes, how much is tested",
+  "在节点底边叠一条细条：改得勤不勤、测到了几成": "Adds a thin bar under each node: how often it changes, how much is tested",
   "给图上每个节点的底边叠一条细条": "Draws a thin bar along the bottom of every node",
-  "看懂了几成；看懂后又被改过的那截标黄": "How much you understand; the part that changed since is yellow",
   "近 90 天改得越勤，条越长越红": "The busier in the last 90 days, the longer and redder the bar",
   "有测试走到的函数占几成": "Share of functions reached by tests",
   "不叠加": "Off",
@@ -33,8 +26,6 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "源码 {loc} 行": counted("source line", "source lines", "loc"),
   "文件监视出错：{error}": "File watching failed: {error}",
   "盯着文件变化：改动后自动刷新结构索引": "Watching files: the structure index refreshes after every change",
-  "从 main、路由、CLI 命令等入口开始单步走读；顶上是你看懂了多少、哪些看懂后又被改过":
-    "Step through the code from entry points such as main, routes and CLI commands; the top shows how much you understand and what changed since",
   "跳过提前 return / throw 的守卫分支和 catch，先把正常流程读通": "Skip guard branches that return or throw early and catch blocks; read the normal flow first",
   "主路径": "Main path",
   "实时": "Live",
@@ -150,38 +141,6 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "接收它": "Accepted by",
   "实现或继承它": "Implemented or extended by",
 
-  // 我看懂了
-  "随整个文件一起标过；点一下撤销文件那条标记": "Marked along with the whole file; click to remove the file mark",
-  "点一下撤销": "Click to undo",
-  "看懂了接口": "Interface understood",
-  "（随文件）": "(with file)",
-  "看懂之后对外接口变了，重新看过再标": "The interface changed after you understood it; review it and mark again",
-  "看懂之后代码被改过，重新看过再标": "The code changed after you understood it; review it and mark again",
-  "又改过": "Changed",
-  "改过了 · 重新看过": "Changed · review again",
-  "记下你看懂了它的对外接口；接口变了会提醒你重新看": "Record that you understand its interface; you'll be reminded if the interface changes",
-  "记下你看懂了它；代码改了会提醒你重新看": "Record that you understand it; you'll be reminded if the code changes",
-  "我看懂了接口": "I understand the interface",
-  "我看懂了": "I understand this",
-
-  // 我的理解：入口页签顶上
-  "主干": "Main code",
-  "从 HTTP、命令行、main 和公共 API 入口沿调用走得到的函数：系统真正在跑的那部分":
-    "Functions reachable through calls from HTTP, CLI, main and public API entry points: the part of the system that actually runs",
-  "全部函数": "All functions",
-  "还没有标记。读懂一个函数、文件或模块的接口后点「我看懂了」，代码改了会提醒你重新看。":
-    "No marks yet. After you understand a function, file or module interface, click “I understand this”; you'll be reminded when the code changes.",
-  "共 {count} 条标记，存在 .repolens/understanding.json，只记在你本机。": (params) =>
-    `${count(params)} ${plural(params, "mark", "marks")}, stored in .repolens/understanding.json on this machine only.`,
-  "{understood}/{total} · {share}": "{understood}/{total} · {share}",
-  "看懂后又被改过 ({count})": "Changed since understood ({count})",
-  "重新看过了，按现在的代码重新记": "Reviewed again; record it against the current code",
-  "重新看过": "Reviewed",
-  "还有 {count} 个": (params) => `${count(params)} more`,
-  "这条调用链上看懂了 {understood}/{total} 个函数": "Understood {understood}/{total} functions along this call chain",
-  "这条调用链上看懂了 {understood}/{total} 个函数，{stale} 个看懂后又被改过":
-    "Understood {understood}/{total} functions along this call chain; {stale} changed since",
-
   // 约定
   "约定": "Conventions",
   "分层": "Layers",
@@ -220,15 +179,9 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "新调用": "new calls",
   "复杂度上升": "more complex",
   "走到入口": "reaches entry points",
-  "在改动单元里点「看过了」，或在详情里点「我看懂了」；之后再被改，就回到没看过":
-    "Click “Reviewed” on a change group or “I understand this” in the details; if it changes again, it goes back to unreviewed",
-  "看过的函数改动": "Function changes reviewed",
   "改动单元": "Change groups",
   "沿调用关系把改动归成组：一组就是一件事。风险高的在前": "Changes grouped along calls: one group is one piece of work. Riskiest first",
   "风险 {risk}：{count} 处改动": (params) => `Risk ${String(params["risk"] ?? "")}: ${count(params)} ${plural(params, "change", "changes")}`,
-  "这一组的函数都看过了": "Every function in this group has been reviewed",
-  "记下这一组改动你都看过了；之后再被改会重新提醒": "Record that you reviewed this group; you'll be reminded if it changes again",
-  "看过了": "Reviewed",
   "行为变化": "Behavior changes",
   "新调了谁、开始碰哪类 I/O：比行数更能说明这次改动做了什么": "What it now calls and what I/O it now touches: says more about a change than line counts",
   "新调 {names}": "Now calls {names}",
@@ -265,10 +218,8 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "单击边": "Click an edge",
   "看这条依赖由什么构成：引了哪些文件、用了哪些名字、有没有绕过包入口": "See what the dependency is made of: which files, which names, and whether it bypasses a package entry",
   "随手记一笔：记在选中的节点上，没选中就记在整个仓库上": "Jot a note on the selected node, or on the whole repository when nothing is selected",
-  "顶栏的「视角」在节点底边叠一条细条：我看懂了几成、近 90 天改得勤不勤、测试走到了几成。":
-    "The Lens menu in the top bar adds a thin bar under each node: how much you understand, how busy it was in the last 90 days, how much tests reach. ",
-  "「入口」页签顶上记着你看懂了多少：代码一改，标记自动过期，提醒你重新看。":
-    "The top of the Entries tab tracks how much you understand: when the code changes, the mark expires and reminds you to review it again.",
+  "顶栏的「视角」在节点底边叠一条细条：近 90 天改得勤不勤、测试走到了几成。":
+    "The Lens menu in the top bar adds a thin bar under each node: how busy it was in the last 90 days and how much tests reach.",
 
   // 走读骨架
   "同一块里还在第 {lines} 行调了它": "Also called in this block on line(s) {lines}",
@@ -295,17 +246,12 @@ export const EN_INSIGHT: Record<string, Translation> = {
   "只有包和目录有模块名片": "Only packages and folders have module cards",
   "不是类型": "Not a type",
   "未知的视角": "Unknown lens",
-  "缺少节点": "Missing node",
-  "没有这条标记": "No such mark",
   "分层格式不正确：每层要有名字和至少一个 pkg: / dir: 成员": "Invalid layers: each layer needs a name and at least one pkg: or dir: member",
   "缺少本地写操作标记": "Missing the local write marker",
-  "只能标记函数、文件、包或目录": "Only functions, files, packages and folders can be marked",
 };
 
 /** 嵌着路径的报错 */
 export const EN_INSIGHT_PATTERNS: Array<[RegExp, (...groups: string[]) => string]> = [
-  [/^理解账本无法解析：(.+)$/s, (detail) => `Couldn't parse the understanding ledger: ${detail}`],
-  [/^理解账本格式不对：(.+)$/s, (path) => `The understanding ledger has an invalid format: ${path}`],
   [/^依赖锁解析失败：(.+)$/s, (detail) => `Couldn't parse the dependency lock: ${detail}`],
   [/^依赖锁格式不对：(.+)$/s, (path) => `The dependency lock has an invalid format: ${path}`],
   [/^RepoLens 配置里的 layers 必须是数组：(.+)$/s, (path) => `"layers" in the RepoLens config must be an array: ${path}`],

@@ -10,7 +10,7 @@ export function writeJsonAtomically(path: string, value: unknown): void {
 }
 
 /**
- * 按 `{ version: 1, <key>: [...] }` 存在 `.repolens/` 下的一份本地列表（笔记、理解账本）。
+ * 按 `{ version: 1, <key>: [...] }` 存在 `.repolens/` 下的一份本地列表（比如笔记）。
  * 文件损坏时直接报错，不能当成空列表再写回去，那会把用户记下的东西覆盖掉；
  * 单条认不出的丢掉，不让一条坏数据拖垮整份列表。
  */

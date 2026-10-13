@@ -3,7 +3,6 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { api } from "../api/client";
 import { useSource } from "../code/useSource";
 import { msg, useT } from "../i18n";
-import { UnderstandButton } from "../insight/UnderstandButton";
 import { useSidebarInset } from "../layout/ResizablePanelHandle";
 import { useAppStore, type WalkFrameRef } from "../store/useAppStore";
 import { CodeLine, type CodeMark } from "../ui/CodeLines";
@@ -256,7 +255,6 @@ export function WalkView() {
                   className="text-[10.5px] text-[var(--color-ink-faint)] underline-offset-2 hover:text-[var(--color-ink)] hover:underline">
                   {t("查看详情")}
                 </button>
-                <UnderstandButton nodeId={frame.id} how="walk" compact />
               </div>
             </div>
             <StepButtons

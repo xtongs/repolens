@@ -122,25 +122,19 @@ export function RowButton({
   );
 }
 
-/**
- * 「多少里有多少」：看懂了几成、测到了几成。stale 是看懂后又被改过的那一截，
- * 画在已覆盖的后面，颜色提醒它不再算数。
- */
+/** 「多少里有多少」：比如测到了几成 */
 export function RatioBar({
   value,
   total,
-  stale = 0,
   tone = "success",
 }: {
   value: number;
   total: number;
-  stale?: number;
   tone?: "success" | "accent";
 }) {
   return (
     <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-surface-3)]">
       <div style={{ width: ratioWidth(value, total), background: `var(--color-${tone})` }} />
-      {stale > 0 && <div style={{ width: ratioWidth(stale, total), background: "var(--color-warn)" }} />}
     </div>
   );
 }

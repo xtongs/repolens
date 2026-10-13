@@ -5,7 +5,7 @@ import { api } from "../api/client";
 import { changedRanges } from "../code/declaration";
 import { SignatureText } from "../code/Signature";
 import { type NodeScope, inScope } from "../graph/scope";
-import { BehaviorSection, ClusterSection, ReviewProgress, reviewableIds, UntestedSection } from "../insight/ChangeInsight";
+import { BehaviorSection, ClusterSection, UntestedSection } from "../insight/ChangeInsight";
 import { translateMessage, useT } from "../i18n";
 import { useAppStore } from "../store/useAppStore";
 import { useChangesStore } from "../store/useChangesStore";
@@ -191,7 +191,6 @@ function ReportView({ full, scope }: { full: ChangeReportDto; scope: NodeScope |
       ) : (
         <>
           <Summary report={report} files={files} symbols={symbols} />
-          <ReviewProgress ids={reviewableIds(symbols)} />
           <ClusterSection report={report} />
           <BehaviorSection report={report} />
           <DependencySection report={report} />

@@ -268,7 +268,7 @@ const SIGNATURE_NODES: ReadonlySet<string> = new Set([
 
 /**
  * 接口里的方法、重载声明、trait 方法签名也是 function / method 符号，但它们没有可读的实现：
- * 统计「有多少函数被看懂、被测到」时要把它们排除，不然一个接口能凭空添出十几个永远读不完的函数。
+ * 统计「有多少函数被测到」时要把它们排除，不然一个接口能凭空添出十几个永远测不到的函数。
  */
 export function attachDeclarationOnly(root: TsNode, symbols: ParsedSymbol[]): void {
   for (const sym of symbols) {

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type {
   BoundaryDto,
   BoundaryImportDto,
@@ -212,10 +211,6 @@ export function getModuleCard(db: Db, nodeId: string, confirmed: readonly Confir
     .map((p) => [p.id, p]));
 
   const api = moduleApi(db, inside);
-  const apiHash = createHash("sha256")
-    .update(api.all.map((s) => `${s.path}#${s.name}:${s.signature ?? ""}`).sort().join("\n"))
-    .digest("hex")
-    .slice(0, 16);
 
   const groupOf = (fileId: number): { id: string; label: string } | null => {
     const file = fileById.get(fileId);
@@ -308,7 +303,6 @@ export function getModuleCard(db: Db, nodeId: string, confirmed: readonly Confir
     path: scope.path,
     api: api.all.slice(0, API_LISTED),
     apiTotal: api.all.length,
-    apiHash,
     dependsOn: links("out"),
     usedBy: links("in"),
     externals: [...externals].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, files]) => ({ name, files })),

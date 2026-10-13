@@ -471,13 +471,12 @@ function StructureControls() {
 
 /** 取值要在渲染时过 t() */
 const LENS_OPTIONS: ReadonlyArray<{ key: LensKind; label: string; hint: string }> = [
-  { key: "understanding", label: msg("我的理解"), hint: msg("看懂了几成；看懂后又被改过的那截标黄") },
   { key: "heat", label: msg("改动热度"), hint: msg("近 90 天改得越勤，条越长越红") },
   { key: "tests", label: msg("测试覆盖"), hint: msg("有测试走到的函数占几成") },
 ];
 
 /**
- * 图上叠加一层视角：哪里我看懂了、哪里改得勤、哪里有测试兜着。关着时按钮只写「视角」，
+ * 图上叠加一层视角：哪里改得勤、哪里有测试兜着。关着时按钮只写「视角」，
  * 开着时带上当前视角的名字；每一项是什么意思写在菜单里，不用先选了再猜。
  */
 function LensMenu() {
@@ -554,7 +553,7 @@ function LensMenu() {
             setOpen(true);
           }
         }}
-        title={t("在节点底边叠一条细条：看懂了几成、改得勤不勤、测到了几成")}
+        title={t("在节点底边叠一条细条：改得勤不勤、测到了几成")}
         className={`flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] transition-colors ${
           active
             ? "border-[var(--color-accent)] text-[var(--color-accent)]"
@@ -788,7 +787,7 @@ function EntriesPill() {
     <button type="button" onClick={() => { store.setPanelTab("entries"); store.setTreeOpen(!open); }}
       className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors"
       style={{ borderColor: open ? "var(--color-accent)" : "var(--color-line)", color: open ? "var(--color-accent)" : "var(--color-ink-muted)" }}
-      title={t("从 main、路由、CLI 命令等入口开始单步走读；顶上是你看懂了多少、哪些看懂后又被改过")} aria-label={t("入口")}>
+      title={t("从 main、路由、CLI 命令等入口开始，单步走读代码怎么跑")} aria-label={t("入口")}>
       ⇢<span data-topbar-optional="2">{t("入口")}</span>
     </button>
   );

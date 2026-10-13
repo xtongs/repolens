@@ -7,7 +7,6 @@ import { Chip, LinkButton, RowButton, Section } from "../ui/panel";
 import { IO_LABELS } from "../ui/visual";
 import { edgeSelection } from "../lib/edge";
 import { ScopeTests } from "./TestsSection";
-import { UnderstandButton } from "./UnderstandButton";
 
 const API_SHOWN = 12;
 
@@ -39,20 +38,21 @@ export function ModuleCardSection({ nodeId }: { nodeId: string }) {
 
   return (
     <>
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        <UnderstandButton nodeId={nodeId} />
-        {card.layer && (
-          <Chip tone={card.layer.confirmed ? "success" : "accent"} title={card.layer.confirmed ? t("确认过的分层") : t("AI 提议的分层，还没有人确认")}>
-            {card.layer.name}
-            {card.layer.confirmed ? "" : " · AI"}
-          </Chip>
-        )}
-        {card.io.map((io) => (
-          <Chip key={io.kind} tone="warn" title={t("{count} 个函数直接做这类 I/O", { count: io.functions })}>
-            {t(IO_LABELS[io.kind])} {io.functions}
-          </Chip>
-        ))}
-      </div>
+      {(card.layer || card.io.length > 0) && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          {card.layer && (
+            <Chip tone={card.layer.confirmed ? "success" : "accent"} title={card.layer.confirmed ? t("确认过的分层") : t("AI 提议的分层，还没有人确认")}>
+              {card.layer.name}
+              {card.layer.confirmed ? "" : " · AI"}
+            </Chip>
+          )}
+          {card.io.map((io) => (
+            <Chip key={io.kind} tone="warn" title={t("{count} 个函数直接做这类 I/O", { count: io.functions })}>
+              {t(IO_LABELS[io.kind])} {io.functions}
+            </Chip>
+          ))}
+        </div>
+      )}
       <ApiList card={card} />
       <Links title={t("它依赖 ({count})", { count: card.dependsOn.length })} links={card.dependsOn} from={nodeId} outgoing />
       <Links title={t("依赖它的 ({count})", { count: card.usedBy.length })} links={card.usedBy} from={nodeId} outgoing={false} />

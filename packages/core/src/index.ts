@@ -26,14 +26,6 @@ export { getSpec, testCoverageOf } from "./db/spec.js";
 export { dataTables, getSkeleton, getTypeFlow } from "./db/skeleton.js";
 export { fileHistory } from "./db/file-history.js";
 export { groundText } from "./db/grounding.js";
-export {
-  UnderstandingInputError,
-  getUnderstanding,
-  markUnderstood,
-  understandingLens,
-  understandingPath,
-  unmark,
-} from "./understanding.js";
 export { getLens } from "./lens.js";
 export { lookupNode, type LookupCandidate, type LookupResult } from "./lookup.js";
 export { runCheck, type CheckOptions, type CheckReport } from "./check.js";

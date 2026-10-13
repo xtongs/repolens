@@ -22,7 +22,6 @@ import { ModuleCardSection } from "../insight/ModuleCard";
 import { SkeletonSection } from "../insight/SkeletonSection";
 import { ScopeTests, SymbolTests } from "../insight/TestsSection";
 import { isTypeKind, TypeFlowSection } from "../insight/TypeFlowSection";
-import { UnderstandButton } from "../insight/UnderstandButton";
 import { Chip, Empty, Label, Metric, Skeleton } from "../ui/panel";
 import { formatCount, languageColor, symbolGlyph } from "../ui/visual";
 import { NoteList } from "../notes/NoteCard";
@@ -403,11 +402,6 @@ function SymbolBody({ id, navigation }: { id: string; navigation: TabNavigation 
         </span>
         <WalkLink detail={detail} />
       </div>
-      {(detail.kind === "function" || detail.kind === "method") && !detail.testKind && (
-        <div className="mt-2">
-          <UnderstandButton nodeId={detail.id} />
-        </div>
-      )}
       {detail.testKind && (
         <div className="mt-2 text-[10.5px] text-[var(--color-ink-faint)]">
           <Chip tone="accent">{detail.testKind === "case" ? t("测试用例") : t("测试用例组")}</Chip>{" "}
@@ -785,11 +779,6 @@ function FileBody({ id, navigation }: { id: string; navigation: TabNavigation })
       <div className="mono mt-1 break-all text-[10.5px] text-[var(--color-ink-faint)]">
         {detail.path}
       </div>
-      {detail.role === "source" && (
-        <div className="mt-2">
-          <UnderstandButton nodeId={detail.id} />
-        </div>
-      )}
 
       {detail.parseError && (
         <div className="mt-2 rounded border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/5 px-2 py-1.5 text-[11px] text-[var(--color-warn)]">

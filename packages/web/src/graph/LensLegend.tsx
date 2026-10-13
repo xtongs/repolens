@@ -7,14 +7,9 @@ export function LensLegend() {
   const lens = useAppStore((s) => s.lens);
   if (lens === null) return null;
 
-  const items = lens === "understanding"
-    ? [
-        { color: "var(--color-success)", label: t("看懂了") },
-        { color: "var(--color-warn)", label: t("看懂后又被改过") },
-      ]
-    : lens === "tests"
-      ? [{ color: "var(--color-accent)", label: t("有测试走到的函数") }]
-      : [{ color: "var(--color-danger)", label: t("近 90 天改得越勤越长") }];
+  const items = lens === "tests"
+    ? [{ color: "var(--color-accent)", label: t("有测试走到的函数") }]
+    : [{ color: "var(--color-danger)", label: t("近 90 天改得越勤越长") }];
 
   return (
     <div className="flex items-center gap-2.5 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)]/90 px-2.5 py-1 text-[10px] text-[var(--color-ink-faint)] shadow-sm backdrop-blur">

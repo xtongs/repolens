@@ -1127,8 +1127,6 @@ export interface ModuleCardDto {
   /** 被这个范围之外调用或 import 的符号，按外部调用方数排 */
   api: ModuleApiDto[];
   apiTotal: number;
-  /** 对外接口签名的指纹；「看懂了这个模块的接口」靠它判断是否过期 */
-  apiHash: string;
   dependsOn: ModuleLinkDto[];
   usedBy: ModuleLinkDto[];
   externals: Array<{ name: string; files: number }>;
@@ -1218,69 +1216,20 @@ export interface DataAccessRefDto {
 }
 
 // ---------------------------------------------------------------------------
-// 理解账本：人自己看懂了什么
+// 视角
 // ---------------------------------------------------------------------------
 
-export type UnderstandingHow = "manual" | "walk" | "review";
-
-/**
- * 一条「我看懂了」。按稳定的路径和名字记，带上当时内容的指纹：代码改了指纹就对不上，
- * 这条理解自动变成过期——AI 改过的东西，人得重新看一遍才算数。
- */
-export interface UnderstandingMarkDto {
-  key: string;
-  kind: "symbol" | "file" | "scope";
-  /** 当前索引里的节点；被删或改名后为 null */
-  nodeId: string | null;
-  label: string;
-  path: string;
-  status: "understood" | "stale" | "missing";
-  at: string;
-  how: UnderstandingHow;
-}
-
-export interface UnderstandingCountsDto {
-  /** 参与统计的函数（源码里的函数和方法） */
-  total: number;
-  understood: number;
-  stale: number;
-}
-
-export interface UnderstandingSummaryDto {
-  all: UnderstandingCountsDto;
-  /** 主入口（HTTP、CLI、main、公共 API）沿调用能走到的函数：系统真正在跑的那部分 */
-  key: UnderstandingCountsDto;
-  marks: number;
-}
-
-export interface UnderstandingDto {
-  summary: UnderstandingSummaryDto;
-  /** 看懂之后又被改过的 */
-  stale: UnderstandingMarkDto[];
-  /**
-   * 入口往下那条调用链上的函数看懂了多少，键是处理函数的节点 id。测试入口不算；
-   * 一个都没看懂、也没有改过的入口不列
-   */
-  entries: Record<string, UnderstandingCountsDto>;
-}
-
 /** 图上叠加的一层视角：每个节点一组数，界面按视角取用 */
-export type LensKind = "heat" | "tests" | "understanding";
+export type LensKind = "heat" | "tests";
 
 export interface LensValueDto {
   /** 改动热度：近 90 天、近一年的提交数，AI 参与的提交数 */
   recent?: number;
   commits?: number;
   aiCommits?: number;
-  /** 测试与理解：参与统计的函数数，以及被测到 / 看懂 / 看懂后又被改的数 */
+  /** 测试覆盖：参与统计的函数数，以及被测试走到的数 */
   total?: number;
   covered?: number;
-  understood?: number;
-  stale?: number;
-  /** 节点本身（文件、函数、模块接口）被标记的状态 */
-  mark?: "understood" | "stale" | null;
-  /** 生效的那条标记，撤销时用；函数随整个文件被标过时是文件那条 */
-  key?: string;
 }
 
 // ---------------------------------------------------------------------------

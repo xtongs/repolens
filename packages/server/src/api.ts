@@ -1,7 +1,6 @@
 import {
   BaselineError,
   FINDING_KINDS,
-  UnderstandingInputError,
   buildChangeReport,
   buildLock,
   confirmedLayers,
@@ -25,11 +24,9 @@ import {
   getSymbolDetail,
   getTree,
   getTypeFlow,
-  getUnderstanding,
   getWalkFrame,
   generateFileSummary,
   generateSymbolSemantics,
-  markUnderstood,
   NoteInputError,
   addNote,
   deleteNote,
@@ -46,7 +43,6 @@ import {
   RepoFileError,
   search,
   streamRepositoryChat,
-  unmark,
   updateRepoConfig,
   writeLock,
   type Confidence,
@@ -54,7 +50,6 @@ import {
   type Db,
   type FileRole,
   type LensKind,
-  type UnderstandingHow,
 } from "@repolens/core";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -193,35 +188,9 @@ export function createApi(deps: ApiDeps): Hono {
 
   app.get("/lens", (c) => {
     const kind = c.req.query("kind");
-    if (kind !== "heat" && kind !== "tests" && kind !== "understanding") return c.json({ error: "未知的视角" }, 400);
+    if (kind !== "heat" && kind !== "tests") return c.json({ error: "未知的视角" }, 400);
     const ids = (c.req.query("ids") ?? "").split(",").filter((id) => /^(?:dir|pkg|file|sym):./.test(id));
-    return c.json(getLens(db, repoRoot, kind as LensKind, ids));
-  });
-
-  // 理解账本写在索引旁边的 understanding.json，和笔记一样不经过 index.db
-  app.get("/understanding", (c) => c.json(getUnderstanding(db, repoRoot)));
-
-  app.post("/understanding", async (c) => {
-    if (c.req.header("x-repolens-intent") !== "understanding") {
-      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
-    }
-    const body = await jsonBody(c);
-    const nodeId = typeof body?.["nodeId"] === "string" ? body["nodeId"] : null;
-    const how = body?.["how"];
-    if (nodeId === null) return c.json({ error: "缺少节点" }, 400);
-    try {
-      const mark = markUnderstood(db, repoRoot, nodeId, isHow(how) ? how : "manual");
-      return c.json(mark);
-    } catch (err) {
-      return c.json({ error: (err as Error).message }, err instanceof UnderstandingInputError ? 400 : 500);
-    }
-  });
-
-  app.delete("/understanding", (c) => {
-    if (c.req.header("x-repolens-intent") !== "understanding") {
-      return c.json({ error: "缺少 RepoLens 本地写操作标记" }, 403);
-    }
-    return unmark(repoRoot, c.req.query("key") ?? "") ? c.json({ ok: true }) : c.json({ error: "没有这条标记" }, 404);
+    return c.json(getLens(db, kind as LensKind, ids));
   });
 
   // AI 提议的分层由人确认后写进约定，之后的分层倒置检查只认这一份
@@ -418,10 +387,6 @@ async function jsonBody(c: Context): Promise<Record<string, unknown> | null> {
   } catch {
     return null;
   }
-}
-
-function isHow(value: unknown): value is UnderstandingHow {
-  return value === "manual" || value === "walk" || value === "review";
 }
 
 function parseLayers(raw: unknown): ConfirmedLayer[] | null {

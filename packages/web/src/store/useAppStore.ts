@@ -33,7 +33,7 @@ const PREF = {
 } as const;
 
 const PANEL_TABS: readonly PanelTab[] = ["tree", "findings", "entries", "changes"];
-const LENSES: readonly LensKind[] = ["understanding", "heat", "tests"];
+const LENSES: readonly LensKind[] = ["heat", "tests"];
 
 function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
   const value = readPref(key);
@@ -140,7 +140,7 @@ export interface AppState {
   /** 当前仓库的文件监视状态；没订阅到事件时为 null */
   watchStatus: WatchStatusDto | null;
   setWatchStatus: (status: WatchStatusDto | null) => void;
-  /** 图上叠加的视角：我的理解、改动热度、测试覆盖 */
+  /** 图上叠加的视角：改动热度、测试覆盖 */
   lens: LensKind | null;
   setLens: (lens: LensKind | null) => void;
   refreshRepos: () => Promise<void>;

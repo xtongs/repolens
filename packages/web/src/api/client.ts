@@ -31,9 +31,6 @@ import type {
   TreeNodeDto,
   TypeFlowDto,
   EntryPointDto,
-  UnderstandingDto,
-  UnderstandingHow,
-  UnderstandingMarkDto,
   WalkFrameDto,
 } from "@repolens/core/types";
 import { t, translateMessage } from "../i18n";
@@ -294,13 +291,6 @@ export const api = {
   skeleton: () => get<SkeletonDto>("/skeleton"),
 
   lens: (kind: LensKind, ids: string[]) => get<Record<string, LensValueDto>>("/lens", { kind, ids: ids.join(",") }),
-
-  understanding: () => get<UnderstandingDto>("/understanding"),
-
-  markUnderstood: (nodeId: string, how: UnderstandingHow = "manual") =>
-    send<UnderstandingMarkDto>("POST", "/understanding", "understanding", { nodeId, how }),
-
-  unmarkUnderstood: (key: string) => send<{ ok: true }>("DELETE", "/understanding", "understanding", undefined, { key }),
 
   confirmLayers: (layers: ConfirmedLayer[]) =>
     send<{ layers: ConfirmedLayer[] }>("POST", "/layers/confirm", "confirm-layers", { layers }),
